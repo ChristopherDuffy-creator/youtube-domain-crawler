@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTube Domain Crawler</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+</head>
+<body>
+  <main class="container">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">EXPANDOSAURUS</p>
+        <h1>YouTube Domain Crawler</h1>
+        <p class="subtitle">Permanent deduplication ledger · exact description links · real 30-day view tracking</p>
+      </div>
+      <a class="button secondary" href="/export/candidates.csv">Download results</a>
+    </header>
+
+    {% if not registrar_enabled or not email_enabled %}
+    <section class="notice">
+      <strong>Setup still to finish:</strong>
+      {% if not registrar_enabled %}exact registrar verification{% endif %}
+      {% if not registrar_enabled and not email_enabled %} and {% endif %}
+      {% if not email_enabled %}email delivery{% endif %}.
+      The crawler can collect and track links before these are connected.
+    </section>
+    {% endif %}
+
+    <section class="target-card">
+      <div>
+        <span class="target-number">{{ qualified }}</span>
+        <span class="target-label">of {{ target }} very good domains</span>
+      </div>
+      <div class="progress"><span style="width: {{ progress }}%"></span></div>
+      <p>Qualified means ordinary registration confirmed and at least {{ "{:,}".format(qualified_threshold) }} verified views in the latest 30 days.</p>
+    </section>
+
+    <section class="stats-grid">
+      <article><span>{{ qualified }}</span><small>Qualified / priority</small></article>
+      <article><span>{{ watchlist }}</span><small>Watchlist ({{ "{:,}".format(watch_threshold) }}+)</small></article>
+      <article><span>{{ "{:,}".format(cumulative_videos) }}</span><small>Videos checked cumulative</small></article>
+      <article><span>{{ "{:,}".format(cumulative_domains) }}</span><small>Domains checked cumulative</small></article>
+      <article><span>{{ "{:,}".format(cumulative_dropped) }}</span><small>Dropped names checked/loaded</small></article>
+      <article><span>{{ "{:,}".format(exact_links) }}</span><small>Active exact links indexed</small></article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Ranked candidates</h2>
+          <p>Priority {{ "{:,}".format(priority_threshold) }}+ · Qualified {{ "{:,}".format(qualified_threshold) }}+ · Watchlist {{ "{:,}".format(watch_threshold) }}+</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Domain</th><th>Tier</th><th>30-day views</th><th>Availability</th><th>Score</th><th>Linked video</th><th>Links</th></tr>
+          </thead>
+          <tbody>
+          {% for candidate, domain, video in candidate_rows %}
+            <tr>
+              <td><strong>{{ domain.name }}</strong>{% if domain.registrar_price_usd %}<small>${{ "%.2f"|format(domain.registrar_price_usd) }}</small>{% endif %}</td>
+              <td><span class="pill {{ candidate.tier }}">{{ candidate.tier }}</span></td>
+              <td>
+                <strong>{{ "{:,}".format(candidate.monthly_views) }}</strong>
+                <small>{% if candidate.verified_30d %}verified {{ "%.1f"|format(candidate.observation_days) }}d{% elif candidate.observation_days >= 1 %}projected from {{ "%.1f"|format(candidate.observation_days) }}d{% else %}collecting snapshots{% endif %}</small>
+              </td>
+              <td><span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span><small>{{ domain.availability_source or 'not checked' }}</small></td>
+              <td><strong>{{ "%.1f"|format(candidate.score) }}</strong></td>
+              <td><a href="https://www.youtube.com/watch?v={{ video.id }}" target="_blank" rel="noopener">{{ video.title[:75] }}</a><small>{{ "{:,}".format(video.lifetime_views) }} lifetime views</small></td>
+              <td>{{ candidate.link_count }}<small>{{ candidate.video_count }} video{% if candidate.video_count != 1 %}s{% endif %}</small></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7" class="empty">No ranked candidates yet. The first discovery run starts automatically after deployment.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="two-column">
+      <article class="panel">
+        <div class="panel-heading"><div><h2>Latest crawler runs</h2><p>Every run resumes from the permanent database checkpoint.</p></div></div>
+        <div class="runs">
+        {% for run in latest_runs %}
+          <div class="run-row">
+            <div><strong>{{ run.job.replace('_', ' ') }}</strong><small>{{ run.started_at.strftime('%d %b %Y %H:%M') }} UTC</small></div>
+            <span class="pill {{ run.status }}">{{ run.status }}</span>
+          </div>
+        {% else %}<p class="empty">No runs yet.</p>{% endfor %}
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading"><div><h2>Add a dropped-domain list</h2><p>Optional. Paste names or upload a TXT/CSV file; duplicates are ignored forever.</p></div></div>
+        <form action="/admin/dropped-domains" method="post" enctype="multipart/form-data" class="drop-form">
+          <textarea name="domains" rows="5" placeholder="example.com&#10;anotherdomain.net"></textarea>
+          <input type="file" name="file" accept=".txt,.csv,text/plain,text/csv">
+          <button class="button" type="submit">Add domains</button>
+        </form>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
+
