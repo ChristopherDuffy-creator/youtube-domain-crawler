@@ -1,20 +1,26 @@
-# Expandosaurus Link Hunter — Phase A
+# Expandosaurus Link Hunter — Phase A / B checkpoint
 
-Phase A protects and verifies the existing production crawler before the web-wide Link Hunter build.
+Production remains protected while the web-wide system is developed on a separate branch.
 
-Verified on 2026-08-18:
+## Verified production baseline
 
 - Production source repository: `ChristopherDuffy-creator/youtube-domain-crawler`.
-- Production head at verification: `d1a2e6ed37599562ae655a1a7c0bc55e871f4d8e`.
-- Railway deployment reported active and successful.
-- Railway application service reported one replica.
-- Railway Postgres service reported online with a persistent volume.
+- Railway production uses one application replica and one Postgres replica.
 - Railway deploy logs showed the 90-minute `run_discovery` scheduler job executing successfully and YouTube API requests returning HTTP 200.
-- Railway managed backups/PITR were not enabled on the current plan; a portable logical backup is required before schema-changing Link Hunter work.
+- PostgreSQL is persistent. Railway-managed backups were not enabled when first inspected.
+- A logical database backup endpoint with a tested restore path has been added to the production source baseline.
+- `httpx` and `httpcore` INFO request logging is suppressed so query-string API credentials are not printed.
+- A Railway CLI deployment fallback is now on `main` for cases where Railway's GitHub source-snapshot stage fails.
 
-Safety work in this branch:
+## Web Link Hunter development state
 
-- Keep `httpx` and `httpcore` request logging at WARNING to prevent query-string credentials from appearing in Railway INFO logs.
-- Add CI to run pytest and Ruff before merge.
+- DataForSEO credentials are expected as `DATAFORSEO_LOGIN` and `DATAFORSEO_PASSWORD`.
+- `LINK_HUNTER_ENABLED` defaults to `false`; credentials alone cannot start provider calls.
+- Provider proof is cost-capped and is not scheduled automatically.
+- DataForSEO request contracts are covered by mocked HTTP tests for bulk backlink summaries, detailed live backlinks, provider errors and Google bulk traffic estimation.
+- The mocked end-to-end proof covers dropped domain → backlink evidence → source-page traffic → direct link verification → availability → registrar confirmation → ranked web opportunity.
+- Web-wide tables and dashboard/export surfaces are separate from YouTube while sharing the same PostgreSQL database and operational run ledger.
 
-Do not merge schema-changing work until a current database backup has been taken and verified.
+## Production gate
+
+Do not merge the Link Hunter into production until a fresh production database backup has been successfully downloaded and verified. The first real provider run should remain a tiny controlled proof batch before any scaling.
