@@ -89,7 +89,7 @@
         <div>
           <p class="eyebrow">WEB-WIDE</p>
           <h2>Expandosaurus Link Hunter</h2>
-          <p>Separate web-wide opportunity ledger: dropped domains → live backlinks → source-page evidence → traffic → registration.</p>
+          <p>Separate web-wide opportunity ledger: dropped domains → live backlinks → source-page traffic → direct link verification → registration.</p>
         </div>
       </div>
 
@@ -104,29 +104,64 @@
 
       {% if dataforseo_enabled and not link_hunter_enabled %}
       <section class="notice">
-        <strong>Provider credentials detected.</strong> Link Hunter calls are still deliberately disabled until the Phase A backup/test gate is cleared.
+        <strong>Provider credentials detected.</strong> Link Hunter calls are still deliberately disabled until the backup/test gate is cleared.
       </section>
       {% endif %}
 
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Domain</th><th>Tier</th><th>Best source page</th><th>Page traffic</th><th>Referring pages</th><th>Independent sites</th><th>Link strength</th><th>Availability</th></tr>
+            <tr><th>Domain</th><th>Tier / score</th><th>Best source</th><th>Traffic</th><th>Link evidence</th><th>Referrers</th><th>Availability</th></tr>
           </thead>
           <tbody>
-          {% for opportunity, domain, page in web_opportunity_rows %}
+          {% for opportunity, domain, page, site, link, verification in web_evidence_rows %}
             <tr>
-              <td><strong>{{ domain.name }}</strong>{% if opportunity.niche %}<small>{{ opportunity.niche }}</small>{% endif %}</td>
-              <td><span class="pill {{ opportunity.tier }}">{{ opportunity.tier }}</span></td>
-              <td>{% if page %}<a href="{{ page.url }}" target="_blank" rel="noopener">{{ (page.title or page.url)[:75] }}</a><small>{{ page.url[:90] }}</small>{% else %}<span class="empty">collecting evidence</span>{% endif %}</td>
-              <td>{% if opportunity.source_page_traffic_estimate %}<strong>{{ "{:,}".format(opportunity.source_page_traffic_estimate) }}</strong><small>estimated monthly organic</small>{% else %}<span class="empty">next proof stage</span>{% endif %}</td>
-              <td><strong>{{ "{:,}".format(opportunity.referring_page_count) }}</strong></td>
-              <td><strong>{{ "{:,}".format(opportunity.independent_site_count) }}</strong></td>
-              <td><strong>{{ "%.1f"|format(opportunity.link_strength) }}</strong><small>{% if opportunity.verified_live_link %}fetched + verified{% else %}provider evidence{% endif %}</small></td>
-              <td><span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span><small>{{ domain.availability_source or 'not checked' }}</small></td>
+              <td>
+                <strong>{{ domain.name }}</strong>
+                {% if opportunity.niche %}<small>{{ opportunity.niche }}</small>{% endif %}
+                {% if domain.registrar_price_usd %}<small>${{ "%.2f"|format(domain.registrar_price_usd) }}</small>{% endif %}
+              </td>
+              <td>
+                <span class="pill {{ opportunity.tier }}">{{ opportunity.tier }}</span>
+                <small>score {{ "%.1f"|format(opportunity.score) }} · strength {{ "%.1f"|format(opportunity.link_strength) }}</small>
+              </td>
+              <td>
+                {% if page %}
+                  <a href="{{ page.url }}" target="_blank" rel="noopener">{{ (page.title or page.url)[:70] }}</a>
+                  <small>{{ site.hostname if site else page.url[:70] }}</small>
+                {% else %}
+                  <span class="empty">collecting evidence</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if opportunity.source_page_traffic_estimate %}
+                  <strong>{{ "{:,}".format(opportunity.source_page_traffic_estimate) }}</strong>
+                  <small>estimated monthly organic</small>
+                {% else %}
+                  <span class="empty">not yet measured</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if link %}
+                  <strong>{{ (link.anchor_text or '[no anchor text]')[:60] }}</strong>
+                  <small>{{ ((link.context_before or '') ~ ' ' ~ (link.context_after or ''))[:120] }}</small>
+                  <small>{% if link.dofollow %}dofollow{% else %}nofollow/other{% endif %} · provider rank {{ "%.1f"|format(link.provider_rank or 0) }}{% if link.spam_score is not none %} · spam {{ "%.1f"|format(link.spam_score) }}{% endif %}</small>
+                  <small>{% if verification and verification.link_present %}✓ fetched and link still present{% elif verification %}✗ fetched but link not found{% else %}provider evidence only{% endif %}</small>
+                {% else %}
+                  <span class="empty">no saved live link</span>
+                {% endif %}
+              </td>
+              <td>
+                <strong>{{ "{:,}".format(opportunity.referring_page_count) }} pages</strong>
+                <small>{{ "{:,}".format(opportunity.independent_site_count) }} independent sites</small>
+              </td>
+              <td>
+                <span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span>
+                <small>{{ domain.availability_source or 'not checked' }}</small>
+              </td>
             </tr>
           {% else %}
-            <tr><td colspan="8" class="empty">No web-wide proof results yet. This section is ready for the first controlled DataForSEO batch.</td></tr>
+            <tr><td colspan="7" class="empty">No web-wide proof results yet. This section is ready for the first controlled DataForSEO batch.</td></tr>
           {% endfor %}
           </tbody>
         </table>
