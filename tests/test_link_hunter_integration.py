@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+
 import app.link_hunter as link_hunter
 from app.availability import AvailabilityResult
 from app.config import Settings
@@ -12,8 +15,6 @@ from app.models import (
     ProviderQuery,
     SourceMetricSnapshot,
 )
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
 
 
 class FakeDataForSEOClient:
