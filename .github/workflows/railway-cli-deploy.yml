@@ -1,6 +1,11 @@
 name: Railway CLI Deploy
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/railway-cli-deploy.yml
   workflow_dispatch:
 
 permissions:
