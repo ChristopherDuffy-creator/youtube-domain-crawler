@@ -20,6 +20,7 @@ Production remains protected while the web-wide system is developed on a separat
 - DataForSEO request contracts are covered by mocked HTTP tests for bulk backlink summaries, detailed live backlinks, provider errors and Google bulk traffic estimation.
 - The mocked end-to-end proof covers dropped domain → backlink evidence → source-page traffic → direct link verification → availability → registrar confirmation → ranked web opportunity.
 - Web-wide tables and dashboard/export surfaces are separate from YouTube while sharing the same PostgreSQL database and operational run ledger.
+- Current branch CI: 39 tests passing and Ruff passing.
 
 ## Production gate
 
