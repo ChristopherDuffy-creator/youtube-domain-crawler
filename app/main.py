@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import hmac
 import io
 import logging
@@ -16,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from app.backup import build_logical_snapshot
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
 from app.jobs import JOB_FUNCTIONS, build_scheduler, ensure_seed_data, ingest_dropped_text
@@ -26,6 +28,10 @@ logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# httpx logs full request URLs at INFO. YouTube uses an API key in the query
+# string, so keep transport logging at WARNING while retaining app/job INFO logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -49,7 +55,7 @@ async def lifespan(_: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title=settings.app_name, version="0.2.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.2.1", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
@@ -91,6 +97,23 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         "scheduler": bool(scheduler and scheduler.running),
         "time": datetime.now(UTC).isoformat(),
     }
+
+
+@app.get("/admin/database-backup")
+def download_database_backup(_: str = Depends(require_dashboard_auth)) -> Response:
+    payload = build_logical_snapshot(engine)
+    digest = hashlib.sha256(payload).hexdigest()
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    filename = f"expandosaurus-postgres-{stamp}.json.gz"
+    return Response(
+        content=payload,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Backup-SHA256": digest,
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
