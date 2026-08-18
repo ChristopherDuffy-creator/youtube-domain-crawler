@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import math
+import socket
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.availability import AvailabilityResult, check_domain
 from app.config import Settings, get_settings
 from app.database import SessionLocal
 from app.dataforseo import DataForSEOClient, DataForSEOError
@@ -26,6 +29,9 @@ from app.models import (
     SourceSite,
     utcnow,
 )
+
+MAX_VERIFY_BYTES = 2_000_000
+MAX_VERIFY_REDIRECTS = 5
 
 
 class _HrefParser(HTMLParser):
@@ -45,7 +51,9 @@ def _normalize_host(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
         return ""
-    if "://" not in raw:
+    if raw.startswith("//"):
+        raw = f"https:{raw}"
+    elif "://" not in raw:
         raw = f"https://{raw}"
     parsed = urlparse(raw)
     host = (parsed.hostname or "").lower().strip(".")
@@ -64,6 +72,80 @@ def _href_points_to_domain(href: str, target_domain: str) -> bool:
     host = _normalize_host(href)
     target = _normalize_host(target_domain)
     return bool(host and target and (host == target or host.endswith(f".{target}")))
+
+
+def _validate_public_url(url: str) -> str:
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("source URL must be public HTTP(S)")
+    if parsed.username or parsed.password:
+        raise ValueError("source URL credentials are not allowed")
+
+    host = parsed.hostname.lower().strip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("local source URL is not allowed")
+
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None and not literal.is_global:
+        raise ValueError("non-public source IP is not allowed")
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        answers = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ValueError(f"source hostname did not resolve: {host}") from exc
+    addresses = {answer[4][0] for answer in answers if answer[4]}
+    if not addresses:
+        raise ValueError(f"source hostname did not resolve: {host}")
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError as exc:
+            raise ValueError("source hostname returned an invalid address") from exc
+        if not ip.is_global:
+            raise ValueError("source hostname resolves to a non-public address")
+    return parsed.geturl()
+
+
+def _fetch_public_page(url: str, timeout_seconds: float) -> tuple[int, str, bytes, str]:
+    current = _validate_public_url(url)
+    headers = {"User-Agent": "Expandosaurus-Link-Hunter/0.3 (+link verification)"}
+    with httpx.Client(
+        follow_redirects=False,
+        timeout=timeout_seconds,
+        headers=headers,
+        trust_env=False,
+    ) as client:
+        for _ in range(MAX_VERIFY_REDIRECTS + 1):
+            _validate_public_url(current)
+            with client.stream("GET", current) as response:
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError("source page returned redirect without Location")
+                    current = _validate_public_url(urljoin(current, location))
+                    continue
+
+                chunks: list[bytes] = []
+                size = 0
+                for chunk in response.iter_bytes():
+                    if not chunk:
+                        continue
+                    remaining = MAX_VERIFY_BYTES - size
+                    if remaining <= 0:
+                        break
+                    chunks.append(chunk[:remaining])
+                    size += min(len(chunk), remaining)
+                    if size >= MAX_VERIFY_BYTES:
+                        break
+                content = b"".join(chunks)
+                encoding = response.encoding or "utf-8"
+                text = content.decode(encoding, errors="replace")
+                return response.status_code, str(response.url), content, text
+    raise ValueError("source page exceeded redirect limit")
 
 
 def _finish_provider_query(
@@ -264,6 +346,18 @@ def _save_metric_snapshot(
     return traffic
 
 
+def _apply_availability(domain: Domain, result: AvailabilityResult) -> None:
+    domain.availability_status = result.status
+    domain.availability_source = result.source
+    domain.rdap_status = result.rdap_status
+    domain.dns_status = result.dns_status
+    domain.http_status = result.http_status
+    domain.registrar_price_usd = result.price_usd
+    domain.premium = result.premium
+    domain.check_error = result.error
+    domain.last_checked_at = utcnow()
+
+
 def _commercial_signal(saved_links: list[SourceLink]) -> float:
     if not saved_links:
         return 0.0
@@ -408,19 +502,14 @@ def _verify_source_link(
 
     verification.fetched_at = utcnow()
     try:
-        response = httpx.get(
-            page.url,
-            follow_redirects=True,
-            timeout=timeout_seconds,
-            headers={"User-Agent": "Expandosaurus-Link-Hunter/0.3 (+link verification)"},
-        )
-        verification.http_status = response.status_code
-        verification.final_url = str(response.url)
-        verification.content_hash = hashlib.sha256(response.content).hexdigest()
+        status_code, final_url, content, text = _fetch_public_page(page.url, timeout_seconds)
+        verification.http_status = status_code
+        verification.final_url = final_url
+        verification.content_hash = hashlib.sha256(content).hexdigest()
         parser = _HrefParser()
-        parser.feed(response.text)
+        parser.feed(text)
         verification.link_present = any(
-            _href_points_to_domain(href, target_domain) for href in parser.hrefs
+            _href_points_to_domain(urljoin(final_url, href), target_domain) for href in parser.hrefs
         )
         verification.error = None
     except Exception as exc:
@@ -436,7 +525,7 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
     """Run a deliberately tiny, cost-capped DataForSEO proof batch.
 
     This is never scheduled automatically. It validates bulk backlink summaries,
-    detailed backlinks, source-page traffic and direct source-page link presence.
+    detailed backlinks, free availability, source-page traffic and direct link presence.
     """
     if not settings.link_hunter_enabled:
         raise DataForSEOError("Link Hunter feature flag is disabled")
@@ -464,6 +553,9 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
         "summary_calls": 0,
         "backlink_calls": 0,
         "traffic_calls": 0,
+        "availability_checks": 0,
+        "registrar_checks": 0,
+        "registered_or_unavailable": 0,
         "domains_with_live_backlinks": 0,
         "links_saved": 0,
         "source_pages_traffic_checked": 0,
@@ -529,7 +621,18 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
             opportunity = _save_opportunity(db, domain, summary, saved_links)
             db.commit()
             counters["links_saved"] += len(saved_links)
+
+            availability = check_domain(target, settings, exact_registrar_check=False)
+            _apply_availability(domain, availability)
+            counters["availability_checks"] += 1
+            if availability.status == "registered":
+                counters["registered_or_unavailable"] += 1
+                _score_opportunity(opportunity, domain, saved_links, traffic=0, verified=False)
+                db.commit()
+                continue
+
             domain_batches.append((domain, opportunity, saved_links))
+            db.commit()
         except Exception as exc:
             db.rollback()
             counters["errors"] += 1
@@ -555,7 +658,8 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
             )
             counters["traffic_calls"] = 1
             counters["provider_cost_usd"] += traffic_response.task_cost_usd
-            for item in traffic_response.result.get("items") or []:
+            traffic_items = traffic_response.result.get("items") or []
+            for item in traffic_items:
                 key = _canonical_url(str(item.get("target") or ""))
                 if key:
                     metrics = item.get("metrics") or {}
@@ -568,7 +672,7 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
                 matching_item = next(
                     (
                         item
-                        for item in traffic_response.result.get("items") or []
+                        for item in traffic_items
                         if _canonical_url(str(item.get("target") or ""))
                         == _canonical_url(page_url)
                     ),
@@ -588,19 +692,18 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
     for domain, opportunity, links in domain_batches:
         if not links:
             _score_opportunity(opportunity, domain, links, 0, False)
+            db.commit()
             continue
-        best_link = max(
-            links,
-            key=lambda link: (
-                traffic_map.get(
-                    _canonical_url(
-                        (db.get(SourcePage, link.source_page_id) or SourcePage(url="")).url
-                    ),
-                    0,
-                ),
+
+        def _best_link_key(link: SourceLink) -> tuple[int, float]:
+            page = db.get(SourcePage, link.source_page_id)
+            page_url = page.url if page is not None else ""
+            return (
+                traffic_map.get(_canonical_url(page_url), 0),
                 float(link.provider_rank or 0.0),
-            ),
-        )
+            )
+
+        best_link = max(links, key=_best_link_key)
         best_page = db.get(SourcePage, best_link.source_page_id)
         best_traffic = traffic_map.get(_canonical_url(best_page.url if best_page else ""), 0)
         opportunity.best_source_page_id = best_link.source_page_id
@@ -613,6 +716,17 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
         if verified:
             counters["source_links_verified"] += 1
         _score_opportunity(opportunity, domain, links, best_traffic, verified)
+
+        if (
+            verified
+            and opportunity.score >= 45
+            and domain.availability_status in {"likely_available", "conflicting", "unknown"}
+            and settings.registrar_enabled
+        ):
+            exact_availability = check_domain(domain.name, settings, exact_registrar_check=True)
+            _apply_availability(domain, exact_availability)
+            counters["registrar_checks"] += 1
+            _score_opportunity(opportunity, domain, links, best_traffic, verified)
         db.commit()
 
     counters["provider_cost_usd"] = round(float(counters["provider_cost_usd"]), 6)
