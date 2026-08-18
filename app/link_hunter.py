@@ -5,13 +5,15 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import Settings
+from app.config import Settings, get_settings
+from app.database import SessionLocal
 from app.dataforseo import DataForSEOClient, DataForSEOError
 from app.models import (
     Domain,
     DroppedDomain,
     Opportunity,
     ProviderQuery,
+    RunLog,
     SourceLink,
     SourcePage,
     SourceSite,
@@ -252,3 +254,29 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
 
     counters["provider_cost_usd"] = round(float(counters["provider_cost_usd"]), 6)
     return counters
+
+
+def run_provider_proof_job() -> dict[str, Any]:
+    """Run Phase B manually and record it in the shared operational run ledger."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        run = RunLog(job="link_hunter_proof", started_at=utcnow(), status="running", counters={})
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        try:
+            counters = run_provider_proof(db, settings)
+            run.status = "complete" if not counters.get("errors") else "partial"
+            run.counters = counters
+            run.finished_at = utcnow()
+            db.commit()
+            return counters
+        except Exception as exc:
+            db.rollback()
+            run = db.get(RunLog, run.id)
+            if run is not None:
+                run.status = "failed"
+                run.error = str(exc)[:2000]
+                run.finished_at = utcnow()
+                db.commit()
+            raise
