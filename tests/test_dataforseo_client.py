@@ -32,7 +32,7 @@ class FakeHTTPClient:
         self.args = args
         self.kwargs = kwargs
 
-    def __enter__(self) -> "FakeHTTPClient":
+    def __enter__(self) -> FakeHTTPClient:
         return self
 
     def __exit__(self, *args: Any) -> None:
