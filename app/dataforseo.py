@@ -20,7 +20,7 @@ class DataForSEOResponse:
 
 
 class DataForSEOClient:
-    """Small client for the paid endpoints used by Link Hunter Phase B."""
+    """Small client for the paid endpoints used by the web-wide Link Hunter."""
 
     def __init__(self, settings: Settings):
         if not settings.dataforseo_enabled:
@@ -62,6 +62,19 @@ class DataForSEOClient:
                 "backlinks_status_type": "live",
                 "include_subdomains": True,
                 "exclude_internal_backlinks": True,
+                "rank_scale": "one_hundred",
+            },
+        )
+
+    def bulk_backlink_summaries(self, targets: list[str]) -> DataForSEOResponse:
+        if not targets or len(targets) > 1000:
+            raise ValueError("bulk backlink summary requires 1-1000 targets")
+        return self._post(
+            "backlinks/bulk_pages_summary/live",
+            {
+                "targets": targets,
+                "include_subdomains": True,
+                "rank_scale": "one_hundred",
             },
         )
 
@@ -74,7 +87,16 @@ class DataForSEOClient:
                 "backlinks_status_type": "live",
                 "include_subdomains": True,
                 "exclude_internal_backlinks": True,
+                "rank_scale": "one_hundred",
                 "limit": limit,
                 "order_by": ["page_from_rank,desc", "domain_from_rank,desc"],
             },
+        )
+
+    def bulk_traffic_estimation(self, targets: list[str]) -> DataForSEOResponse:
+        if not targets or len(targets) > 1000:
+            raise ValueError("bulk traffic estimation requires 1-1000 targets")
+        return self._post(
+            "dataforseo_labs/google/bulk_traffic_estimation/live",
+            {"targets": targets},
         )
