@@ -155,7 +155,8 @@ def test_provider_proof_builds_ranked_web_opportunity(monkeypatch) -> None:
 
         opportunity = db.scalar(select(Opportunity).where(Opportunity.domain_id == domain.id))
         assert opportunity is not None
-        assert opportunity.tier == "priority"
+        assert opportunity.tier == "qualified"
+        assert 65 <= opportunity.score < 80
         assert opportunity.verified_live_link is True
         assert opportunity.source_page_traffic_estimate == 10_000
         assert opportunity.referring_page_count == 12
