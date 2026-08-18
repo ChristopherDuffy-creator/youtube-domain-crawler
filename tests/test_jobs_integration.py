@@ -55,3 +55,11 @@ def test_video_to_qualified_candidate_and_dropped_match() -> None:
         dropped = db.scalar(select(DroppedDomain))
         assert dropped is not None
         assert dropped.matched_existing_index is True
+
+        repeated = ingest_dropped_text(
+            db,
+            "example-course.com, brand-new-example.net, brand-new-example.net",
+            "second feed",
+        )
+        assert repeated == {"parsed": 2, "new": 1, "matched_index": 1}
+        assert len(db.scalars(select(DroppedDomain)).all()) == 2

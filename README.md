@@ -20,7 +20,7 @@ The crawler rotates through evergreen, commercially useful searches, fetches old
 
 ### Route 2 — dropped domains first
 
-The crawler accepts daily dropped-domain TXT/CSV feeds, instantly matches them against its local YouTube-description index, then spends a controlled part of the YouTube search quota checking the strongest new dropped names. An exact domain must actually appear in the full description; a loose search result does not count.
+The crawler automatically downloads WhoisFreaks' public daily feed of 10,000 recently dropped domains. It instantly matches the whole list against its local YouTube-description index, then spends a controlled part of the YouTube search quota checking the strongest new dropped names. An exact domain must actually appear in the full description; a loose search result does not count. Feed ingestion is batched so a full daily file does not create thousands of individual database round trips.
 
 ### Traffic verification
 
@@ -102,9 +102,22 @@ The dashboard shows:
 - the latest job history;
 - CSV download of the useful results.
 
-## Optional dropped-domain feeds
+## Daily email report
 
-Add comma-separated feed URLs in `DROPPED_DOMAIN_FEED_URLS`, or paste/upload TXT or CSV lists through the dashboard. Files may contain other CSV columns; valid domains are extracted and permanently deduplicated.
+The daily email now reports the actual previous 24 hours rather than only showing the number of hits. It includes:
+
+- searches run, videos returned and new videos, domains and exact links saved;
+- fresh dropped names loaded, names searched on YouTube and exact matches;
+- view snapshots and availability checks completed;
+- the current pending pipeline and what each leading candidate is waiting for;
+- availability totals, longest traffic-observation window and cumulative ledger totals;
+- failed jobs and partial item-level errors with useful error text.
+
+## Dropped-domain feeds
+
+The public WhoisFreaks `0-latest-free-dropped-domains.csv` feed is enabled by default and refreshed every day. No Railway variable is needed. It is a free subset with a one-day delay; the provider states that it contains 10,000 expired and dropped names per day.
+
+To replace it or add more sources, set comma-separated feed URLs in `DROPPED_DOMAIN_FEED_URLS`. You can also paste/upload TXT or CSV lists through the dashboard. Files may contain other CSV columns; valid domains are extracted and permanently deduplicated.
 
 ## Local test commands
 

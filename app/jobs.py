@@ -18,7 +18,16 @@ from app.availability import AvailabilityResult, check_domain
 from app.config import EVERGREEN_QUERIES, MANUAL_CHECKPOINTS, Settings, get_settings
 from app.database import SessionLocal
 from app.domain_tools import extract_domain_names, extract_links
-from app.emailer import EmailCandidate, EmailError, render_candidate_table, send_email
+from app.emailer import (
+    DailyDigest,
+    EmailCandidate,
+    EmailError,
+    EmailPendingCandidate,
+    EmailRunIssue,
+    render_candidate_table,
+    render_daily_digest,
+    send_email,
+)
 from app.metrics import ViewMetric, calculate_monthly_views
 from app.models import (
     AppCheckpoint,
@@ -343,12 +352,13 @@ def run_availability_checks() -> None:
     settings = get_settings()
     with SessionLocal() as db:
         run = _start_run(db, "availability_checks")
-        counters = {
+        counters: dict[str, Any] = {
             "checked": 0,
             "available": 0,
             "likely_available": 0,
             "registered": 0,
             "errors": 0,
+            "error_details": [],
         }
         try:
             domains = _domains_due_for_check(db, settings.availability_batch_size)
@@ -389,6 +399,10 @@ def run_availability_checks() -> None:
                         counters[result.status] += 1
                     if result.error:
                         counters["errors"] += 1
+                        if len(counters["error_details"]) < 20:
+                            counters["error_details"].append(
+                                f"{domain.name}: {result.error}"[:500]
+                            )
             db.commit()
             refresh_candidates(db)
             send_new_candidate_alerts(db)
@@ -493,22 +507,42 @@ def refresh_candidates(db: Session) -> int:
 def ingest_dropped_text(db: Session, text: str, source: str) -> dict[str, int]:
     domains = extract_domain_names(text)
     counters = {"parsed": len(domains), "new": 0, "matched_index": 0}
+    if not domains:
+        return counters
+
+    # Feed files contain thousands of names. Batch the lookups so Railway does
+    # dozens of database round trips instead of two round trips per domain.
+    dropped_by_name: dict[str, DroppedDomain] = {}
+    for start in range(0, len(domains), 500):
+        batch = domains[start : start + 500]
+        existing = db.scalars(
+            select(DroppedDomain).where(DroppedDomain.name.in_(batch))
+        ).all()
+        dropped_by_name.update({item.name: item for item in existing})
+
     for name in domains:
-        dropped = db.scalar(select(DroppedDomain).where(DroppedDomain.name == name))
-        if dropped is None:
-            dropped = DroppedDomain(name=name, source=source)
-            db.add(dropped)
-            counters["new"] += 1
-        linked_domain = db.scalar(
+        if name in dropped_by_name:
+            continue
+        dropped = DroppedDomain(name=name, source=source)
+        db.add(dropped)
+        dropped_by_name[name] = dropped
+        counters["new"] += 1
+
+    matched_domains: dict[str, Domain] = {}
+    for start in range(0, len(domains), 500):
+        batch = domains[start : start + 500]
+        linked = db.scalars(
             select(Domain).where(
-                Domain.name == name,
+                Domain.name.in_(batch),
                 Domain.video_links.any(VideoDomain.active.is_(True)),
             )
-        )
-        if linked_domain is not None:
-            dropped.matched_existing_index = True
-            linked_domain.last_checked_at = None
-            counters["matched_index"] += 1
+        ).all()
+        matched_domains.update({item.name: item for item in linked})
+
+    for name, linked_domain in matched_domains.items():
+        dropped_by_name[name].matched_existing_index = True
+        linked_domain.last_checked_at = None
+        counters["matched_index"] += 1
     db.commit()
     return counters
 
@@ -517,20 +551,47 @@ def run_dropped_feeds() -> None:
     settings = get_settings()
     with SessionLocal() as db:
         run = _start_run(db, "dropped_feeds")
-        counters = {"feeds": 0, "parsed": 0, "new": 0, "matched_index": 0, "errors": 0}
+        counters: dict[str, Any] = {
+            "configured": len(settings.dropped_domain_feed_urls),
+            "feeds": 0,
+            "parsed": 0,
+            "new": 0,
+            "matched_index": 0,
+            "errors": 0,
+            "error_details": [],
+        }
         try:
+            if not settings.dropped_domain_feed_urls:
+                _finish_run(
+                    db,
+                    run,
+                    "failed",
+                    counters,
+                    "No dropped-domain feed URLs are configured",
+                )
+                return
             for url in settings.dropped_domain_feed_urls:
                 try:
-                    response = httpx.get(url, follow_redirects=True, timeout=45.0)
+                    response = httpx.get(
+                        url,
+                        headers={"User-Agent": "YouTubeDomainCrawler/0.2"},
+                        follow_redirects=True,
+                        timeout=45.0,
+                    )
                     response.raise_for_status()
                     result = ingest_dropped_text(db, response.text, url)
                     counters["feeds"] += 1
                     for key in ("parsed", "new", "matched_index"):
                         counters[key] += result[key]
-                except Exception:
+                except Exception as exc:
                     counters["errors"] += 1
+                    counters["error_details"].append(f"{url}: {exc}"[:500])
                     logger.exception("Dropped-domain feed failed: %s", url)
-            _finish_run(db, run, "complete", counters)
+            if counters["feeds"] == 0:
+                details = "; ".join(counters["error_details"]) or "Every feed failed"
+                _finish_run(db, run, "failed", counters, details)
+            else:
+                _finish_run(db, run, "complete", counters)
         except Exception as exc:
             db.rollback()
             run = db.get(RunLog, run.id)
@@ -541,7 +602,15 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
     settings = get_settings()
     with SessionLocal() as db:
         run = _start_run(db, "dropped_youtube_search")
-        counters = {"search_calls": 0, "drops_checked": 0, "videos_returned": 0, "exact_matches": 0}
+        counters = {
+            "search_calls": 0,
+            "drops_checked": 0,
+            "videos_returned": 0,
+            "exact_matches": 0,
+            "new_videos": 0,
+            "new_domains": 0,
+            "new_links": 0,
+        }
         try:
             candidates = db.scalars(
                 select(DroppedDomain)
@@ -564,7 +633,9 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
                 counters["videos_returned"] += len(page.video_ids)
                 for video in client.fetch_videos(page.video_ids):
                     if exact_domain_in_description(dropped.name, video.description):
-                        process_video(db, video, dropped.name, "dropped_first")
+                        result = process_video(db, video, dropped.name, "dropped_first")
+                        for key in ("new_videos", "new_domains", "new_links"):
+                            counters[key] += result[key]
                         counters["exact_matches"] += 1
                 dropped.youtube_searched_at = utcnow()
                 db.commit()
@@ -585,7 +656,10 @@ def _email_candidates(
         .join(Domain, Domain.id == Candidate.domain_id)
         .join(Video, Video.id == Candidate.best_video_id)
         .where(Candidate.tier.in_(["priority", "qualified"]))
-        .order_by(Candidate.tier.desc(), Candidate.score.desc())
+        .order_by(
+            case((Candidate.tier == "priority", 0), else_=1),
+            Candidate.score.desc(),
+        )
     )
     rows = db.execute(statement).all()
     if only_unnotified:
@@ -631,31 +705,244 @@ def send_new_candidate_alerts(db: Session) -> int:
     return len(rows)
 
 
+def _counter_total(runs: list[RunLog], key: str, job: str | None = None) -> int:
+    total = 0
+    for item in runs:
+        if job is not None and item.job != job:
+            continue
+        counters = item.counters if isinstance(item.counters, dict) else {}
+        value = counters.get(key, 0)
+        if isinstance(value, int | float):
+            total += int(value)
+    return total
+
+
+def _pending_reason(candidate: Candidate, domain: Domain, settings: Settings) -> str:
+    if candidate.observation_days < 1:
+        return "A second daily view snapshot"
+    if (
+        candidate.monthly_views >= settings.watchlist_monthly_views
+        and domain.availability_status in {"unknown", "likely_available", "conflicting"}
+    ):
+        return "Exact registrar confirmation"
+    if not candidate.verified_30d and candidate.monthly_views >= settings.watchlist_monthly_views:
+        return "A full 27-day traffic window"
+    if candidate.monthly_views < settings.watchlist_monthly_views:
+        return f"Traffic to reach {settings.watchlist_monthly_views:,}/month"
+    return "Final traffic and availability verification"
+
+
+def _build_daily_digest_report(
+    db: Session,
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+    current_run_id: int | None = None,
+) -> DailyDigest:
+    report_time = now or utcnow()
+    recent_statement = select(RunLog).where(
+        RunLog.started_at >= report_time - timedelta(hours=24)
+    )
+    if current_run_id is not None:
+        recent_statement = recent_statement.where(RunLog.id != current_run_id)
+    recent_runs = db.scalars(recent_statement.order_by(RunLog.started_at.desc())).all()
+
+    qualified_rows = _email_candidates(db)
+    priority_count = sum(1 for candidate, _, _ in qualified_rows if candidate.tier == "priority")
+    qualified_count = sum(
+        1 for candidate, _, _ in qualified_rows if candidate.tier == "qualified"
+    )
+    watchlist_count = (
+        db.scalar(
+            select(func.count()).select_from(Candidate).where(Candidate.tier == "watchlist")
+        )
+        or 0
+    )
+    pending_count = (
+        db.scalar(select(func.count()).select_from(Candidate).where(Candidate.tier == "pending"))
+        or 0
+    )
+
+    pipeline_rows = db.execute(
+        select(Candidate, Domain)
+        .join(Domain, Domain.id == Candidate.domain_id)
+        .where(Candidate.tier.in_(["pending", "watchlist"]))
+    ).all()
+    pending_summary = {
+        "total": len(pipeline_rows),
+        "initial": sum(1 for candidate, _ in pipeline_rows if candidate.observation_days < 1),
+        "projected": sum(
+            1 for candidate, _ in pipeline_rows if 1 <= candidate.observation_days < 27
+        ),
+        "verification": sum(
+            1
+            for candidate, _ in pipeline_rows
+            if not candidate.verified_30d
+            and candidate.monthly_views >= settings.qualified_monthly_views
+        ),
+        "registrar": sum(
+            1
+            for candidate, domain in pipeline_rows
+            if candidate.monthly_views >= settings.watchlist_monthly_views
+            and domain.availability_status in {"unknown", "likely_available", "conflicting"}
+        ),
+    }
+
+    pending_rows = db.execute(
+        select(Candidate, Domain, Video)
+        .join(Domain, Domain.id == Candidate.domain_id)
+        .join(Video, Video.id == Candidate.best_video_id)
+        .where(Candidate.tier.in_(["watchlist", "pending"]))
+        .order_by(
+            case((Candidate.tier == "watchlist", 0), else_=1),
+            Candidate.monthly_views.desc(),
+            Candidate.score.desc(),
+            Video.lifetime_views.desc(),
+        )
+        .limit(10)
+    ).all()
+    pending_candidates = [
+        EmailPendingCandidate(
+            domain=domain.name,
+            tier=candidate.tier,
+            monthly_views=candidate.monthly_views,
+            observation_days=candidate.observation_days,
+            availability=domain.availability_status,
+            score=candidate.score,
+            video_title=video.title,
+            video_id=video.id,
+            reason=_pending_reason(candidate, domain, settings),
+        )
+        for candidate, domain, video in pending_rows
+    ]
+
+    availability_counts = dict(
+        db.execute(
+            select(Domain.availability_status, func.count())
+            .where(Domain.excluded_reason.is_(None))
+            .group_by(Domain.availability_status)
+        ).all()
+    )
+    availability_summary = {
+        "available": int(availability_counts.get("available", 0)),
+        "likely_available": int(availability_counts.get("likely_available", 0)),
+        "registered": int(availability_counts.get("registered", 0)),
+        "premium_or_aftermarket": int(availability_counts.get("premium", 0))
+        + int(availability_counts.get("aftermarket", 0)),
+        "unknown_or_conflicting": int(availability_counts.get("unknown", 0))
+        + int(availability_counts.get("conflicting", 0)),
+    }
+
+    work = {
+        "successful_runs": sum(1 for item in recent_runs if item.status == "complete"),
+        "failed_runs": sum(1 for item in recent_runs if item.status == "failed"),
+        "search_calls": _counter_total(recent_runs, "search_calls"),
+        "videos_returned": _counter_total(recent_runs, "videos_returned"),
+        "new_videos": _counter_total(recent_runs, "new_videos"),
+        "new_domains": _counter_total(recent_runs, "new_domains"),
+        "new_links": _counter_total(recent_runs, "new_links"),
+        "videos_updated": _counter_total(recent_runs, "videos_updated"),
+        "availability_checked": _counter_total(recent_runs, "checked", "availability_checks"),
+        "availability_errors": _counter_total(recent_runs, "errors", "availability_checks"),
+        "drops_loaded": _counter_total(recent_runs, "new", "dropped_feeds"),
+        "drops_searched": _counter_total(
+            recent_runs, "drops_checked", "dropped_youtube_search"
+        ),
+        "dropped_matches": _counter_total(
+            recent_runs, "exact_matches", "dropped_youtube_search"
+        ),
+    }
+
+    issues: list[EmailRunIssue] = []
+    for item in recent_runs:
+        counters = item.counters if isinstance(item.counters, dict) else {}
+        occurred_at = item.started_at.strftime("%d %b %H:%M UTC")
+        if item.status == "failed":
+            issues.append(
+                EmailRunIssue(
+                    job=item.job,
+                    occurred_at=occurred_at,
+                    message=item.error or "Job failed without an error message",
+                )
+            )
+            continue
+        error_count = counters.get("errors", 0)
+        if isinstance(error_count, int | float) and error_count:
+            details = counters.get("error_details", [])
+            detail_text = "; ".join(str(value) for value in details[:3]) if details else ""
+            message = f"{int(error_count)} item-level error(s)"
+            if detail_text:
+                message += f": {detail_text}"
+            issues.append(
+                EmailRunIssue(job=item.job, occurred_at=occurred_at, message=message)
+            )
+
+    crawler_videos = db.scalar(select(func.count()).select_from(Video)) or 0
+    crawler_domains = db.scalar(select(func.count()).select_from(Domain)) or 0
+    dropped_ingested = db.scalar(select(func.count()).select_from(DroppedDomain)) or 0
+    exact_links = (
+        db.scalar(select(func.count()).select_from(VideoDomain).where(VideoDomain.active.is_(True)))
+        or 0
+    )
+    longest_observation = db.scalar(select(func.max(Candidate.observation_days))) or 0.0
+
+    return DailyDigest(
+        priority_count=priority_count,
+        qualified_count=qualified_count,
+        watchlist_count=int(watchlist_count),
+        pending_count=int(pending_count),
+        target=settings.target_qualified_domains,
+        cumulative_videos=settings.legacy_videos_checked + int(crawler_videos),
+        cumulative_domains=settings.legacy_domains_checked + int(crawler_domains),
+        cumulative_dropped=settings.legacy_dropped_checked + int(dropped_ingested),
+        exact_links=int(exact_links),
+        longest_observation_days=float(longest_observation),
+        feed_count=len(settings.dropped_domain_feed_urls),
+        work=work,
+        pending=pending_summary,
+        availability=availability_summary,
+        qualified_candidates=_to_email_candidates(qualified_rows[:25]),
+        pending_candidates=pending_candidates,
+        issues=issues,
+    )
+
+
 def run_daily_digest() -> None:
     settings = get_settings()
     with SessionLocal() as db:
         run = _start_run(db, "daily_digest")
-        counters = {"emailed": 0, "qualified": 0, "watchlist": 0}
+        counters = {
+            "emailed": 0,
+            "priority": 0,
+            "qualified": 0,
+            "watchlist": 0,
+            "pending": 0,
+            "issues": 0,
+        }
         try:
-            qualified_rows = _email_candidates(db)
-            counters["qualified"] = len(qualified_rows)
-            watchlist_count = (
-                db.scalar(
-                    select(func.count()).select_from(Candidate).where(Candidate.tier == "watchlist")
-                )
-                or 0
+            report = _build_daily_digest_report(
+                db,
+                settings,
+                current_run_id=run.id,
             )
-            counters["watchlist"] = watchlist_count
-            items = _to_email_candidates(qualified_rows[:25])
-            body = (
-                "<h2>Daily YouTube domain crawler report</h2>"
-                f"<p><strong>{len(qualified_rows)}</strong> qualified/priority domains; "
-                f"<strong>{watchlist_count}</strong> watchlist domains; "
-                f"target: <strong>{settings.target_qualified_domains}</strong>.</p>"
-                + render_candidate_table(items)
+            counters.update(
+                {
+                    "priority": report.priority_count,
+                    "qualified": report.qualified_count,
+                    "watchlist": report.watchlist_count,
+                    "pending": report.pending_count,
+                    "issues": len(report.issues),
+                }
             )
+            body = render_daily_digest(report)
             if settings.email_enabled:
-                send_email(settings, "Daily YouTube domain crawler report", body)
+                subject = (
+                    "Daily crawler: "
+                    f"{report.priority_count + report.qualified_count} qualified, "
+                    f"{report.work.get('new_videos', 0)} new videos, "
+                    f"{report.work.get('drops_loaded', 0)} fresh drops"
+                )
+                send_email(settings, subject, body)
                 counters["emailed"] = 1
             _finish_run(db, run, "complete", counters)
         except EmailError as exc:
@@ -703,6 +990,18 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         run_availability_checks,
         IntervalTrigger(hours=6, start_date=start + timedelta(minutes=3)),
         id="availability_checks",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_dropped_feeds,
+        DateTrigger(run_date=start + timedelta(minutes=2)),
+        id="initial_dropped_feeds",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_dropped_youtube_search,
+        DateTrigger(run_date=start + timedelta(minutes=4)),
+        id="initial_dropped_youtube_search",
         replace_existing=True,
     )
     scheduler.add_job(

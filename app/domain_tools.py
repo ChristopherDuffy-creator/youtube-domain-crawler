@@ -7,7 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import tldextract
 
-_extractor = tldextract.TLDExtract(suffix_list_urls=())
+_extractor = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 
 URL_RE = re.compile(
     r"(?i)(?<![@\w])(?:https?://|www\.)[^\s<>\[\]{}\"']+"

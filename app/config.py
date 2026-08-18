@@ -90,6 +90,12 @@ MANUAL_CHECKPOINTS = {
 }
 
 
+DEFAULT_DROPPED_DOMAIN_FEED_URLS = [
+    "https://raw.githubusercontent.com/WhoisFreaks/"
+    "daily-expired-and-dropped-domains/main/0-latest-free-dropped-domains.csv",
+]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -127,7 +133,9 @@ class Settings(BaseSettings):
     alert_email: str = "info@expandosaurus.com"
     alert_from: str = "Domain Crawler <crawler@expandosaurus.com>"
 
-    dropped_domain_feed_urls: CsvList = []
+    dropped_domain_feed_urls: CsvList = Field(
+        default_factory=lambda: list(DEFAULT_DROPPED_DOMAIN_FEED_URLS)
+    )
 
     legacy_dropped_checked: int = 120
     legacy_videos_checked: int = 214
