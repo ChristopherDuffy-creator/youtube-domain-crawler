@@ -14,8 +14,17 @@
         <h1>YouTube Domain Crawler</h1>
         <p class="subtitle">Permanent deduplication ledger · exact description links · real 30-day view tracking</p>
       </div>
-      <a class="button secondary" href="/export/candidates.csv">Download results</a>
+      <div>
+        <a class="button secondary" href="/export/candidates.csv">Download results</a>
+        <a class="button secondary" href="/admin/database-backup">Database backup</a>
+      </div>
     </header>
+
+    <section class="notice">
+      <strong>Database safety:</strong>
+      Download a portable database backup before any Link Hunter schema deployment.
+      The backup contains the crawler ledger, so store it privately and do not upload it to GitHub.
+    </section>
 
     {% if not registrar_enabled or not email_enabled %}
     <section class="notice">
@@ -104,4 +113,3 @@
   </main>
 </body>
 </html>
-
