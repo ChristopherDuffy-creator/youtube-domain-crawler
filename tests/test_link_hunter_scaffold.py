@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from app.config import Settings
-from app.dataforseo import DataForSEOClient, DataForSEOError
-from app.database import Base
 import app.models  # noqa: F401 - importing registers all model tables
+from app.config import Settings
+from app.database import Base
+from app.dataforseo import DataForSEOClient, DataForSEOError
 
 
 def test_link_hunter_is_safe_by_default() -> None:
