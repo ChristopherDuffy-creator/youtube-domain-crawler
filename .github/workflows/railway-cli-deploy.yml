@@ -1,0 +1,35 @@
+name: Railway CLI Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: railway-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    container: ghcr.io/railwayapp/cli:latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require project-scoped Railway token
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "RAILWAY_TOKEN repository secret is not configured"
+            exit 1
+          fi
+
+      - name: Upload current main source directly to Railway
+        run: >-
+          railway up
+          --project 31fbe878-aa83-4b74-9820-e9f0d13b984c
+          --environment production
+          --service youtube-domain-crawler
+          --ci
