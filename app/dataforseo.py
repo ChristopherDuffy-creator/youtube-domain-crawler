@@ -67,8 +67,10 @@ class DataForSEOClient:
         )
 
     def bulk_backlink_summaries(self, targets: list[str]) -> DataForSEOResponse:
-        if not targets or len(targets) > 1000:
-            raise ValueError("bulk backlink summary requires 1-1000 targets")
+        # The provider supports up to 1,000 URLs, but no more than 100 distinct
+        # domains in one bulk-pages-summary request. Link Hunter feeds domains.
+        if not targets or len(targets) > 100:
+            raise ValueError("bulk backlink summary requires 1-100 domain targets")
         return self._post(
             "backlinks/bulk_pages_summary/live",
             {
