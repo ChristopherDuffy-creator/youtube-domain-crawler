@@ -142,6 +142,8 @@ class Settings(BaseSettings):
     link_hunter_enabled: bool = False
     link_hunter_proof_batch_size: int = Field(default=5, ge=1, le=25)
     link_hunter_backlinks_per_domain: int = Field(default=25, ge=1, le=100)
+    link_hunter_proof_max_cost_usd: float = Field(default=0.50, ge=0.05, le=5.0)
+    link_hunter_verify_timeout_seconds: float = Field(default=10.0, ge=3.0, le=30.0)
 
     dropped_domain_feed_urls: CsvList = Field(
         default_factory=lambda: list(DEFAULT_DROPPED_DOMAIN_FEED_URLS)
