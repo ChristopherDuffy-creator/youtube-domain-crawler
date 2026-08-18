@@ -26,6 +26,7 @@ from app.models import (
     Candidate,
     Domain,
     DroppedDomain,
+    FetchVerification,
     Opportunity,
     RunLog,
     SourceLink,
@@ -50,6 +51,15 @@ BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 security = HTTPBasic(auto_error=False)
 scheduler = None
+
+WebEvidenceRow = tuple[
+    Opportunity,
+    Domain,
+    SourcePage | None,
+    SourceSite | None,
+    SourceLink | None,
+    FetchVerification | None,
+]
 
 
 @asynccontextmanager
@@ -94,6 +104,49 @@ def require_admin_token(x_admin_token: str | None = Header(default=None)) -> Non
     expected = settings.admin_token.encode()
     if not supplied or not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid admin token")
+
+
+def _load_web_evidence_rows(db: Session, *, limit: int | None = 100) -> list[WebEvidenceRow]:
+    statement = (
+        select(Opportunity, Domain, SourcePage)
+        .join(Domain, Domain.id == Opportunity.domain_id)
+        .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
+        .order_by(
+            case(
+                (Opportunity.tier == "priority", 0),
+                (Opportunity.tier == "qualified", 1),
+                (Opportunity.tier == "watchlist", 2),
+                else_=3,
+            ),
+            Opportunity.score.desc(),
+            Opportunity.link_strength.desc(),
+        )
+    )
+    if limit is not None:
+        statement = statement.limit(limit)
+
+    rows: list[WebEvidenceRow] = []
+    for opportunity, domain, page in db.execute(statement).all():
+        site = db.get(SourceSite, page.site_id) if page is not None else None
+        link = None
+        verification = None
+        if page is not None:
+            link = db.scalar(
+                select(SourceLink)
+                .where(
+                    SourceLink.source_page_id == page.id,
+                    SourceLink.domain_id == domain.id,
+                    SourceLink.provider_live.is_(True),
+                )
+                .order_by(SourceLink.provider_rank.desc().nullslast(), SourceLink.id.asc())
+                .limit(1)
+            )
+            if link is not None:
+                verification = db.scalar(
+                    select(FetchVerification).where(FetchVerification.source_link_id == link.id)
+                )
+        rows.append((opportunity, domain, page, site, link, verification))
+    return rows
 
 
 @app.get("/health")
@@ -154,23 +207,7 @@ def dashboard(
         .limit(100)
     ).all()
 
-    web_opportunity_rows = db.execute(
-        select(Opportunity, Domain, SourcePage)
-        .join(Domain, Domain.id == Opportunity.domain_id)
-        .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
-        .order_by(
-            case(
-                (Opportunity.tier == "priority", 0),
-                (Opportunity.tier == "qualified", 1),
-                (Opportunity.tier == "watchlist", 2),
-                else_=3,
-            ),
-            Opportunity.score.desc(),
-            Opportunity.link_strength.desc(),
-        )
-        .limit(100)
-    ).all()
-
+    web_evidence_rows = _load_web_evidence_rows(db, limit=100)
     latest_runs = db.scalars(select(RunLog).order_by(RunLog.started_at.desc()).limit(16)).all()
 
     qualified = (
@@ -208,7 +245,7 @@ def dashboard(
         name="dashboard.html",
         context={
             "candidate_rows": candidate_rows,
-            "web_opportunity_rows": web_opportunity_rows,
+            "web_evidence_rows": web_evidence_rows,
             "latest_runs": latest_runs,
             "qualified": qualified,
             "watchlist": watchlist,
@@ -295,12 +332,7 @@ def export_link_hunter(
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
 ) -> Response:
-    rows = db.execute(
-        select(Opportunity, Domain, SourcePage)
-        .join(Domain, Domain.id == Opportunity.domain_id)
-        .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
-        .order_by(Opportunity.score.desc(), Opportunity.link_strength.desc())
-    ).all()
+    rows = _load_web_evidence_rows(db, limit=None)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
@@ -308,6 +340,7 @@ def export_link_hunter(
             "domain",
             "tier",
             "score",
+            "niche",
             "source_page_traffic_estimate",
             "referring_pages",
             "independent_sites",
@@ -315,16 +348,26 @@ def export_link_hunter(
             "live_link_verified",
             "availability",
             "registration_price_usd",
+            "source_site",
             "best_source_page",
             "best_source_title",
+            "anchor_text",
+            "context_before",
+            "context_after",
+            "dofollow",
+            "provider_rank",
+            "provider_spam_score",
+            "fetch_http_status",
+            "fetch_final_url",
         ]
     )
-    for opportunity, domain, page in rows:
+    for opportunity, domain, page, site, link, verification in rows:
         writer.writerow(
             [
                 domain.name,
                 opportunity.tier,
                 opportunity.score,
+                opportunity.niche,
                 opportunity.source_page_traffic_estimate,
                 opportunity.referring_page_count,
                 opportunity.independent_site_count,
@@ -332,8 +375,17 @@ def export_link_hunter(
                 opportunity.verified_live_link,
                 domain.availability_status,
                 domain.registrar_price_usd or "",
+                site.hostname if site else "",
                 page.url if page else "",
                 page.title if page else "",
+                link.anchor_text if link else "",
+                link.context_before if link else "",
+                link.context_after if link else "",
+                link.dofollow if link else "",
+                link.provider_rank if link else "",
+                link.spam_score if link else "",
+                verification.http_status if verification else "",
+                verification.final_url if verification else "",
             ]
         )
     return Response(
