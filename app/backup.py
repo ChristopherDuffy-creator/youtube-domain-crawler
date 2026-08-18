@@ -50,19 +50,25 @@ def _decode_value(value: Any) -> Any:
 
 
 def build_logical_snapshot(engine: Engine) -> bytes:
-    """Return a gzip-compressed, portable snapshot of every current DB table."""
+    """Return a gzip-compressed, transactionally consistent logical snapshot."""
     metadata = MetaData()
     metadata.reflect(bind=engine)
     tables: dict[str, list[dict[str, Any]]] = {}
     row_counts: dict[str, int] = {}
 
-    with engine.connect() as connection:
-        for table in metadata.sorted_tables:
-            rows: list[dict[str, Any]] = []
-            for row in connection.execute(select(table)).mappings():
-                rows.append({key: _encode_value(value) for key, value in row.items()})
-            tables[table.name] = rows
-            row_counts[table.name] = len(rows)
+    with engine.connect() as raw_connection:
+        connection = raw_connection
+        if engine.dialect.name == "postgresql":
+            # Keep every table SELECT on one stable database snapshot while the
+            # live crawler continues writing new rows in separate transactions.
+            connection = raw_connection.execution_options(isolation_level="REPEATABLE READ")
+        with connection.begin():
+            for table in metadata.sorted_tables:
+                rows: list[dict[str, Any]] = []
+                for row in connection.execute(select(table)).mappings():
+                    rows.append({key: _encode_value(value) for key, value in row.items()})
+                tables[table.name] = rows
+                row_counts[table.name] = len(rows)
 
     document = {
         "format": BACKUP_FORMAT,
