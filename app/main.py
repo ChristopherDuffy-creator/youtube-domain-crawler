@@ -19,7 +19,19 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
 from app.jobs import JOB_FUNCTIONS, build_scheduler, ensure_seed_data, ingest_dropped_text
-from app.models import Candidate, Domain, DroppedDomain, RunLog, Video, VideoDomain
+from app.link_hunter import run_provider_proof_job
+from app.models import (
+    Candidate,
+    Domain,
+    DroppedDomain,
+    Opportunity,
+    RunLog,
+    SourceLink,
+    SourcePage,
+    SourceSite,
+    Video,
+    VideoDomain,
+)
 
 settings = get_settings()
 logging.basicConfig(
@@ -49,7 +61,7 @@ async def lifespan(_: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title=settings.app_name, version="0.2.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.3.0-dev", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
@@ -89,6 +101,8 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         "status": "ok" if database == "ok" else "degraded",
         "database": database,
         "scheduler": bool(scheduler and scheduler.running),
+        "link_hunter_enabled": settings.link_hunter_enabled,
+        "dataforseo_configured": settings.dataforseo_enabled,
         "time": datetime.now(UTC).isoformat(),
     }
 
@@ -116,7 +130,25 @@ def dashboard(
         )
         .limit(100)
     ).all()
-    latest_runs = db.scalars(select(RunLog).order_by(RunLog.started_at.desc()).limit(12)).all()
+
+    web_opportunity_rows = db.execute(
+        select(Opportunity, Domain, SourcePage)
+        .join(Domain, Domain.id == Opportunity.domain_id)
+        .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
+        .order_by(
+            case(
+                (Opportunity.tier == "priority", 0),
+                (Opportunity.tier == "qualified", 1),
+                (Opportunity.tier == "watchlist", 2),
+                else_=3,
+            ),
+            Opportunity.score.desc(),
+            Opportunity.link_strength.desc(),
+        )
+        .limit(100)
+    ).all()
+
+    latest_runs = db.scalars(select(RunLog).order_by(RunLog.started_at.desc()).limit(16)).all()
 
     qualified = (
         db.scalar(
@@ -137,6 +169,15 @@ def dashboard(
         or 0
     )
     dropped_ingested = db.scalar(select(func.count()).select_from(DroppedDomain)) or 0
+
+    web_opportunities = db.scalar(select(func.count()).select_from(Opportunity)) or 0
+    web_source_sites = db.scalar(select(func.count()).select_from(SourceSite)) or 0
+    web_source_pages = db.scalar(select(func.count()).select_from(SourcePage)) or 0
+    web_source_links = (
+        db.scalar(select(func.count()).select_from(SourceLink).where(SourceLink.provider_live.is_(True)))
+        or 0
+    )
+
     progress = min(100, round(qualified / settings.target_qualified_domains * 100, 1))
 
     return templates.TemplateResponse(
@@ -144,6 +185,7 @@ def dashboard(
         name="dashboard.html",
         context={
             "candidate_rows": candidate_rows,
+            "web_opportunity_rows": web_opportunity_rows,
             "latest_runs": latest_runs,
             "qualified": qualified,
             "watchlist": watchlist,
@@ -154,10 +196,16 @@ def dashboard(
             "cumulative_videos": settings.legacy_videos_checked + crawler_videos,
             "cumulative_domains": settings.legacy_domains_checked + crawler_domains,
             "cumulative_dropped": settings.legacy_dropped_checked + dropped_ingested,
+            "web_opportunities": web_opportunities,
+            "web_source_sites": web_source_sites,
+            "web_source_pages": web_source_pages,
+            "web_source_links": web_source_links,
             "target": settings.target_qualified_domains,
             "progress": progress,
             "registrar_enabled": settings.registrar_enabled,
             "email_enabled": settings.email_enabled,
+            "dataforseo_enabled": settings.dataforseo_enabled,
+            "link_hunter_enabled": settings.link_hunter_enabled,
             "watch_threshold": settings.watchlist_monthly_views,
             "qualified_threshold": settings.qualified_monthly_views,
             "priority_threshold": settings.priority_monthly_views,
@@ -219,6 +267,59 @@ def export_candidates(
     )
 
 
+@app.get("/export/link-hunter.csv")
+def export_link_hunter(
+    _: str = Depends(require_dashboard_auth),
+    db: Session = Depends(get_db),
+) -> Response:
+    rows = db.execute(
+        select(Opportunity, Domain, SourcePage)
+        .join(Domain, Domain.id == Opportunity.domain_id)
+        .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
+        .order_by(Opportunity.score.desc(), Opportunity.link_strength.desc())
+    ).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "domain",
+            "tier",
+            "score",
+            "source_page_traffic_estimate",
+            "referring_pages",
+            "independent_sites",
+            "link_strength",
+            "live_link_verified",
+            "availability",
+            "registration_price_usd",
+            "best_source_page",
+            "best_source_title",
+        ]
+    )
+    for opportunity, domain, page in rows:
+        writer.writerow(
+            [
+                domain.name,
+                opportunity.tier,
+                opportunity.score,
+                opportunity.source_page_traffic_estimate,
+                opportunity.referring_page_count,
+                opportunity.independent_site_count,
+                opportunity.link_strength,
+                opportunity.verified_live_link,
+                domain.availability_status,
+                domain.registrar_price_usd or "",
+                page.url if page else "",
+                page.title if page else "",
+            ]
+        )
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=link-hunter-opportunities.csv"},
+    )
+
+
 @app.post("/admin/dropped-domains")
 async def add_dropped_domains(
     domains: str = Form(default=""),
@@ -235,6 +336,19 @@ async def add_dropped_domains(
     if text.strip():
         ingest_dropped_text(db, text, source)
     return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/api/link-hunter/proof")
+def trigger_link_hunter_proof(_: None = Depends(require_admin_token)) -> dict[str, object]:
+    if not settings.link_hunter_enabled:
+        raise HTTPException(status_code=503, detail="Link Hunter is disabled")
+    if not settings.dataforseo_enabled:
+        raise HTTPException(status_code=503, detail="DataForSEO credentials are not configured")
+    try:
+        counters = run_provider_proof_job()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"status": "complete", "job": "link_hunter_proof", "counters": counters}
 
 
 @app.post("/api/run/{job_name}")
