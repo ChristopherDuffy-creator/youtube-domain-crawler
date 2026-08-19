@@ -31,23 +31,37 @@ class DataForSEOClient:
 
     def _post(self, path: str, payload: dict[str, Any]) -> DataForSEOResponse:
         url = f"{self.base_url}/{path.lstrip('/')}"
-        with httpx.Client(auth=self.auth, timeout=self.timeout) as client:
+        with httpx.Client(
+            auth=self.auth,
+            timeout=self.timeout,
+            trust_env=False,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Expandosaurus-Link-Hunter/0.3",
+            },
+        ) as client:
             response = client.post(url, json=[payload])
             response.raise_for_status()
             body = response.json()
 
+        if not isinstance(body, dict):
+            raise DataForSEOError("DataForSEO returned a malformed response")
         if int(body.get("status_code", 0)) != 20000:
             raise DataForSEOError(body.get("status_message") or "DataForSEO request failed")
 
         tasks = body.get("tasks") or []
-        if not tasks:
-            raise DataForSEOError("DataForSEO response contained no task")
+        if not isinstance(tasks, list) or not tasks or not isinstance(tasks[0], dict):
+            raise DataForSEOError("DataForSEO response contained no valid task")
         task = tasks[0]
         if int(task.get("status_code", 0)) != 20000:
             raise DataForSEOError(task.get("status_message") or "DataForSEO task failed")
 
         results = task.get("result") or []
+        if not isinstance(results, list):
+            raise DataForSEOError("DataForSEO task returned malformed results")
         result = results[0] if results else {}
+        if not isinstance(result, dict):
+            raise DataForSEOError("DataForSEO task returned a malformed result")
         return DataForSEOResponse(
             result=result,
             task_cost_usd=float(task.get("cost") or 0.0),
@@ -67,8 +81,9 @@ class DataForSEOClient:
         )
 
     def bulk_backlink_summaries(self, targets: list[str]) -> DataForSEOResponse:
-        # The provider supports up to 1,000 URLs, but no more than 100 distinct
-        # domains in one bulk-pages-summary request. Link Hunter feeds domains.
+        # DataForSEO allows up to 1,000 targets, but at most 100 distinct
+        # domains in a bulk-pages-summary request. Link Hunter feeds domains,
+        # so 100 domain targets is the safe per-call ceiling here.
         if not targets or len(targets) > 100:
             raise ValueError("bulk backlink summary requires 1-100 domain targets")
         return self._post(
@@ -100,5 +115,8 @@ class DataForSEOClient:
             raise ValueError("bulk traffic estimation requires 1-1000 targets")
         return self._post(
             "dataforseo_labs/google/bulk_traffic_estimation/live",
-            {"targets": targets},
+            {
+                "targets": targets,
+                "item_types": ["organic"],
+            },
         )
