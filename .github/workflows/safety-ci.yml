@@ -25,6 +25,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Run tests
+        continue-on-error: ${{ github.event.pull_request.draft }}
         run: pytest -q
       - name: Run Ruff
+        continue-on-error: ${{ github.event.pull_request.draft }}
         run: ruff check app tests
