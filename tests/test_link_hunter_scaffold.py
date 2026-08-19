@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from app import models
 from app.config import Settings
 from app.database import Base
 from app.dataforseo import DataForSEOClient, DataForSEOError
@@ -56,7 +55,14 @@ WEB_LINK_HUNTER_TABLES = {
 }
 
 
+def _ensure_models_registered() -> None:
+    from app import models
+
+    assert models.SourceSite.__tablename__ == "source_sites"
+
+
 def _columns(table_name: str) -> set[str]:
+    _ensure_models_registered()
     return set(Base.metadata.tables[table_name].columns.keys())
 
 
@@ -75,7 +81,7 @@ def test_dataforseo_client_requires_credentials() -> None:
 
 
 def test_generic_link_hunter_tables_are_registered() -> None:
-    assert models.SourceSite.__tablename__ == "source_sites"
+    _ensure_models_registered()
     assert WEB_LINK_HUNTER_TABLES.issubset(set(Base.metadata.tables))
 
 
