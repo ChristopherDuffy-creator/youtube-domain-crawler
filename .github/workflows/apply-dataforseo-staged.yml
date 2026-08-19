@@ -35,14 +35,20 @@ jobs:
           python - <<'PY'
           import json
           import os
-          import sys
           import urllib.request
 
           endpoint = "https://backboard.railway.com/graphql/v2"
+          health_url = "https://youtube-domain-crawler-production.up.railway.app/health"
           token = os.environ.get("RAILWAY_TOKEN", "")
           environment_id = os.environ["RAILWAY_ENVIRONMENT_ID"]
           service_id = os.environ["RAILWAY_SERVICE_ID"]
           expected = {"DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"}
+          out_path = os.environ["GITHUB_OUTPUT"]
+
+          def output(key, value):
+              safe = str(value).replace("\n", " ")[:500]
+              with open(out_path, "a", encoding="utf-8") as stream:
+                  stream.write(f"{key}={safe}\n")
 
           def graphql(query, variables):
               request = urllib.request.Request(
@@ -60,9 +66,25 @@ jobs:
                   raise RuntimeError("Railway GraphQL request failed")
               return payload["data"]
 
+          output("committed", "false")
+          output("already_ready", "false")
+          output("guard", "error")
+          output("diagnostic", "not_checked")
+
           try:
+              # Idempotency: if a prior run already activated the credentials,
+              # do not require or mutate any staged patch.
+              with urllib.request.urlopen(health_url, timeout=15) as response:
+                  health = json.load(response)
+              if health.get("database") == "ok" and health.get("dataforseo_configured") is True:
+                  output("already_ready", "true")
+                  output("guard", "success")
+                  output("diagnostic", "credentials_already_active")
+                  raise SystemExit(0)
+
               if not token:
-                  raise RuntimeError("RAILWAY_TOKEN is missing")
+                  raise RuntimeError("project token missing")
+
               query = """
               query EnvironmentStagedChanges($environmentId: String!) {
                 environmentStagedChanges(environmentId: $environmentId) { id status patch }
@@ -72,29 +94,37 @@ jobs:
               staged = data.get("environmentStagedChanges") or {}
               patch = staged.get("patch") or {}
 
-              # Railway's environment patch schema is services -> serviceId -> variables.
-              # Reject any other non-empty section, service, or service setting. Values are
-              # deliberately never printed or persisted outside this process.
               nonempty_top = {
                   key for key, value in patch.items()
                   if value not in (None, {}, [], "")
               }
-              if nonempty_top != {"services"}:
-                  raise RuntimeError("Unexpected staged change category; refusing to commit")
-
               services = patch.get("services") or {}
-              if set(services) != {service_id}:
-                  raise RuntimeError("Unexpected staged service; refusing to commit")
-              service_patch = services[service_id] or {}
+              service_ids = set(services)
+              service_patch = services.get(service_id) or {}
               nonempty_service = {
                   key for key, value in service_patch.items()
                   if value not in (None, {}, [], "")
               }
-              if nonempty_service != {"variables"}:
-                  raise RuntimeError("Unexpected staged service setting; refusing to commit")
               variables = service_patch.get("variables") or {}
-              if set(variables) != expected:
-                  raise RuntimeError("Staged variable names do not exactly match DataForSEO pair")
+              variable_names = set(variables)
+
+              # Only names/shape are emitted; variable values are never printed.
+              diagnostic = (
+                  "top=" + ",".join(sorted(nonempty_top))
+                  + ";services=" + str(len(service_ids))
+                  + ";sections=" + ",".join(sorted(nonempty_service))
+                  + ";vars=" + ",".join(sorted(variable_names))
+              )
+              output("diagnostic", diagnostic)
+
+              exact = (
+                  nonempty_top == {"services"}
+                  and service_ids == {service_id}
+                  and nonempty_service == {"variables"}
+                  and variable_names == expected
+              )
+              if not exact:
+                  raise RuntimeError("staged patch does not exactly match expected DataForSEO variables")
 
               mutation = """
               mutation EnvironmentPatchCommitStaged(
@@ -115,13 +145,12 @@ jobs:
                       "skipDeploys": True,
                   },
               )
-              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-                  output.write("committed=true\n")
-              print("Exact DataForSEO staged-variable patch committed without deployment")
+              output("committed", "true")
+              output("guard", "success")
+          except SystemExit:
+              pass
           except Exception as exc:
-              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-                  output.write("committed=false\n")
-              print(f"Guarded staged-variable commit did not run: {exc}")
+              output("diagnostic", f"guard_refused:{type(exc).__name__}")
           PY
           exit 0
 
@@ -142,7 +171,9 @@ jobs:
         run: |
           set +e
           ready=false
-          if [ "${{ steps.apply.outputs.committed }}" = "true" ] && [ "${{ steps.deploy.outcome }}" = "success" ]; then
+          if [ "${{ steps.apply.outputs.already_ready }}" = "true" ]; then
+            ready=true
+          elif [ "${{ steps.apply.outputs.committed }}" = "true" ] && [ "${{ steps.deploy.outcome }}" = "success" ]; then
             for attempt in $(seq 1 30); do
               body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
               BODY="$body" python -c 'import json,os; p=json.loads(os.environ["BODY"]); assert p.get("database")=="ok"; assert p.get("link_hunter_enabled") is False; assert p.get("dataforseo_configured") is True' 2>/dev/null
@@ -156,22 +187,33 @@ jobs:
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Publish activation status
+      - name: Publish guarded activation diagnostics
         env:
           GH_TOKEN: ${{ github.token }}
+          GUARD: ${{ steps.apply.outputs.guard }}
+          DIAGNOSTIC: ${{ steps.apply.outputs.diagnostic }}
+          COMMITTED: ${{ steps.apply.outputs.committed }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
           READY: ${{ steps.verify.outputs.ready }}
         run: |
-          if [ "$READY" = "true" ]; then
-            state=success
-            description="DataForSEO configured; Link Hunter remains safely disabled"
+          publish() {
+            state="$1"; context="$2"; description="$3"
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+              -d "{\"state\":\"$state\",\"context\":\"$context\",\"description\":\"$description\"}"
+          }
+
+          publish "$GUARD" "link-hunter/staged-guard" "${DIAGNOSTIC:0:140}"
+          if [ "$COMMITTED" = "true" ]; then
+            if [ "$DEPLOY_OUTCOME" = "success" ]; then deploy_state=success; else deploy_state=error; fi
+          elif [ "${{ steps.apply.outputs.already_ready }}" = "true" ]; then
+            deploy_state=success
           else
-            state=error
-            description="Guarded DataForSEO activation did not complete"
+            deploy_state=error
           fi
-          curl -fsS \
-            -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d "{\"state\":\"$state\",\"context\":\"link-hunter/dataforseo-activation\",\"description\":\"$description\"}"
+          publish "$deploy_state" "link-hunter/config-deploy" "Guarded variable commit and production deploy stage"
+          if [ "$READY" = "true" ]; then ready_state=success; else ready_state=error; fi
+          publish "$ready_state" "link-hunter/dataforseo-activation" "DataForSEO configured while Link Hunter remains disabled"
