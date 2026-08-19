@@ -16,7 +16,10 @@ from app.availability import AvailabilityResult, check_domain
 from app.config import Settings, get_settings
 from app.database import SessionLocal
 from app.dataforseo import DataForSEOClient, DataForSEOError
-from app.link_hunter_preview import select_provider_proof_targets
+from app.link_hunter_preview import (
+    rerank_summary_screen_targets,
+    select_provider_summary_targets_with_ranking,
+)
 from app.models import (
     Domain,
     FetchVerification,
@@ -555,23 +558,30 @@ def _verify_source_link(
 
 
 def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
-    """Run a deliberately tiny, cost-capped DataForSEO proof batch.
+    """Run the two-stage, cost-capped DataForSEO screening funnel.
 
-    This is never scheduled automatically. It validates bulk backlink summaries,
-    detailed backlinks, free availability, source-page traffic and direct link presence.
+    A large cheap bulk summary is reranked with cached/free evidence before only
+    a tiny set can trigger detailed backlinks, source traffic and direct verification.
     """
     if not settings.link_hunter_enabled:
         raise DataForSEOError("Link Hunter feature flag is disabled")
     if not settings.dataforseo_enabled:
         raise DataForSEOError("DataForSEO credentials are not configured")
 
-    # Use the exact same free/cached target selector shown by the zero-cost
-    # dashboard preview. This prevents a paid proof from silently testing a
-    # different set of domains than the operator reviewed.
-    targets = select_provider_proof_targets(db, settings)
+    # Use the exact same free/cached summary-screen selector shown by the
+    # zero-cost dashboard preview. Paid summary evidence chooses the actual
+    # deep-proof set, which cannot be known before the summary call completes.
+    targets, free_scores, free_signals, _, _ = select_provider_summary_targets_with_ranking(
+        db, settings
+    )
 
     counters: dict[str, Any] = {
         "targets": len(targets),
+        "summary_targets": len(targets),
+        "summary_screened": 0,
+        "summary_domains_with_live_backlinks": 0,
+        "deep_proof_target_count": 0,
+        "deep_proof_targets": [],
         "summary_calls": 0,
         "backlink_calls": 0,
         "traffic_calls": 0,
@@ -606,13 +616,40 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
             _normalize_host(str(item.get("url") or "")): item
             for item in summary_response.result.get("items") or []
         }
+        counters["summary_screened"] = len(targets)
+        counters["summary_domains_with_live_backlinks"] = sum(
+            1
+            for target in targets
+            if int(summary_map.get(_normalize_host(target), {}).get("referring_pages") or 0) > 0
+        )
     except Exception as exc:
         counters["errors"] += 1
         counters["error_details"].append(f"bulk summary: {exc}")
         counters["provider_cost_usd"] = round(float(counters["provider_cost_usd"]), 6)
         return counters
 
-    for target in targets:
+    normalized_summaries = {
+        target: summary_map.get(_normalize_host(target), {}) for target in targets
+    }
+    deep_targets, combined_scores, summary_scores = rerank_summary_screen_targets(
+        targets,
+        free_scores,
+        free_signals,
+        normalized_summaries,
+        settings.link_hunter_proof_batch_size,
+    )
+    counters["deep_proof_target_count"] = len(deep_targets)
+    counters["deep_proof_targets"] = deep_targets
+    counters["deep_proof_scores"] = {
+        target: {
+            "free_preproof": free_scores.get(target, 0.0),
+            "bulk_summary": summary_scores.get(target, 0.0),
+            "combined": combined_scores.get(target, 0.0),
+        }
+        for target in deep_targets
+    }
+
+    for target in deep_targets:
         if counters["provider_cost_usd"] >= settings.link_hunter_proof_max_cost_usd:
             counters["cost_cap_hit"] = True
             break

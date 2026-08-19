@@ -128,11 +128,17 @@ jobs:
           preview = payload.get('preview') or {}
           cost = float(preview.get('estimated_max_cost_usd') or 0.0)
           target_count = int(preview.get('target_count') or 0)
+          summary_count = int(preview.get('summary_target_count') or 0)
+          deep_count = int(preview.get('deep_proof_target_count') or 0)
           base_ok = (
               payload.get('provider_calls_made') == 0
               and preview.get('paid_requests_made') == 0
               and preview.get('credentials_exposed') is False
               and preview.get('within_cost_cap') is True
+              and target_count == summary_count
+              and 0 <= summary_count <= 100
+              and 0 <= deep_count <= 5
+              and deep_count <= summary_count
               and cost <= 0.18
           )
           ready = preview.get('ready_for_controlled_proof') is True
@@ -140,6 +146,8 @@ jobs:
               'base_ok': base_ok,
               'ready': ready,
               'target_count': target_count,
+              'summary_count': summary_count,
+              'deep_count': deep_count,
               'cost': cost,
               'blockers': preview.get('activation_blockers') or [],
           }))
@@ -175,6 +183,7 @@ jobs:
           npx -y @railway/cli@latest variable set \
             LINK_HUNTER_ENABLED=true \
             LINK_HUNTER_PROOF_MAX_COST_USD="$RUN_CAP_USD" \
+            LINK_HUNTER_SUMMARY_BATCH_SIZE=100 \
             LINK_HUNTER_PROOF_BATCH_SIZE=5 \
             LINK_HUNTER_BACKLINKS_PER_DOMAIN=25 \
             --service "$SERVICE_ID" \
@@ -226,7 +235,8 @@ jobs:
               raise SystemExit('provider cost exceeded hard per-run ceiling')
           description = (
               f"Batch complete: ${cost:.4f}; "
-              f"{int(counters.get('domains_with_live_backlinks') or 0)} domains with links; "
+              f"{int(counters.get('summary_screened') or 0)} screened; "
+              f"{int(counters.get('deep_proof_target_count') or 0)} deep; "
               f"{int(counters.get('source_links_verified') or 0)} verified"
           )[:140]
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:

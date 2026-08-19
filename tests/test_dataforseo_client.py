@@ -78,8 +78,9 @@ def _ok_payload(result: dict[str, Any], cost: float = 0.024) -> dict[str, Any]:
 
 
 def test_default_proof_has_a_conservative_preflight_cost_envelope() -> None:
-    assert estimate_provider_proof_max_cost_usd(5, 25) == pytest.approx(0.17568)
-    assert estimate_provider_proof_max_cost_usd(0, 25) == 0.0
+    assert estimate_provider_proof_max_cost_usd(100, 5, 25) == pytest.approx(0.1791)
+    assert estimate_provider_proof_max_cost_usd(5, 5, 25) == pytest.approx(0.17568)
+    assert estimate_provider_proof_max_cost_usd(0, 0, 25) == 0.0
 
 
 def test_proof_spend_cap_is_enforced_before_first_http_call(monkeypatch) -> None:
@@ -106,6 +107,7 @@ def test_proof_rejects_source_page_volume_that_exceeds_one_traffic_batch(monkeyp
     settings = Settings(
         dataforseo_login="api-login",
         dataforseo_password="api-password",
+        link_hunter_proof_batch_size=11,
         link_hunter_backlinks_per_domain=100,
         link_hunter_proof_max_cost_usd=5.0,
     )
@@ -116,6 +118,19 @@ def test_proof_rejects_source_page_volume_that_exceeds_one_traffic_batch(monkeyp
 
     assert FakeHTTPClient.instances == []
     assert FakeHTTPClient.calls == []
+
+
+def test_one_bulk_call_can_screen_100_domains_inside_the_approved_cap(monkeypatch) -> None:
+    _reset_fake()
+    FakeHTTPClient.response_payload = _ok_payload({"items_count": 0, "items": []}, cost=0.0276)
+    monkeypatch.setattr(httpx, "Client", FakeHTTPClient)
+    targets = [f"screen-{i}.example" for i in range(100)]
+
+    response = DataForSEOClient(_settings()).bulk_backlink_summaries(targets)
+
+    assert response.task_cost_usd == pytest.approx(0.0276)
+    assert len(FakeHTTPClient.calls) == 1
+    assert FakeHTTPClient.calls[0][1][0]["targets"] == targets
 
 
 def test_bulk_backlink_summary_contract(monkeypatch) -> None:

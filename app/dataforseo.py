@@ -29,27 +29,38 @@ class DataForSEOResponse:
     task_id: str
 
 
-def estimate_provider_proof_max_cost_usd(domain_count: int, backlinks_per_domain: int) -> float:
+def estimate_provider_proof_max_cost_usd(
+    summary_domain_count: int,
+    deep_domain_count: int,
+    backlinks_per_domain: int,
+) -> float:
     """Return the worst-case provider spend implied by the configured proof limits.
 
-    The estimate assumes every target survives the bulk summary, every detailed
-    backlink request returns its full row limit, and every returned source page
-    requires a traffic-estimation item. This deliberately overestimates a normal
-    proof so the configured spend cap is checked before the first paid call.
+    The cheap bulk-summary screen may contain far more domains than the detailed
+    proof. The estimate assumes every selected deep target returns its full row
+    limit and every returned source page requires a traffic-estimation item. This
+    deliberately overestimates a normal proof so the configured spend cap is
+    checked before the first paid call.
     """
-    if domain_count <= 0:
+    if summary_domain_count <= 0:
+        if deep_domain_count != 0:
+            raise ValueError("deep_domain_count must be zero when no domains are screened")
         return 0.0
-    if domain_count > MAX_BULK_SUMMARY_DOMAINS:
+    if summary_domain_count > MAX_BULK_SUMMARY_DOMAINS:
         raise ValueError(f"proof cost estimate supports at most {MAX_BULK_SUMMARY_DOMAINS} domains")
+    if deep_domain_count < 0 or deep_domain_count > summary_domain_count:
+        raise ValueError("deep_domain_count must be between 0 and summary_domain_count")
     if backlinks_per_domain <= 0 or backlinks_per_domain > 1000:
         raise ValueError("backlinks_per_domain must be between 1 and 1000")
 
-    summary_cost = BACKLINK_REQUEST_USD + BACKLINK_ROW_USD * domain_count
-    detailed_cost = domain_count * (
+    summary_cost = BACKLINK_REQUEST_USD + BACKLINK_ROW_USD * summary_domain_count
+    detailed_cost = deep_domain_count * (
         BACKLINK_REQUEST_USD + BACKLINK_ROW_USD * backlinks_per_domain
     )
-    source_pages = domain_count * backlinks_per_domain
-    traffic_requests = (source_pages + MAX_TRAFFIC_TARGETS - 1) // MAX_TRAFFIC_TARGETS
+    source_pages = deep_domain_count * backlinks_per_domain
+    traffic_requests = (
+        (source_pages + MAX_TRAFFIC_TARGETS - 1) // MAX_TRAFFIC_TARGETS if source_pages else 0
+    )
     traffic_cost = traffic_requests * LABS_REQUEST_USD + source_pages * LABS_ITEM_USD
     return round(summary_cost + detailed_cost + traffic_cost, 6)
 
@@ -125,14 +136,17 @@ class DataForSEOClient:
                 f"bulk backlink summary requires 1-{MAX_BULK_SUMMARY_DOMAINS} domain targets"
             )
 
-        source_page_ceiling = len(targets) * self.settings.link_hunter_backlinks_per_domain
+        deep_domain_count = min(len(targets), self.settings.link_hunter_proof_batch_size)
+        source_page_ceiling = deep_domain_count * self.settings.link_hunter_backlinks_per_domain
         if source_page_ceiling > MAX_TRAFFIC_TARGETS:
             raise DataForSEOError(
                 "Proof configuration could produce more than 1,000 source pages; "
                 "reduce the proof batch size or backlinks-per-domain before spending"
             )
         estimated_max = estimate_provider_proof_max_cost_usd(
-            len(targets), self.settings.link_hunter_backlinks_per_domain
+            len(targets),
+            deep_domain_count,
+            self.settings.link_hunter_backlinks_per_domain,
         )
         if estimated_max > self.settings.link_hunter_proof_max_cost_usd:
             raise DataForSEOError(
