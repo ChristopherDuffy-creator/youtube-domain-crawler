@@ -16,15 +16,15 @@ This project is configured for Christy's final rules:
 
 ### Route 1 — YouTube first
 
-The crawler rotates through evergreen, commercially useful searches, fetches older videos, saves their full descriptions, extracts exact external URLs and builds a permanent deduplicated index. It uses the full path, description position, nearby call-to-action wording and repeat links across videos when scoring.
+The crawler rotates through evergreen, commercially useful searches, but treats search results as seeds rather than the final inventory. It stores each promising channel, resolves that channel's uploads playlist, resumes through playlist pages, fetches video metadata in batches of 50, and permanently indexes every useful external URL. High-yield channels are prioritised and low-yield channels naturally fall behind.
 
 ### Route 2 — dropped domains first
 
-The crawler automatically downloads WhoisFreaks' public daily feed of 10,000 recently dropped domains. It instantly matches the whole list against its local YouTube-description index, then spends a controlled part of the YouTube search quota checking the strongest new dropped names. An exact domain must actually appear in the full description; a loose search result does not count. Feed ingestion is batched so a full daily file does not create thousands of individual database round trips.
+The crawler automatically downloads WhoisFreaks' public daily feed of 10,000 recently dropped domains. It first matches the entire list against the permanent local YouTube outbound-domain index; only unmatched/high-priority names need search calls. An exact domain must actually appear in the full description; a loose search result does not count. Feed ingestion and local matching are batched so a full daily file does not create thousands of individual database round trips.
 
 ### Traffic verification
 
-YouTube supplies a cumulative view count, not “views in the last month.” The crawler therefore takes its own daily snapshots. Early numbers are clearly marked **projected**. A candidate cannot become Qualified or Priority until the crawler has a genuine 27–35 day measurement window.
+YouTube supplies a cumulative view count, not “views in the last month.” The crawler therefore takes its own snapshots. Only videos with useful outbound links enter the refresh queue: fast-growing/high-exposure videos refresh frequently, slower videos back off, and repeatedly stagnant videos can fall to a 30-day interval. Early numbers are clearly marked **projected**. A candidate cannot become Qualified or Priority until the crawler has a genuine 27–35 day measurement window.
 
 ### Registration verification
 
@@ -34,7 +34,7 @@ Porkbun's default limit is one availability check every 10 seconds, so the crawl
 
 ## Permanent checkpoint
 
-The database is the cumulative ledger. It stores every video, domain, raw URL, view snapshot, availability check, dropped name, search page and run result. Restarts resume from this database rather than beginning again.
+The database is the cumulative ledger. It stores every channel inventory checkpoint, video, domain, raw URL, adaptive refresh state, view snapshot, availability check, dropped name, search page and run result. Restarts resume from this database rather than beginning again.
 
 The known manual-test checkpoint is included:
 
@@ -89,7 +89,18 @@ The dashboard works even before Resend is connected.
 
 ## Capacity and quota
 
-The default schedule uses about 48 of Google's default 100 `search.list` calls per day. Each call can discover up to 50 video results. Bulk video detail and daily snapshot requests are batched in groups of 50. The schedule can later be increased after evidence shows which niches work best or Google approves more quota.
+Current official YouTube quota documentation was rechecked on 19 August 2026. `search.list` has a separate default bucket of 100 calls/day; `channels.list`, `playlistItems.list`, and `videos.list` cost 1 unit per call. Inventory and video requests are batched/pages of up to 50.
+
+The default schedule retains about 48 search seeds/day and runs 12 upload-playlist pages every 30 minutes. That creates a theoretical ceiling of about 28,800 newly discovered video IDs/day before deduplication, while using roughly 1,200 daily units for playlist plus video-detail calls. Adaptive statistics refresh is capped at 2,500 due linked videos per six-hour run (50 batched calls). These are safe starting limits, not a promise that every channel contains 28,800 new public videos.
+
+Scale controls:
+
+- `YOUTUBE_CHANNEL_PAGES_PER_RUN` (default 12)
+- `YOUTUBE_CHANNEL_PAGE_BURST` (default 3 per channel/run)
+- `YOUTUBE_CHANNEL_FANOUT_INTERVAL_MINUTES` (default 30)
+- `YOUTUBE_CHANNEL_RECRAWL_HOURS` (default 24)
+- `YOUTUBE_VIEW_REFRESH_BATCH_SIZE` (default 2,500)
+- `YOUTUBE_VIEW_REFRESH_INTERVAL_HOURS` (default 6)
 
 The dashboard shows:
 

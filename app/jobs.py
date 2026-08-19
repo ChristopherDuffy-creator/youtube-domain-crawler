@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
@@ -11,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import and_, case, distinct, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.availability import AvailabilityResult, check_domain
@@ -46,7 +47,9 @@ from app.models import (
     SourceSite,
     Video,
     VideoDomain,
+    VideoRefreshState,
     ViewSnapshot,
+    YouTubeChannel,
     utcnow,
 )
 from app.scoring import ScoreInputs, calculate_score, determine_tier
@@ -124,14 +127,103 @@ def _upsert_snapshot(db: Session, video_id: str, view_count: int, captured_at: d
     return True
 
 
+def seed_youtube_channels(
+    db: Session,
+    videos: list[YouTubeVideo],
+    *,
+    count_as_search_seed: bool,
+) -> int:
+    """Persist channel seeds in batches so search results become crawl inventories."""
+    by_id = {video.channel_id: video.channel_title for video in videos if video.channel_id}
+    if not by_id:
+        return 0
+
+    existing: dict[str, YouTubeChannel] = {}
+    channel_ids = list(by_id)
+    for start in range(0, len(channel_ids), 500):
+        rows = db.scalars(
+            select(YouTubeChannel).where(YouTubeChannel.channel_id.in_(channel_ids[start : start + 500]))
+        ).all()
+        existing.update({row.channel_id: row for row in rows})
+
+    now = utcnow()
+    created = 0
+    for channel_id, title in by_id.items():
+        channel = existing.get(channel_id)
+        if channel is None:
+            channel = YouTubeChannel(
+                channel_id=channel_id,
+                title=title,
+                seed_count=1 if count_as_search_seed else 0,
+                last_seeded_at=now,
+            )
+            db.add(channel)
+            existing[channel_id] = channel
+            created += 1
+        else:
+            channel.title = title or channel.title
+            channel.last_seeded_at = now
+            if count_as_search_seed:
+                channel.seed_count += 1
+    return created
+
+
+def _initial_refresh_interval_hours(view_count: int) -> int:
+    if view_count >= 1_000_000:
+        return 6
+    if view_count >= 100_000:
+        return 24
+    if view_count >= 10_000:
+        return 72
+    return 168
+
+
+def _ensure_video_refresh_state(
+    db: Session,
+    video: Video,
+    external_link_count: int,
+) -> None:
+    if external_link_count <= 0:
+        state = db.get(VideoRefreshState, video.id)
+        if state is not None:
+            db.delete(state)
+        return
+    state = db.get(VideoRefreshState, video.id)
+    interval = _initial_refresh_interval_hours(video.lifetime_views)
+    priority = round(
+        10.0 * math.log10(1 + max(0, video.lifetime_views))
+        + 5.0 * math.log2(1 + external_link_count),
+        2,
+    )
+    if state is None:
+        db.add(
+            VideoRefreshState(
+                video_id=video.id,
+                next_refresh_at=utcnow() + timedelta(hours=interval),
+                refresh_interval_hours=interval,
+                priority_score=priority,
+                last_view_count=video.lifetime_views,
+            )
+        )
+        return
+    state.priority_score = max(state.priority_score, priority)
+
+
 def process_video(
     db: Session,
     item: YouTubeVideo,
     discovery_query: str,
     discovery_route: str,
+    affected_domain_ids: set[int] | None = None,
 ) -> dict[str, int]:
     now = utcnow()
-    counters = {"new_videos": 0, "new_domains": 0, "new_links": 0, "snapshots": 0}
+    counters = {
+        "new_videos": 0,
+        "new_domains": 0,
+        "new_links": 0,
+        "snapshots": 0,
+        "external_links": 0,
+    }
     video = db.get(Video, item.id)
     if video is None:
         video = Video(id=item.id)
@@ -154,15 +246,21 @@ def process_video(
 
     existing_links = db.scalars(select(VideoDomain).where(VideoDomain.video_id == video.id)).all()
     for link in existing_links:
+        if affected_domain_ids is not None:
+            affected_domain_ids.add(link.domain_id)
         link.active = False
 
-    for extracted in extract_links(item.description):
+    extracted_links = extract_links(item.description)
+    counters["external_links"] = len(extracted_links)
+    for extracted in extracted_links:
         domain = db.scalar(select(Domain).where(Domain.name == extracted.domain))
         if domain is None:
             domain = Domain(name=extracted.domain, suffix=extracted.suffix)
             db.add(domain)
             db.flush()
             counters["new_domains"] += 1
+        if affected_domain_ids is not None:
+            affected_domain_ids.add(domain.id)
 
         link = db.scalar(
             select(VideoDomain).where(
@@ -187,6 +285,7 @@ def process_video(
         link.active = True
         link.last_seen_at = now
 
+    _ensure_video_refresh_state(db, video, len(extracted_links))
     return counters
 
 
@@ -205,17 +304,25 @@ def seed_manual_checkpoint() -> None:
         try:
             client = YouTubeClient(settings.youtube_api_key)
             videos = client.fetch_videos(MANUAL_CHECKPOINTS.keys())
+            seed_youtube_channels(db, videos, count_as_search_seed=False)
             counters["videos_found"] = len(videos)
+            affected_domain_ids: set[int] = set()
             for video in videos:
                 exact_domain = MANUAL_CHECKPOINTS.get(video.id, "")
                 if exact_domain and not exact_domain_in_description(
                     exact_domain, video.description
                 ):
                     logger.info("Manual checkpoint link no longer appears in %s", video.id)
-                result = process_video(db, video, "legacy manual checkpoint", "manual_checkpoint")
+                result = process_video(
+                    db,
+                    video,
+                    "legacy manual checkpoint",
+                    "manual_checkpoint",
+                    affected_domain_ids,
+                )
                 counters["new_domains"] += result["new_domains"]
             db.commit()
-            refresh_candidates(db)
+            refresh_candidates(db, affected_domain_ids)
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
             db.rollback()
@@ -250,6 +357,7 @@ def run_discovery() -> None:
         }
         try:
             client = YouTubeClient(settings.youtube_api_key)
+            affected_domain_ids: set[int] = set()
             published_before = datetime.now(UTC) - timedelta(
                 days=365 * settings.published_before_years
             )
@@ -265,8 +373,15 @@ def run_discovery() -> None:
                 counters["search_calls"] += 1
                 counters["videos_returned"] += len(page.video_ids)
                 videos = client.fetch_videos(page.video_ids)
+                seed_youtube_channels(db, videos, count_as_search_seed=True)
                 for video in videos:
-                    result = process_video(db, video, state.query, "youtube_first")
+                    result = process_video(
+                        db,
+                        video,
+                        state.query,
+                        "youtube_first",
+                        affected_domain_ids,
+                    )
                     for key in ("new_videos", "new_domains", "new_links"):
                         counters[key] += result[key]
                 state.page_token = page.next_page_token
@@ -276,7 +391,7 @@ def run_discovery() -> None:
                     state.pages_scanned = 0
                 db.commit()
 
-            refresh_candidates(db)
+            refresh_candidates(db, affected_domain_ids)
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
             db.rollback()
@@ -285,30 +400,345 @@ def run_discovery() -> None:
             logger.exception("YouTube discovery failed")
 
 
+def _resolve_channel_upload_playlists(
+    db: Session,
+    client: YouTubeClient,
+    *,
+    limit: int = 50,
+) -> dict[str, int]:
+    retry_before = utcnow() - timedelta(hours=24)
+    channels = db.scalars(
+        select(YouTubeChannel)
+        .where(
+            YouTubeChannel.uploads_playlist_id == "",
+            or_(
+                YouTubeChannel.last_crawled_at.is_(None),
+                YouTubeChannel.last_crawled_at <= retry_before,
+            ),
+        )
+        .order_by(YouTubeChannel.seed_count.desc(), YouTubeChannel.last_seeded_at.desc())
+        .limit(min(limit, 50))
+    ).all()
+    if not channels:
+        return {"channel_calls": 0, "channels_resolved": 0, "channel_resolution_errors": 0}
+
+    details = {item.id: item for item in client.fetch_channels([row.channel_id for row in channels])}
+    now = utcnow()
+    resolved = 0
+    errors = 0
+    for channel in channels:
+        detail = details.get(channel.channel_id)
+        channel.last_crawled_at = now
+        if detail is None:
+            channel.last_error = "YouTube channel or uploads playlist was not returned"
+            errors += 1
+            continue
+        channel.title = detail.title or channel.title
+        channel.uploads_playlist_id = detail.uploads_playlist_id
+        channel.last_error = None
+        resolved += 1
+    db.commit()
+    return {
+        "channel_calls": 1,
+        "channels_resolved": resolved,
+        "channel_resolution_errors": errors,
+    }
+
+
+def _next_channel_to_crawl(
+    db: Session,
+    settings: Settings,
+    excluded_channel_ids: set[str],
+) -> YouTubeChannel | None:
+    recrawl_before = utcnow() - timedelta(hours=settings.youtube_channel_recrawl_hours)
+    statement = select(YouTubeChannel).where(
+        YouTubeChannel.uploads_playlist_id != "",
+        or_(
+            YouTubeChannel.inventory_complete.is_(False),
+            YouTubeChannel.next_page_token.is_not(None),
+            YouTubeChannel.last_crawled_at.is_(None),
+            YouTubeChannel.last_crawled_at <= recrawl_before,
+        ),
+    )
+    if excluded_channel_ids:
+        statement = statement.where(YouTubeChannel.channel_id.not_in(excluded_channel_ids))
+    return db.scalar(
+        statement.order_by(
+            case((YouTubeChannel.next_page_token.is_not(None), 0), else_=1),
+            case((YouTubeChannel.inventory_complete.is_(False), 0), else_=1),
+            YouTubeChannel.yield_score.desc(),
+            YouTubeChannel.seed_count.desc(),
+            YouTubeChannel.last_crawled_at.asc(),
+            YouTubeChannel.channel_id.asc(),
+        ).limit(1)
+    )
+
+
+def _update_channel_yield(channel: YouTubeChannel) -> None:
+    if channel.videos_indexed <= 0:
+        channel.yield_score = 0.0
+        return
+    linked_video_rate = channel.videos_with_external_links / channel.videos_indexed
+    links_per_video = channel.external_links_found / channel.videos_indexed
+    seed_bonus = min(10.0, 2.5 * math.log2(1 + max(0, channel.seed_count)))
+    channel.yield_score = round(
+        min(100.0, 60.0 * linked_video_rate + min(30.0, 12.0 * links_per_video) + seed_bonus),
+        2,
+    )
+
+
+def run_channel_fanout_batch(
+    db: Session,
+    settings: Settings,
+    client: YouTubeClient,
+) -> dict[str, Any]:
+    """Turn search-seeded channels into a resumable, permanent outbound-link index."""
+    counters: dict[str, Any] = {
+        "channel_calls": 0,
+        "channels_resolved": 0,
+        "channel_resolution_errors": 0,
+        "playlist_calls": 0,
+        "video_detail_calls": 0,
+        "videos_discovered": 0,
+        "videos_fetched": 0,
+        "new_videos": 0,
+        "new_domains": 0,
+        "new_links": 0,
+        "channels_completed": 0,
+        "refresh_stops_on_known_video": 0,
+        "quota_units_estimate": 0,
+        "errors": 0,
+        "error_details": [],
+    }
+    try:
+        resolution = _resolve_channel_upload_playlists(db, client)
+        counters.update(resolution)
+    except Exception as exc:
+        db.rollback()
+        counters["errors"] += 1
+        counters["error_details"].append(f"channel resolution: {exc}"[:500])
+
+    pages_by_channel: dict[str, int] = {}
+    exhausted_for_run: set[str] = set()
+    affected_domain_ids: set[int] = set()
+    for _ in range(settings.youtube_channel_pages_per_run):
+        channel = _next_channel_to_crawl(db, settings, exhausted_for_run)
+        if channel is None:
+            break
+        try:
+            page = client.fetch_uploads_page(
+                channel.uploads_playlist_id,
+                page_token=channel.next_page_token,
+                max_results=50,
+            )
+            counters["playlist_calls"] += 1
+            counters["videos_discovered"] += len(page.video_ids)
+
+            known_ids = set(
+                db.scalars(select(Video.id).where(Video.id.in_(page.video_ids))).all()
+            )
+            candidate_ids = page.video_ids
+            stopped_on_known = False
+            if channel.inventory_complete and known_ids:
+                first_known = min(
+                    index for index, video_id in enumerate(page.video_ids) if video_id in known_ids
+                )
+                candidate_ids = page.video_ids[:first_known]
+                stopped_on_known = True
+                counters["refresh_stops_on_known_video"] += 1
+
+            new_ids = [video_id for video_id in candidate_ids if video_id not in known_ids]
+            videos = client.fetch_videos(new_ids) if new_ids else []
+            counters["video_detail_calls"] += (len(new_ids) + 49) // 50
+            counters["videos_fetched"] += len(videos)
+            seed_youtube_channels(db, videos, count_as_search_seed=False)
+
+            linked_videos = 0
+            external_links = 0
+            for video in videos:
+                result = process_video(
+                    db,
+                    video,
+                    channel.title,
+                    "channel_fanout",
+                    affected_domain_ids,
+                )
+                for key in ("new_videos", "new_domains", "new_links"):
+                    counters[key] += result[key]
+                external_links += result["external_links"]
+                linked_videos += int(result["external_links"] > 0)
+
+            channel.pages_scanned += 1
+            channel.videos_seen += len(page.video_ids)
+            channel.videos_indexed += len(videos)
+            channel.videos_with_external_links += linked_videos
+            channel.external_links_found += external_links
+            channel.last_crawled_at = utcnow()
+            channel.last_error = None
+
+            if stopped_on_known or not page.next_page_token:
+                channel.next_page_token = None
+                channel.inventory_complete = True
+                counters["channels_completed"] += 1
+            else:
+                channel.next_page_token = page.next_page_token
+            _update_channel_yield(channel)
+            db.commit()
+
+            pages_by_channel[channel.channel_id] = pages_by_channel.get(channel.channel_id, 0) + 1
+            if pages_by_channel[channel.channel_id] >= settings.youtube_channel_page_burst:
+                exhausted_for_run.add(channel.channel_id)
+        except Exception as exc:
+            db.rollback()
+            current = db.get(YouTubeChannel, channel.channel_id)
+            if current is not None:
+                current.last_crawled_at = utcnow()
+                current.last_error = str(exc)[:2000]
+                db.commit()
+            exhausted_for_run.add(channel.channel_id)
+            counters["errors"] += 1
+            if len(counters["error_details"]) < 20:
+                counters["error_details"].append(f"{channel.channel_id}: {exc}"[:500])
+
+    counters["quota_units_estimate"] = (
+        counters["channel_calls"] + counters["playlist_calls"] + counters["video_detail_calls"]
+    )
+    counters["candidates_refreshed"] = refresh_candidates(db, affected_domain_ids)
+    return counters
+
+
+def run_channel_fanout() -> None:
+    settings = get_settings()
+    if not settings.youtube_channel_fanout_enabled:
+        return
+    with SessionLocal() as db:
+        run = _start_run(db, "youtube_channel_fanout")
+        counters: dict[str, Any] = {}
+        try:
+            counters = run_channel_fanout_batch(
+                db,
+                settings,
+                YouTubeClient(settings.youtube_api_key),
+            )
+            status = "complete" if not counters.get("errors") else "partial"
+            _finish_run(db, run, status, counters)
+        except Exception as exc:
+            db.rollback()
+            run = db.get(RunLog, run.id)
+            _finish_run(db, run, "failed", counters, str(exc))
+            logger.exception("YouTube channel fan-out failed")
+
+
+def _adaptive_refresh_interval_hours(
+    state: VideoRefreshState,
+    current_view_count: int,
+) -> tuple[int, int, float]:
+    growth = max(0, current_view_count - state.last_view_count)
+    low_growth_runs = state.consecutive_low_growth + 1 if growth < 10 else 0
+    if growth >= 1_000 or current_view_count >= 5_000_000:
+        interval = 6
+    elif growth >= 100 or current_view_count >= 500_000:
+        interval = 24
+    elif growth > 0 or current_view_count >= 50_000:
+        interval = 72
+    else:
+        interval = 168
+    if low_growth_runs >= 3:
+        interval = max(interval, 168 if current_view_count >= 100_000 else 720)
+    priority = round(
+        10.0 * math.log10(1 + current_view_count) + 8.0 * math.log10(1 + growth),
+        2,
+    )
+    return interval, low_growth_runs, priority
+
+
+def run_view_snapshot_batch(
+    db: Session,
+    settings: Settings,
+    client: YouTubeClient,
+) -> dict[str, int]:
+    now = utcnow()
+    ids = db.scalars(
+        select(VideoRefreshState.video_id)
+        .join(Video, Video.id == VideoRefreshState.video_id)
+        .where(
+            VideoRefreshState.next_refresh_at <= now,
+            Video.active.is_(True),
+        )
+        .order_by(
+            VideoRefreshState.priority_score.desc(),
+            VideoRefreshState.next_refresh_at.asc(),
+        )
+        .limit(settings.youtube_view_refresh_batch_size)
+    ).all()
+    counters = {
+        "videos_due": len(ids),
+        "videos_requested": len(ids),
+        "videos_updated": 0,
+        "videos_inactive": 0,
+        "snapshots": 0,
+        "statistics_calls": 0,
+        "quota_units_estimate": 0,
+    }
+
+    for start in range(0, len(ids), 500):
+        batch = ids[start : start + 500]
+        returned = {item.id: item for item in client.fetch_video_statistics(batch)}
+        counters["statistics_calls"] += (len(batch) + 49) // 50
+        captured_at = utcnow()
+        for video_id in batch:
+            video = db.get(Video, video_id)
+            state = db.get(VideoRefreshState, video_id)
+            if video is None or state is None:
+                continue
+            item = returned.get(video_id)
+            state.last_refreshed_at = captured_at
+            if item is None:
+                video.active = False
+                state.refresh_interval_hours = 720
+                state.next_refresh_at = captured_at + timedelta(hours=720)
+                counters["videos_inactive"] += 1
+                continue
+
+            interval, low_growth_runs, priority = _adaptive_refresh_interval_hours(
+                state, item.view_count
+            )
+            video.lifetime_views = item.view_count
+            video.last_seen_at = captured_at
+            state.last_view_count = item.view_count
+            state.refresh_interval_hours = interval
+            state.next_refresh_at = captured_at + timedelta(hours=interval)
+            state.consecutive_low_growth = low_growth_runs
+            state.priority_score = priority
+            if _upsert_snapshot(db, item.id, item.view_count, captured_at):
+                counters["snapshots"] += 1
+            counters["videos_updated"] += 1
+        db.commit()
+
+    counters["quota_units_estimate"] = counters["statistics_calls"]
+    affected_domain_ids = set(
+        db.scalars(
+            select(VideoDomain.domain_id).where(
+                VideoDomain.video_id.in_(ids),
+                VideoDomain.active.is_(True),
+            )
+        ).all()
+    )
+    counters["candidates_refreshed"] = refresh_candidates(db, affected_domain_ids)
+    return counters
+
+
 def run_view_snapshots() -> None:
     settings = get_settings()
     with SessionLocal() as db:
         run = _start_run(db, "view_snapshots")
-        counters = {"videos_requested": 0, "videos_updated": 0, "snapshots": 0}
+        counters: dict[str, Any] = {}
         try:
-            ids = db.scalars(
-                select(distinct(VideoDomain.video_id)).where(VideoDomain.active.is_(True))
-            ).all()
-            counters["videos_requested"] = len(ids)
-            client = YouTubeClient(settings.youtube_api_key)
-            for start in range(0, len(ids), 500):
-                videos = client.fetch_videos(ids[start : start + 500])
-                for item in videos:
-                    video = db.get(Video, item.id)
-                    if video is None:
-                        continue
-                    video.lifetime_views = item.view_count
-                    video.last_seen_at = utcnow()
-                    if _upsert_snapshot(db, item.id, item.view_count, utcnow()):
-                        counters["snapshots"] += 1
-                    counters["videos_updated"] += 1
-                db.commit()
-            refresh_candidates(db)
+            counters = run_view_snapshot_batch(
+                db,
+                settings,
+                YouTubeClient(settings.youtube_api_key),
+            )
             send_new_candidate_alerts(db)
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
@@ -413,7 +843,7 @@ def run_availability_checks() -> None:
                                 f"{domain.name}: {result.error}"[:500]
                             )
             db.commit()
-            refresh_candidates(db)
+            refresh_candidates(db, {domain.id for domain in domains})
             send_new_candidate_alerts(db)
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
@@ -434,12 +864,15 @@ def _best_link_for_video(links: list[VideoDomain]) -> VideoDomain:
     )
 
 
-def refresh_candidates(db: Session) -> int:
+def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
     settings = get_settings()
+    if domain_ids is not None and not domain_ids:
+        return 0
+    statement = select(Domain).where(Domain.video_links.any(VideoDomain.active.is_(True)))
+    if domain_ids is not None:
+        statement = statement.where(Domain.id.in_(domain_ids))
     domains = db.scalars(
-        select(Domain)
-        .where(Domain.video_links.any(VideoDomain.active.is_(True)))
-        .options(
+        statement.options(
             selectinload(Domain.video_links)
             .selectinload(VideoDomain.video)
             .selectinload(Video.snapshots)
@@ -607,6 +1040,25 @@ def run_dropped_feeds() -> None:
             _finish_run(db, run, "failed", counters, str(exc))
 
 
+def _dropped_domains_due_for_youtube_search(
+    db: Session,
+    max_searches: int,
+) -> list[DroppedDomain]:
+    return db.scalars(
+        select(DroppedDomain)
+        .where(
+            DroppedDomain.youtube_searched_at.is_(None),
+            DroppedDomain.matched_existing_index.is_(False),
+        )
+        .order_by(
+            case((DroppedDomain.name.like("%.com"), 0), else_=1),
+            func.length(DroppedDomain.name).asc(),
+            DroppedDomain.first_seen_at.asc(),
+        )
+        .limit(max_searches)
+    ).all()
+
+
 def run_dropped_youtube_search(max_searches: int = 10) -> None:
     settings = get_settings()
     with SessionLocal() as db:
@@ -621,16 +1073,8 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
             "new_links": 0,
         }
         try:
-            candidates = db.scalars(
-                select(DroppedDomain)
-                .where(DroppedDomain.youtube_searched_at.is_(None))
-                .order_by(
-                    case((DroppedDomain.name.like("%.com"), 0), else_=1),
-                    func.length(DroppedDomain.name).asc(),
-                    DroppedDomain.first_seen_at.asc(),
-                )
-                .limit(max_searches)
-            ).all()
+            affected_domain_ids: set[int] = set()
+            candidates = _dropped_domains_due_for_youtube_search(db, max_searches)
             client = YouTubeClient(settings.youtube_api_key)
             published_before = datetime.now(UTC) - timedelta(
                 days=365 * settings.published_before_years
@@ -640,15 +1084,26 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
                 counters["search_calls"] += 1
                 counters["drops_checked"] += 1
                 counters["videos_returned"] += len(page.video_ids)
-                for video in client.fetch_videos(page.video_ids):
-                    if exact_domain_in_description(dropped.name, video.description):
-                        result = process_video(db, video, dropped.name, "dropped_first")
-                        for key in ("new_videos", "new_domains", "new_links"):
-                            counters[key] += result[key]
-                        counters["exact_matches"] += 1
+                matched_videos = [
+                    video
+                    for video in client.fetch_videos(page.video_ids)
+                    if exact_domain_in_description(dropped.name, video.description)
+                ]
+                seed_youtube_channels(db, matched_videos, count_as_search_seed=True)
+                for video in matched_videos:
+                    result = process_video(
+                        db,
+                        video,
+                        dropped.name,
+                        "dropped_first",
+                        affected_domain_ids,
+                    )
+                    for key in ("new_videos", "new_domains", "new_links"):
+                        counters[key] += result[key]
+                    counters["exact_matches"] += 1
                 dropped.youtube_searched_at = utcnow()
                 db.commit()
-            refresh_candidates(db)
+            refresh_candidates(db, affected_domain_ids)
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
             db.rollback()
@@ -1143,6 +1598,7 @@ def run_hackernews_prefilter_job() -> None:
 
 JOB_FUNCTIONS: dict[str, Callable[[], None]] = {
     "discovery": run_discovery,
+    "channel_fanout": run_channel_fanout,
     "snapshots": run_view_snapshots,
     "availability": run_availability_checks,
     "dropped_feeds": run_dropped_feeds,
@@ -1173,6 +1629,16 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         id="youtube_discovery",
         replace_existing=True,
     )
+    if settings.youtube_channel_fanout_enabled:
+        scheduler.add_job(
+            run_channel_fanout,
+            IntervalTrigger(
+                minutes=settings.youtube_channel_fanout_interval_minutes,
+                start_date=start + timedelta(seconds=75),
+            ),
+            id="youtube_channel_fanout",
+            replace_existing=True,
+        )
     scheduler.add_job(
         run_availability_checks,
         IntervalTrigger(hours=6, start_date=start + timedelta(minutes=3)),
@@ -1211,7 +1677,10 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
     )
     scheduler.add_job(
         run_view_snapshots,
-        CronTrigger(hour=2, minute=15, timezone="UTC"),
+        IntervalTrigger(
+            hours=settings.youtube_view_refresh_interval_hours,
+            start_date=start + timedelta(minutes=5),
+        ),
         id="view_snapshots",
         replace_existing=True,
     )

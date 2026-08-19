@@ -35,6 +35,8 @@ from app.models import (
     SourceSite,
     Video,
     VideoDomain,
+    VideoRefreshState,
+    YouTubeChannel,
 )
 
 settings = get_settings()
@@ -78,7 +80,7 @@ async def lifespan(_: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title=settings.app_name, version="0.3.0-dev", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.4.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
@@ -315,6 +317,23 @@ def dashboard(
         db.scalar(select(func.count()).select_from(VideoDomain).where(VideoDomain.active.is_(True)))
         or 0
     )
+    youtube_channels = db.scalar(select(func.count()).select_from(YouTubeChannel)) or 0
+    youtube_channels_complete = (
+        db.scalar(
+            select(func.count())
+            .select_from(YouTubeChannel)
+            .where(YouTubeChannel.inventory_complete.is_(True))
+        )
+        or 0
+    )
+    adaptive_refresh_due = (
+        db.scalar(
+            select(func.count())
+            .select_from(VideoRefreshState)
+            .where(VideoRefreshState.next_refresh_at <= datetime.now(UTC))
+        )
+        or 0
+    )
     dropped_ingested = db.scalar(select(func.count()).select_from(DroppedDomain)) or 0
 
     web_opportunities = db.scalar(select(func.count()).select_from(Opportunity)) or 0
@@ -340,6 +359,9 @@ def dashboard(
             "crawler_videos": crawler_videos,
             "crawler_domains": crawler_domains,
             "exact_links": exact_links,
+            "youtube_channels": youtube_channels,
+            "youtube_channels_complete": youtube_channels_complete,
+            "adaptive_refresh_due": adaptive_refresh_due,
             "dropped_ingested": dropped_ingested,
             "cumulative_videos": settings.legacy_videos_checked + crawler_videos,
             "cumulative_domains": settings.legacy_domains_checked + crawler_domains,

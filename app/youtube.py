@@ -21,6 +21,25 @@ class SearchPage:
 
 
 @dataclass(frozen=True)
+class ChannelDetails:
+    id: str
+    title: str
+    uploads_playlist_id: str
+
+
+@dataclass(frozen=True)
+class PlaylistPage:
+    video_ids: list[str]
+    next_page_token: str | None
+
+
+@dataclass(frozen=True)
+class VideoStatistics:
+    id: str
+    view_count: int
+
+
+@dataclass(frozen=True)
 class YouTubeVideo:
     id: str
     title: str
@@ -113,7 +132,6 @@ class YouTubeClient:
                 {
                     "part": "snippet,statistics,status",
                     "id": ",".join(chunk),
-                    "maxResults": 50,
                 },
             )
             for item in payload.get("items", []):
@@ -134,6 +152,77 @@ class YouTubeClient:
                     )
                 )
         return videos
+
+    def fetch_channels(self, channel_ids: Iterable[str]) -> list[ChannelDetails]:
+        channels: list[ChannelDetails] = []
+        unique_ids = list(dict.fromkeys(channel_ids))
+        for chunk in _chunks(unique_ids, 50):
+            payload = self._get(
+                "channels",
+                {
+                    "part": "snippet,contentDetails",
+                    "id": ",".join(chunk),
+                    "maxResults": 50,
+                },
+            )
+            for item in payload.get("items", []):
+                uploads = (
+                    item.get("contentDetails", {})
+                    .get("relatedPlaylists", {})
+                    .get("uploads", "")
+                )
+                if item.get("id") and uploads:
+                    channels.append(
+                        ChannelDetails(
+                            id=str(item["id"]),
+                            title=str(item.get("snippet", {}).get("title", "")),
+                            uploads_playlist_id=str(uploads),
+                        )
+                    )
+        return channels
+
+    def fetch_uploads_page(
+        self,
+        uploads_playlist_id: str,
+        page_token: str | None = None,
+        max_results: int = 50,
+    ) -> PlaylistPage:
+        params: dict[str, Any] = {
+            "part": "contentDetails",
+            "playlistId": uploads_playlist_id,
+            "maxResults": min(max_results, 50),
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        payload = self._get("playlistItems", params)
+        video_ids = [
+            str(item.get("contentDetails", {}).get("videoId"))
+            for item in payload.get("items", [])
+            if item.get("contentDetails", {}).get("videoId")
+        ]
+        return PlaylistPage(video_ids=video_ids, next_page_token=payload.get("nextPageToken"))
+
+    def fetch_video_statistics(self, video_ids: Iterable[str]) -> list[VideoStatistics]:
+        statistics: list[VideoStatistics] = []
+        unique_ids = list(dict.fromkeys(video_ids))
+        for chunk in _chunks(unique_ids, 50):
+            payload = self._get(
+                "videos",
+                {
+                    "part": "statistics,status",
+                    "id": ",".join(chunk),
+                },
+            )
+            for item in payload.get("items", []):
+                if item.get("status", {}).get("privacyStatus", "public") != "public":
+                    continue
+                statistics.append(
+                    VideoStatistics(
+                        id=str(item["id"]),
+                        view_count=int(item.get("statistics", {}).get("viewCount", 0)),
+                    )
+                )
+        return statistics
 
 
 def exact_domain_in_description(domain: str, description: str) -> bool:

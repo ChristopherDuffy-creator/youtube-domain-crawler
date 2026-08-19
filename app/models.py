@@ -148,6 +148,43 @@ class SearchState(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class YouTubeChannel(Base):
+    __tablename__ = "youtube_channels"
+
+    channel_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(Text, default="")
+    uploads_playlist_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    next_page_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    inventory_complete: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    seed_count: Mapped[int] = mapped_column(Integer, default=1)
+    pages_scanned: Mapped[int] = mapped_column(Integer, default=0)
+    videos_seen: Mapped[int] = mapped_column(Integer, default=0)
+    videos_indexed: Mapped[int] = mapped_column(Integer, default=0)
+    videos_with_external_links: Mapped[int] = mapped_column(Integer, default=0)
+    external_links_found: Mapped[int] = mapped_column(Integer, default=0)
+    yield_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seeded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_crawled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class VideoRefreshState(Base):
+    __tablename__ = "video_refresh_states"
+
+    video_id: Mapped[str] = mapped_column(
+        ForeignKey("videos.id", ondelete="CASCADE"), primary_key=True
+    )
+    next_refresh_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    refresh_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
+    priority_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    last_view_count: Mapped[int] = mapped_column(Integer, default=0)
+    consecutive_low_growth: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class DroppedDomain(Base):
     __tablename__ = "dropped_domains"
 
