@@ -133,11 +133,12 @@ def test_detailed_backlinks_contract(monkeypatch) -> None:
     assert payload == [
         {
             "target": "example.com",
-            "mode": "as_is",
+            "mode": "one_per_domain",
             "backlinks_status_type": "live",
             "include_subdomains": True,
             "exclude_internal_backlinks": True,
             "rank_scale": "one_hundred",
+            "filters": ["page_from_status_code", "=", 200],
             "limit": 25,
             "order_by": ["page_from_rank,desc", "domain_from_rank,desc"],
         }
