@@ -47,7 +47,14 @@ jobs:
           set +e
           echo "proof_state=error" >> "$GITHUB_OUTPUT"
           echo "cleanup_state=error" >> "$GITHUB_OUTPUT"
+          echo "failure_stage=unknown" >> "$GITHUB_OUTPUT"
           echo "description=Controlled proof did not run" >> "$GITHUB_OUTPUT"
+
+          fail() {
+            echo "failure_stage=$1" >> "$GITHUB_OUTPUT"
+            echo "description=$2" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
 
           cleanup() {
             npx -y @railway/cli@latest variable set \
@@ -65,14 +72,17 @@ jobs:
                 sleep 10
               done
             fi
-            if [ "$disabled" = true ]; then echo "cleanup_state=success" >> "$GITHUB_OUTPUT"; else echo "cleanup_state=error" >> "$GITHUB_OUTPUT"; fi
+            if [ "$disabled" = true ]; then
+              echo "cleanup_state=success" >> "$GITHUB_OUTPUT"
+            else
+              echo "cleanup_state=error" >> "$GITHUB_OUTPUT"
+            fi
             rm -f /tmp/link-hunter-disable.out /tmp/link-hunter-disable.err
           }
           trap cleanup EXIT
 
           if [ "$APPROVAL" != "APPROVE_MAX_0.18_USD" ]; then
-            echo "description=Approval phrase did not match; zero paid calls made" >> "$GITHUB_OUTPUT"
-            exit 0
+            fail "approval" "Approval phrase did not match; zero paid calls made"
           fi
 
           body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
@@ -83,23 +93,22 @@ jobs:
           assert payload.get("dataforseo_configured") is True
           assert payload.get("link_hunter_enabled") is False
           PY
-          if [ $? -ne 0 ]; then echo "description=Production readiness guard failed; zero paid calls made" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ $? -ne 0 ]; then
+            fail "readiness" "Production readiness guard failed; zero paid calls made"
+          fi
 
           npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
             python -c 'import os,sys; sys.exit(0 if os.getenv("ADMIN_TOKEN") else 2)' >/dev/null 2>&1
-          if [ $? -ne 0 ]; then echo "description=Admin control token unavailable; zero paid calls made" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ $? -ne 0 ]; then
+            fail "admin-token" "Admin control token unavailable; zero paid calls made"
+          fi
 
-          # GitHub Actions cannot reach Railway's private Postgres hostname. Read the
-          # public database URL from the Postgres service, then pass it explicitly to
-          # the app-service environment before importing app.database. This preview
-          # uses cached/free evidence only and makes zero DataForSEO requests.
           public_database_url="$(
             npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service Postgres \
               python -c 'import os; print(os.getenv("DATABASE_PUBLIC_URL", ""))' 2>/dev/null
           )"
           if [ -z "$public_database_url" ]; then
-            echo "description=Preflight database bridge unavailable; zero paid calls made" >> "$GITHUB_OUTPUT"
-            exit 0
+            fail "database-bridge" "Preflight database bridge unavailable; zero paid calls made"
           fi
 
           npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
@@ -119,17 +128,18 @@ jobs:
               print(f"ready={payload.get('ready')}; targets={payload.get('target_count')}; max=${float(payload.get('estimated_max_cost_usd') or 0):.4f}; blockers={blockers}")
           PY
               )"
-              echo "description=Preflight blocked: ${summary:0:118}" >> "$GITHUB_OUTPUT"
-            else
-              echo "description=Preflight runtime failed before paid calls" >> "$GITHUB_OUTPUT"
+              rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
+              fail "preflight-preview" "Preflight blocked: ${summary:0:118}"
             fi
             rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
-            exit 0
+            fail "preflight-runtime" "Preflight runtime failed before paid calls"
           fi
           rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
 
           npx -y @railway/cli@latest variable set LINK_HUNTER_ENABLED=true LINK_HUNTER_PROOF_MAX_COST_USD=0.18 LINK_HUNTER_PROOF_BATCH_SIZE=5 LINK_HUNTER_BACKLINKS_PER_DOMAIN=25 --service "$SERVICE_ID" --environment "$ENVIRONMENT_ID" >/tmp/link-hunter-enable.out 2>/tmp/link-hunter-enable.err
-          if [ $? -ne 0 ]; then echo "description=Feature activation failed before paid proof" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ $? -ne 0 ]; then
+            fail "activation" "Feature activation failed before paid proof"
+          fi
           rm -f /tmp/link-hunter-enable.out /tmp/link-hunter-enable.err
 
           enabled=false
@@ -139,13 +149,18 @@ jobs:
             if [ $? -eq 0 ]; then enabled=true; break; fi
             sleep 10
           done
-          if [ "$enabled" != true ]; then echo "description=Feature did not become ready; proof not called" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$enabled" != true ]; then
+            fail "activation-health" "Feature did not become ready; proof not called"
+          fi
 
           npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
             python -c 'import os,urllib.request; req=urllib.request.Request(os.environ["PUBLIC_URL"]+"/api/link-hunter/proof",method="POST",headers={"X-Admin-Token":os.environ["ADMIN_TOKEN"]}); print(urllib.request.urlopen(req,timeout=420).read().decode())' \
             >/tmp/link-hunter-proof.json 2>/tmp/link-hunter-proof.err
           proof_code=$?
-          if [ $proof_code -ne 0 ]; then echo "description=Paid proof returned an error; cleanup is running" >> "$GITHUB_OUTPUT"; rm -f /tmp/link-hunter-proof.json /tmp/link-hunter-proof.err; exit 0; fi
+          if [ $proof_code -ne 0 ]; then
+            rm -f /tmp/link-hunter-proof.json /tmp/link-hunter-proof.err
+            fail "provider-call" "Paid proof returned an error; cleanup is running"
+          fi
 
           python - <<'PY'
           import json, os
@@ -157,9 +172,13 @@ jobs:
           description=(f"Proof complete: ${cost:.4f}; {int(counters.get('domains_with_live_backlinks') or 0)} domains with links; {int(counters.get('source_links_verified') or 0)} verified")[:140]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
               stream.write("proof_state=success\n")
+              stream.write("failure_stage=none\n")
               stream.write(f"description={description}\n")
           PY
-          if [ $? -ne 0 ]; then echo "description=Proof response failed the spend/result guard; cleanup is running" >> "$GITHUB_OUTPUT"; fi
+          if [ $? -ne 0 ]; then
+            rm -f /tmp/link-hunter-proof.json /tmp/link-hunter-proof.err
+            fail "response-guard" "Proof response failed the spend/result guard; cleanup is running"
+          fi
           rm -f /tmp/link-hunter-proof.json /tmp/link-hunter-proof.err
           exit 0
 
@@ -169,6 +188,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PROOF_STATE: ${{ steps.proof.outputs.proof_state }}
           CLEANUP_STATE: ${{ steps.proof.outputs.cleanup_state }}
+          FAILURE_STAGE: ${{ steps.proof.outputs.failure_stage }}
           DESCRIPTION: ${{ steps.proof.outputs.description }}
         run: |
           publish() {
@@ -179,4 +199,7 @@ jobs:
             curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" --data-binary @/tmp/status.json >/dev/null
           }
           publish "$PROOF_STATE" "link-hunter/paid-proof" "$DESCRIPTION"
+          if [ "$PROOF_STATE" != "success" ] && [ -n "$FAILURE_STAGE" ]; then
+            publish "error" "link-hunter/failure-$FAILURE_STAGE" "$DESCRIPTION"
+          fi
           publish "$CLEANUP_STATE" "link-hunter/proof-disabled" "Link Hunter disabled after one-shot proof"
