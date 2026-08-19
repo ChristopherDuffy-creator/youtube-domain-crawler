@@ -8,7 +8,7 @@ import hmac
 import io
 import logging
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
@@ -28,6 +28,7 @@ from app.link_hunter import run_provider_proof_job
 from app.link_hunter_preview import build_provider_proof_preview
 from app.models import (
     Candidate,
+    DashboardDecision,
     Domain,
     DroppedDomain,
     FetchVerification,
@@ -41,6 +42,7 @@ from app.models import (
     VideoRefreshState,
     YouTubeChannel,
 )
+from app.provider_budget import provider_daily_budget_snapshot
 
 settings = get_settings()
 logging.basicConfig(
@@ -58,7 +60,13 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 scheduler = None
 DASHBOARD_SESSION_COOKIE = "expandosaurus_session"
 DASHBOARD_SESSION_SECONDS = 7 * 24 * 60 * 60
-ResultTier = Literal["all", "priority", "qualified", "watchlist", "pending"]
+DASHBOARD_VISIT_BASELINE_COOKIE = "expandosaurus_visit_baseline"
+DASHBOARD_LAST_ACTIVITY_COOKIE = "expandosaurus_last_activity"
+DASHBOARD_VISIT_GAP_SECONDS = 2 * 60 * 60
+DASHBOARD_VISIT_COOKIE_SECONDS = 365 * 24 * 60 * 60
+ResultTier = Literal["all", "new", "priority", "qualified", "watchlist", "pending"]
+DashboardSystem = Literal["web", "youtube"]
+DecisionStatus = Literal["shortlisted", "bought", "ignored"]
 
 WebEvidenceRow = tuple[
     Opportunity,
@@ -141,6 +149,76 @@ def _safe_next_path(next_path: str) -> str:
     if not next_path.startswith("/") or next_path.startswith("//"):
         return "/"
     return next_path
+
+
+def _cookie_timestamp(value: str, *, now: int) -> int | None:
+    try:
+        timestamp = int(value)
+    except ValueError:
+        return None
+    oldest = now - DASHBOARD_VISIT_COOKIE_SECONDS
+    if timestamp < oldest or timestamp > now + 300:
+        return None
+    return timestamp
+
+
+def _dashboard_visit_window(
+    request: Request,
+    *,
+    now: datetime | None = None,
+) -> tuple[datetime, int, int]:
+    current = now or datetime.now(UTC)
+    current_timestamp = int(current.timestamp())
+    last_activity = _cookie_timestamp(
+        request.cookies.get(DASHBOARD_LAST_ACTIVITY_COOKIE, ""),
+        now=current_timestamp,
+    )
+    baseline = _cookie_timestamp(
+        request.cookies.get(DASHBOARD_VISIT_BASELINE_COOKIE, ""),
+        now=current_timestamp,
+    )
+    if last_activity is None:
+        baseline = current_timestamp - 24 * 60 * 60
+    elif (
+        current_timestamp - last_activity > DASHBOARD_VISIT_GAP_SECONDS
+        or baseline is None
+    ):
+        baseline = last_activity
+    return datetime.fromtimestamp(baseline, UTC), baseline, current_timestamp
+
+
+def _set_dashboard_visit_cookies(
+    response: Response,
+    *,
+    baseline: int,
+    current_timestamp: int,
+) -> None:
+    cookie_options = {
+        "max_age": DASHBOARD_VISIT_COOKIE_SECONDS,
+        "secure": settings.environment == "production",
+        "samesite": "lax",
+        "path": "/",
+    }
+    response.set_cookie(
+        key=DASHBOARD_VISIT_BASELINE_COOKIE,
+        value=str(baseline),
+        **cookie_options,
+    )
+    response.set_cookie(
+        key=DASHBOARD_LAST_ACTIVITY_COOKIE,
+        value=str(current_timestamp),
+        **cookie_options,
+    )
+
+
+def _next_link_hunter_slot(now: datetime | None = None) -> datetime:
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    candidate = current.replace(minute=43, second=0, microsecond=0)
+    if candidate <= current:
+        candidate += timedelta(hours=1)
+    while candidate.hour % 2:
+        candidate += timedelta(hours=1)
+    return candidate
 
 
 def require_dashboard_auth(request: Request) -> str:
@@ -226,13 +304,16 @@ def _load_web_evidence_rows(
     *,
     limit: int | None = 100,
     tier: ResultTier = "all",
+    new_since: datetime | None = None,
 ) -> list[WebEvidenceRow]:
     statement = (
         select(Opportunity, Domain, SourcePage)
         .join(Domain, Domain.id == Opportunity.domain_id)
         .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
     )
-    if tier != "all":
+    if tier == "new" and new_since is not None:
+        statement = statement.where(Opportunity.updated_at >= new_since)
+    elif tier != "all":
         statement = statement.where(Opportunity.tier == tier)
     statement = statement.order_by(
         case(
@@ -393,11 +474,12 @@ def link_hunter_proof_preview(
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
-    view: Literal["web", "youtube"] = "web",
+    view: DashboardSystem = "web",
     tier: ResultTier = "all",
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    new_since, visit_baseline, current_timestamp = _dashboard_visit_window(request)
     candidate_rows = []
     web_evidence_rows = []
     proof_preview: dict[str, object] = {}
@@ -408,7 +490,9 @@ def dashboard(
             .join(Video, Video.id == Candidate.best_video_id)
             .where(Candidate.tier != "rejected")
         )
-        if tier != "all":
+        if tier == "new":
+            candidate_statement = candidate_statement.where(Candidate.updated_at >= new_since)
+        elif tier != "all":
             candidate_statement = candidate_statement.where(Candidate.tier == tier)
         candidate_rows = db.execute(
             candidate_statement.order_by(
@@ -424,9 +508,40 @@ def dashboard(
             .limit(100)
         ).all()
     else:
-        web_evidence_rows = _load_web_evidence_rows(db, limit=100, tier=tier)
+        web_evidence_rows = _load_web_evidence_rows(
+            db,
+            limit=100,
+            tier=tier,
+            new_since=new_since,
+        )
         proof_preview = build_provider_proof_preview(db, settings)
     latest_runs = db.scalars(select(RunLog).order_by(RunLog.started_at.desc()).limit(16)).all()
+    last_web_success = db.scalar(
+        select(RunLog)
+        .where(
+            RunLog.job == "link_hunter_proof",
+            RunLog.status.in_(["complete", "partial"]),
+        )
+        .order_by(RunLog.finished_at.desc())
+        .limit(1)
+    )
+    last_youtube_success = db.scalar(
+        select(RunLog)
+        .where(
+            RunLog.job.in_(
+                [
+                    "youtube_discovery",
+                    "youtube_channel_fanout",
+                    "view_snapshots",
+                    "dropped_youtube_search",
+                ]
+            ),
+            RunLog.status.in_(["complete", "partial"]),
+        )
+        .order_by(RunLog.finished_at.desc())
+        .limit(1)
+    )
+    daily_budget = provider_daily_budget_snapshot(db, settings)
 
     youtube_tier_counts = {
         tier_name: int(count)
@@ -440,6 +555,22 @@ def dashboard(
             select(Opportunity.tier, func.count()).group_by(Opportunity.tier)
         ).all()
     }
+    youtube_new_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(Candidate)
+            .where(Candidate.tier != "rejected", Candidate.updated_at >= new_since)
+        )
+        or 0
+    )
+    web_new_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(Opportunity)
+            .where(Opportunity.updated_at >= new_since)
+        )
+        or 0
+    )
     qualified = youtube_tier_counts.get("qualified", 0) + youtube_tier_counts.get(
         "priority", 0
     )
@@ -480,9 +611,32 @@ def dashboard(
         or 0
     )
 
-    progress = min(100, round(qualified / settings.target_qualified_domains * 100, 1))
+    displayed_rows = candidate_rows if view == "youtube" else web_evidence_rows
+    displayed_domain_ids = [row[1].id for row in displayed_rows]
+    decisions = []
+    if displayed_domain_ids:
+        decisions = db.scalars(
+            select(DashboardDecision).where(
+                DashboardDecision.system == view,
+                DashboardDecision.domain_id.in_(displayed_domain_ids),
+            )
+        ).all()
+    decision_by_domain = {decision.domain_id: decision.status for decision in decisions}
+    decision_counts = {
+        decision_status: int(count)
+        for decision_status, count in db.execute(
+            select(DashboardDecision.status, func.count())
+            .where(DashboardDecision.system == view)
+            .group_by(DashboardDecision.status)
+        ).all()
+    }
 
-    return templates.TemplateResponse(
+    progress = min(100, round(qualified / settings.target_qualified_domains * 100, 1))
+    return_to = request.url.path
+    if request.url.query:
+        return_to += f"?{request.url.query}"
+
+    response = templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
@@ -496,6 +650,16 @@ def dashboard(
             "youtube_results": youtube_results,
             "youtube_tier_counts": youtube_tier_counts,
             "web_tier_counts": web_tier_counts,
+            "youtube_new_count": youtube_new_count,
+            "web_new_count": web_new_count,
+            "new_since": new_since,
+            "decision_by_domain": decision_by_domain,
+            "decision_counts": decision_counts,
+            "return_to": return_to,
+            "daily_budget": daily_budget,
+            "next_web_run": _next_link_hunter_slot(),
+            "last_web_success": last_web_success,
+            "last_youtube_success": last_youtube_success,
             "crawler_videos": crawler_videos,
             "crawler_domains": crawler_domains,
             "exact_links": exact_links,
@@ -521,10 +685,17 @@ def dashboard(
             "priority_threshold": settings.priority_monthly_views,
         },
     )
+    _set_dashboard_visit_cookies(
+        response,
+        baseline=visit_baseline,
+        current_timestamp=current_timestamp,
+    )
+    return response
 
 
 @app.get("/export/candidates.csv")
 def export_candidates(
+    request: Request,
     tier: ResultTier = "all",
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
@@ -536,6 +707,12 @@ def export_candidates(
     )
     if tier == "all":
         statement = statement.where(Candidate.tier.in_(["priority", "qualified", "watchlist"]))
+    elif tier == "new":
+        new_since, _, _ = _dashboard_visit_window(request)
+        statement = statement.where(
+            Candidate.tier != "rejected",
+            Candidate.updated_at >= new_since,
+        )
     else:
         statement = statement.where(Candidate.tier == tier)
     rows = db.execute(statement.order_by(Candidate.score.desc())).all()
@@ -583,11 +760,13 @@ def export_candidates(
 
 @app.get("/export/link-hunter.csv")
 def export_link_hunter(
+    request: Request,
     tier: ResultTier = "all",
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
 ) -> Response:
-    rows = _load_web_evidence_rows(db, limit=None, tier=tier)
+    new_since, _, _ = _dashboard_visit_window(request)
+    rows = _load_web_evidence_rows(db, limit=None, tier=tier, new_since=new_since)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
@@ -666,6 +845,55 @@ async def add_dropped_domains(
     if text.strip():
         ingest_dropped_text(db, text, source)
     return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/admin/dashboard-decision")
+def set_dashboard_decision(
+    system: DashboardSystem = Form(),
+    domain_id: int = Form(),
+    decision_status: DecisionStatus = Form(),
+    return_to: str = Form(default="/"),
+    _: str = Depends(require_dashboard_auth),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    if db.get(Domain, domain_id) is None:
+        raise HTTPException(status_code=404, detail="Domain not found")
+    if system == "youtube":
+        result_exists = db.scalar(
+            select(func.count())
+            .select_from(Candidate)
+            .where(Candidate.domain_id == domain_id)
+        )
+    else:
+        result_exists = db.scalar(
+            select(func.count())
+            .select_from(Opportunity)
+            .where(Opportunity.domain_id == domain_id)
+        )
+    if not result_exists:
+        raise HTTPException(status_code=404, detail="Dashboard result not found")
+
+    decision = db.scalar(
+        select(DashboardDecision).where(
+            DashboardDecision.system == system,
+            DashboardDecision.domain_id == domain_id,
+        )
+    )
+    if decision is not None and decision.status == decision_status:
+        db.delete(decision)
+    elif decision is None:
+        db.add(
+            DashboardDecision(
+                system=system,
+                domain_id=domain_id,
+                status=decision_status,
+            )
+        )
+    else:
+        decision.status = decision_status
+        decision.updated_at = datetime.now(UTC)
+    db.commit()
+    return RedirectResponse(url=_safe_next_path(return_to), status_code=303)
 
 
 @app.post("/api/link-hunter/proof")

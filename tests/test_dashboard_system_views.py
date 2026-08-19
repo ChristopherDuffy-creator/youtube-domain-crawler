@@ -21,14 +21,29 @@ def test_dashboard_only_loads_the_selected_systems_large_table() -> None:
 
     assert 'if view == "youtube":' in source
     assert "candidate_rows = db.execute(" in source
-    assert "web_evidence_rows = _load_web_evidence_rows(db, limit=100, tier=tier)" in source
+    assert "web_evidence_rows = _load_web_evidence_rows(" in source
+    assert "new_since=new_since" in source
 
 
 def test_dashboard_headline_counts_link_to_each_result_tier() -> None:
     template = Path("app/templates/dashboard.html").read_text(encoding="utf-8")
 
     for view in ("web", "youtube"):
-        for tier in ("priority", "qualified", "watchlist", "pending"):
+        for tier in ("new", "priority", "qualified", "watchlist", "pending"):
             assert f'href="/?view={view}&amp;tier={tier}"' in template
     assert "Show all results" in template
     assert "result_tier" in template
+
+
+def test_dashboard_exposes_status_strip_and_action_workflow() -> None:
+    template = Path("app/templates/dashboard.html").read_text(encoding="utf-8")
+
+    assert 'class="status-strip"' in template
+    assert "Spent today" in template
+    assert "Next Web run" in template
+    assert "Latest Web success" in template
+    assert "Latest YouTube success" in template
+    assert 'action="/admin/dashboard-decision"' in template
+    assert "Shortlist" in template
+    assert "Bought" in template
+    assert "Ignore" in template

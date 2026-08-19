@@ -218,6 +218,23 @@ class AppCheckpoint(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class DashboardDecision(Base):
+    __tablename__ = "dashboard_decisions"
+    __table_args__ = (
+        UniqueConstraint("system", "domain_id", name="uq_dashboard_decision_system_domain"),
+        Index("ix_dashboard_decision_system_status", "system", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    system: Mapped[str] = mapped_column(String(16), index=True)
+    domain_id: Mapped[int] = mapped_column(
+        ForeignKey("domains.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 # --- Web-wide Expandosaurus Link Hunter ------------------------------------
 # These tables intentionally sit beside the YouTube-specific tables. They let
 # the dashboard keep the two acquisition routes visually separate while both

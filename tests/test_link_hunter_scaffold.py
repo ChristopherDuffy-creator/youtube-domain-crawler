@@ -45,6 +45,7 @@ PRODUCTION_CORE_COLUMNS = {
 }
 
 WEB_LINK_HUNTER_TABLES = {
+    "dashboard_decisions",
     "source_sites",
     "source_pages",
     "source_links",
