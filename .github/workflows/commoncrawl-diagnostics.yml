@@ -1,0 +1,87 @@
+name: Common Crawl Diagnostics
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/commoncrawl-diagnostics.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      PROJECT_ID: 31fbe878-aa83-4b74-9820-e9f0d13b984c
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run sanitized diagnostics
+        id: diag
+        shell: bash
+        run: |
+          set +e
+          run_railway() {
+            npx -y @railway/cli@latest run \
+              --project "$PROJECT_ID" \
+              --environment production \
+              --service Postgres \
+              "$@" >/dev/null 2>&1
+            return $?
+          }
+
+          run_railway python -c 'import os,sys; sys.exit(0 if os.getenv("DATABASE_PUBLIC_URL") else 3)'
+          [ $? -eq 0 ] && vars=success || vars=error
+
+          run_railway python -c 'import os,psycopg; c=psycopg.connect(os.environ["DATABASE_PUBLIC_URL"], connect_timeout=8); c.close()'
+          [ $? -eq 0 ] && db=success || db=error
+
+          python -c 'import httpx; r=httpx.get("https://index.commoncrawl.org/collinfo.json",timeout=15); r.raise_for_status(); assert isinstance(r.json(), list)' >/dev/null 2>&1
+          [ $? -eq 0 ] && cc=success || cc=error
+
+          if [ "$vars" = success ] && [ "$db" = success ] && [ "$cc" = success ]; then
+            run_railway env COMMONCRAWL_PREFILTER_BATCH_SIZE=1 COMMONCRAWL_PREFILTER_INDEX_COUNT=1 python scripts/commoncrawl_prefilter.py
+            [ $? -eq 0 ] && script=success || script=error
+          else
+            script=error
+          fi
+
+          echo "vars=$vars" >> "$GITHUB_OUTPUT"
+          echo "db=$db" >> "$GITHUB_OUTPUT"
+          echo "cc=$cc" >> "$GITHUB_OUTPUT"
+          echo "script=$script" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish sanitized diagnostic statuses
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VARS: ${{ steps.diag.outputs.vars }}
+          DB: ${{ steps.diag.outputs.db }}
+          CC: ${{ steps.diag.outputs.cc }}
+          SCRIPT: ${{ steps.diag.outputs.script }}
+        shell: bash
+        run: |
+          publish() {
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+              -d "{\"state\":\"$1\",\"context\":\"$2\",\"description\":\"$3\"}" >/dev/null
+          }
+          publish "$VARS" "commoncrawl/diag-vars" "Postgres public URL injected by Railway"
+          publish "$DB" "commoncrawl/diag-db" "Postgres public connection from GitHub"
+          publish "$CC" "commoncrawl/diag-index" "Common Crawl index reachable"
+          publish "$SCRIPT" "commoncrawl/diag-script" "One-domain zero-cost prefilter command"
