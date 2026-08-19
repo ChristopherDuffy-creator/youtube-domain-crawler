@@ -33,6 +33,9 @@ def test_health_exposes_only_sanitized_commoncrawl_counts() -> None:
         db.commit()
         payload = health(db)
 
+    # SQLite round-trips DateTime values without tzinfo even when the source
+    # datetime is UTC-aware. The production PostgreSQL path is unaffected.
+    expected_finished_at = now.replace(tzinfo=None).isoformat()
     assert payload["database"] == "ok"
     assert payload["commoncrawl_prefilter"] == {
         "status": "complete",
@@ -41,6 +44,6 @@ def test_health_exposes_only_sanitized_commoncrawl_counts() -> None:
         "without_capture": 6,
         "errors": 0,
         "provider_cost_usd": 0.0,
-        "finished_at": now.isoformat(),
+        "finished_at": expected_finished_at,
     }
     assert "target-domain.example" not in str(payload)
