@@ -6,7 +6,11 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.dataforseo import DataForSEOClient, DataForSEOError
+from app.dataforseo import (
+    DataForSEOClient,
+    DataForSEOError,
+    estimate_provider_proof_max_cost_usd,
+)
 
 
 class FakeHTTPResponse:
@@ -71,6 +75,47 @@ def _ok_payload(result: dict[str, Any], cost: float = 0.024) -> dict[str, Any]:
             }
         ],
     }
+
+
+def test_default_proof_has_a_conservative_preflight_cost_envelope() -> None:
+    assert estimate_provider_proof_max_cost_usd(5, 25) == pytest.approx(0.17568)
+    assert estimate_provider_proof_max_cost_usd(0, 25) == 0.0
+
+
+def test_proof_spend_cap_is_enforced_before_first_http_call(monkeypatch) -> None:
+    _reset_fake()
+    monkeypatch.setattr(httpx, "Client", FakeHTTPClient)
+    settings = Settings(
+        dataforseo_login="api-login",
+        dataforseo_password="api-password",
+        link_hunter_backlinks_per_domain=25,
+        link_hunter_proof_max_cost_usd=0.10,
+    )
+    client = DataForSEOClient(settings)
+
+    with pytest.raises(DataForSEOError, match="exceeds configured cap"):
+        client.bulk_backlink_summaries([f"proof-{i}.example" for i in range(5)])
+
+    assert FakeHTTPClient.instances == []
+    assert FakeHTTPClient.calls == []
+
+
+def test_proof_rejects_source_page_volume_that_exceeds_one_traffic_batch(monkeypatch) -> None:
+    _reset_fake()
+    monkeypatch.setattr(httpx, "Client", FakeHTTPClient)
+    settings = Settings(
+        dataforseo_login="api-login",
+        dataforseo_password="api-password",
+        link_hunter_backlinks_per_domain=100,
+        link_hunter_proof_max_cost_usd=5.0,
+    )
+    client = DataForSEOClient(settings)
+
+    with pytest.raises(DataForSEOError, match="more than 1,000 source pages"):
+        client.bulk_backlink_summaries([f"proof-{i}.example" for i in range(11)])
+
+    assert FakeHTTPClient.instances == []
+    assert FakeHTTPClient.calls == []
 
 
 def test_bulk_backlink_summary_contract(monkeypatch) -> None:
