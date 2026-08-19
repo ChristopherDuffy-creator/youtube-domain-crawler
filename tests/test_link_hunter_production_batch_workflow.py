@@ -16,9 +16,22 @@ def test_production_batch_is_dormant_capped_and_self_disabling() -> None:
     assert "LINK_HUNTER_ENABLED=false" in text
     assert "trap cleanup EXIT" in text
     assert "if cost > 0.18" in text
+    assert "if errors > 0" in text
+    assert "production batch reported item/provider errors" in text
     assert "No unchecked targets queued; zero paid calls made" in text
     assert "/admin/link-hunter/proof-preview" in text
     assert "/api/link-hunter/proof" in text
+
+
+def test_production_batch_has_direct_post_run_safety_audit() -> None:
+    text = Path(".github/workflows/link-hunter-production-batch.yml").read_text(encoding="utf-8")
+
+    assert "Audit production safe state after cleanup" in text
+    assert 'payload.get("database") == "ok"' in text
+    assert 'payload.get("dataforseo_configured") is True' in text
+    assert 'payload.get("link_hunter_enabled") is False' in text
+    assert '"context": "link-hunter/post-run-audit"' in text
+    assert "Batch succeeded and production is healthy with paid calls disabled" in text
 
 
 def test_post_run_audit_covers_proof_and_production_batch() -> None:
