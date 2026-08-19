@@ -53,6 +53,11 @@ def test_preview_selects_next_unchecked_drops_without_paid_calls() -> None:
     assert preview["link_hunter_enabled"] is False
     assert preview["paid_requests_made"] == 0
     assert preview["commoncrawl_signal_count"] == 0
+    assert preview["ready_for_controlled_proof"] is True
+    assert preview["activation_blockers"] == []
+    assert preview["requires_explicit_spend_approval"] is True
+    assert preview["credentials_present"] is True
+    assert preview["credentials_exposed"] is False
 
 
 def test_preview_is_zero_cost_even_without_credentials() -> None:
@@ -72,6 +77,9 @@ def test_preview_is_zero_cost_even_without_credentials() -> None:
     assert preview["targets"] == ["preview-only.example"]
     assert preview["dataforseo_configured"] is False
     assert preview["paid_requests_made"] == 0
+    assert preview["ready_for_controlled_proof"] is False
+    assert preview["activation_blockers"] == ["dataforseo_credentials_not_configured"]
+    assert preview["credentials_exposed"] is False
 
 
 def test_commoncrawl_positive_targets_move_ahead_of_newer_unknown_and_negative() -> None:
@@ -119,3 +127,20 @@ def test_commoncrawl_positive_targets_move_ahead_of_newer_unknown_and_negative()
         "newest.example": None,
         "unknown.example": None,
     }
+
+
+def test_preview_reports_no_target_blocker_without_provider_calls() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        dataforseo_login="configured-login",
+        dataforseo_password="configured-password",
+    )
+
+    with Session(engine) as db:
+        preview = build_provider_proof_preview(db, settings)
+
+    assert preview["targets"] == []
+    assert preview["paid_requests_made"] == 0
+    assert preview["ready_for_controlled_proof"] is False
+    assert preview["activation_blockers"] == ["no_unchecked_targets"]
