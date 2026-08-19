@@ -1,7 +1,8 @@
 name: Railway CLI Deploy
 
 # Direct source upload fallback for Railway GitHub snapshot failures.
-# Triggered after the verified-backup Phase B merge; Link Hunter remains disabled by default.
+# This workflow verifies the live production health endpoint after deployment
+# and publishes a commit status that can be inspected without Railway UI access.
 on:
   push:
     branches:
@@ -12,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: railway-production-deploy
@@ -20,7 +22,6 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    container: ghcr.io/railwayapp/cli:latest
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
@@ -35,8 +36,42 @@ jobs:
 
       - name: Upload current main source directly to Railway
         run: >-
-          railway up
+          npx -y @railway/cli@latest up
           --project 31fbe878-aa83-4b74-9820-e9f0d13b984c
           --environment production
           --service youtube-domain-crawler
           --ci
+
+      - name: Verify live production health
+        run: |
+          for attempt in $(seq 1 30); do
+            body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
+            if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("database") == "ok"; assert p.get("link_hunter_enabled") is False' 2>/dev/null; then
+              echo "$body"
+              exit 0
+            fi
+            echo "Waiting for Phase B health endpoint ($attempt/30)"
+            sleep 10
+          done
+          echo "Production health verification failed"
+          exit 1
+
+      - name: Publish Railway deployment status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            state=success
+            description="Railway production deploy and health check passed"
+          else
+            state=failure
+            description="Railway production deploy or health check failed"
+          fi
+          curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"$state\",\"context\":\"railway/production\",\"description\":\"$description\"}"
