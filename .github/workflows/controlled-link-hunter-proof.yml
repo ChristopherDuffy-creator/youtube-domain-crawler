@@ -98,17 +98,33 @@ jobs:
             exit 0
           fi
 
-          # Read the production proof preview before enabling anything. This endpoint
-          # uses cached/free evidence only and must report zero provider calls.
+          # Build the preview directly inside the Railway service environment.
+          # This avoids dashboard/public-route auth and still makes zero provider calls.
           npx -y @railway/cli@latest run \
             --project "$PROJECT_ID" \
             --environment "$ENVIRONMENT_ID" \
             --service "$SERVICE_ID" \
-            python -c 'import base64,json,os,sys,urllib.request; auth=base64.b64encode(("admin:"+os.environ["DASHBOARD_PASSWORD"]).encode()).decode(); req=urllib.request.Request(os.environ["PUBLIC_URL"]+"/admin/link-hunter/proof-preview",headers={"Authorization":"Basic "+auth}); payload=json.loads(urllib.request.urlopen(req,timeout=30).read().decode()); preview=payload.get("preview") or {}; cost=float(preview.get("estimated_max_cost_usd") or 0.0); ok=(payload.get("provider_calls_made")==0 and preview.get("paid_requests_made")==0 and preview.get("ready_for_controlled_proof") is True and int(preview.get("target_count") or 0)>0 and preview.get("within_cost_cap") is True and cost<=0.18 and preview.get("credentials_exposed") is False); print(json.dumps({"ready":bool(preview.get("ready_for_controlled_proof")),"target_count":int(preview.get("target_count") or 0),"estimated_max_cost_usd":cost,"activation_blockers":preview.get("activation_blockers") or [],"activation_warnings":preview.get("activation_warnings") or [],"provider_calls_made":payload.get("provider_calls_made")})); sys.exit(0 if ok else 3)' \
+            python -c 'import json,sys; from app.config import get_settings; from app.database import SessionLocal; from app.link_hunter_preview import build_provider_proof_preview; settings=get_settings(); db=SessionLocal(); preview=build_provider_proof_preview(db,settings); db.close(); cost=float(preview.get("estimated_max_cost_usd") or 0.0); ok=(preview.get("paid_requests_made")==0 and preview.get("ready_for_controlled_proof") is True and int(preview.get("target_count") or 0)>0 and preview.get("within_cost_cap") is True and cost<=0.18 and preview.get("credentials_exposed") is False); print(json.dumps({"ready":bool(preview.get("ready_for_controlled_proof")),"target_count":int(preview.get("target_count") or 0),"estimated_max_cost_usd":cost,"activation_blockers":preview.get("activation_blockers") or [],"activation_warnings":preview.get("activation_warnings") or [],"paid_requests_made":preview.get("paid_requests_made")})); sys.exit(0 if ok else 3)' \
             >/tmp/link-hunter-preflight.json 2>/tmp/link-hunter-preflight.err
           preflight_code=$?
           if [ $preflight_code -ne 0 ]; then
-            echo "description=Zero-cost proof preflight blocked activation; zero paid calls made" >> "$GITHUB_OUTPUT"
+            if [ -s /tmp/link-hunter-preflight.json ]; then
+              summary="$(python - <<'PY'
+          import json
+          try:
+              with open('/tmp/link-hunter-preflight.json', encoding='utf-8') as stream:
+                  payload = json.load(stream)
+          except Exception:
+              print('preview unavailable')
+          else:
+              blockers = ','.join(payload.get('activation_blockers') or []) or 'none'
+              print(f"ready={payload.get('ready')}; targets={payload.get('target_count')}; max=${float(payload.get('estimated_max_cost_usd') or 0):.4f}; blockers={blockers}")
+          PY
+              )"
+              echo "description=Preflight blocked: ${summary:0:118}" >> "$GITHUB_OUTPUT"
+            else
+              echo "description=Preflight runtime failed before paid calls" >> "$GITHUB_OUTPUT"
+            fi
             rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
             exit 0
           fi
