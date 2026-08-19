@@ -1,0 +1,63 @@
+name: Link Hunter Readiness
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/link-hunter-readiness.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check sanitized production health
+        id: health
+        shell: bash
+        run: |
+          set +e
+          body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health)"
+          code=$?
+          if [ $code -ne 0 ]; then
+            state=error
+            description="Production health endpoint is unreachable"
+          else
+            BODY="$body" python - <<'PY'
+          import json
+          import os
+
+          payload = json.loads(os.environ["BODY"])
+          assert payload.get("database") == "ok"
+          assert payload.get("link_hunter_enabled") is False
+          assert payload.get("dataforseo_configured") is True
+          PY
+            if [ $? -eq 0 ]; then
+              state=success
+              description="DB healthy; DataForSEO configured; Link Hunter safely disabled"
+            else
+              state=error
+              description="Production is not ready for the controlled proof"
+            fi
+          fi
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "description=$description" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish readiness status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ steps.health.outputs.state }}
+          DESCRIPTION: ${{ steps.health.outputs.description }}
+        run: |
+          curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"link-hunter/readiness\",\"description\":\"$DESCRIPTION\"}"
