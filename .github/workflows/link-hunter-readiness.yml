@@ -9,7 +9,10 @@ on:
       - app/link_hunter.py
       - app/link_hunter_preview.py
       - app/main.py
+      - app/templates/dashboard.html
       - .github/workflows/controlled-link-hunter-proof.yml
+      - .github/workflows/link-hunter-production-batch.yml
+      - .github/workflows/link-hunter-post-proof-audit.yml
       - .github/workflows/link-hunter-readiness.yml
   workflow_dispatch:
 
@@ -83,5 +86,5 @@ jobs:
           }
 
           publish "$DB_STATE" "link-hunter/database" "Production database health"
-          publish "$FLAG_STATE" "link-hunter/disabled" "Link Hunter remains disabled before live proof"
+          publish "$FLAG_STATE" "link-hunter/disabled" "Link Hunter paid calls currently disabled"
           publish "$CREDS_STATE" "link-hunter/dataforseo" "DataForSEO credentials visible to production"
