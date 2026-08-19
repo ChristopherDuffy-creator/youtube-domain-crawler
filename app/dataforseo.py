@@ -96,15 +96,19 @@ class DataForSEOClient:
         )
 
     def backlinks(self, target: str, limit: int = 25) -> DataForSEOResponse:
+        # The proof is trying to find valuable independent source sites, not 25
+        # links from one prolific domain. One-per-domain maximizes evidence
+        # diversity, while the bulk summary still preserves aggregate counts.
         return self._post(
             "backlinks/backlinks/live",
             {
                 "target": target,
-                "mode": "as_is",
+                "mode": "one_per_domain",
                 "backlinks_status_type": "live",
                 "include_subdomains": True,
                 "exclude_internal_backlinks": True,
                 "rank_scale": "one_hundred",
+                "filters": ["page_from_status_code", "=", 200],
                 "limit": limit,
                 "order_by": ["page_from_rank,desc", "domain_from_rank,desc"],
             },
