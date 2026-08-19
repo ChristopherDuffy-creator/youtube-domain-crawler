@@ -4,12 +4,12 @@ from pathlib import Path
 def test_production_batch_is_dormant_capped_and_self_disabling() -> None:
     text = Path(".github/workflows/link-hunter-production-batch.yml").read_text(encoding="utf-8")
 
-    assert 'cron: "43 4,16 * * *"' in text
-    assert "EXPANDOSAURUS_LINK_HUNTER_AUTOMATION_APPROVED_2026" in text
-    assert "APPROVE_MAX_0.36_USD_PER_DAY" in text
+    assert "schedule:" not in text
+    assert "EXPANDOSAURUS_LINK_HUNTER_AUTOMATION_APPROVED_2026" not in text
     assert "APPROVE_MAX_0.18_USD" in text
     assert 'RUN_CAP_USD: "0.18"' in text
     assert 'LINK_HUNTER_PROOF_MAX_COST_USD="$RUN_CAP_USD"' in text
+    assert "LINK_HUNTER_DAILY_MAX_COST_USD=2.16" in text
     assert "LINK_HUNTER_SUMMARY_BATCH_SIZE=100" in text
     assert "LINK_HUNTER_PROOF_BATCH_SIZE=5" in text
     assert "LINK_HUNTER_BACKLINKS_PER_DOMAIN=25" in text
@@ -24,6 +24,9 @@ def test_production_batch_is_dormant_capped_and_self_disabling() -> None:
     assert "/api/link-hunter/proof" in text
     assert "summary_count <= 100" in text
     assert "deep_count <= 5" in text
+    assert "daily_cap == 2.16" in text
+    assert "daily_committed > 2.160001" in text
+    assert "Daily $2.16 provider cap reached; zero paid calls made" in text
 
 
 def test_production_batch_has_direct_post_run_safety_audit() -> None:

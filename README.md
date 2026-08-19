@@ -89,6 +89,14 @@ The dashboard works even before Resend is connected.
 
 ## Capacity and quota
 
+### Web Link Hunter paid capacity
+
+The approved controller has twelve evenly spaced UTC slots per day. Every slot can cheaply screen up to 100 fresh unchecked domains and rerank them before at most five domains receive detailed backlink, source-traffic, link-verification and availability proof. The conservative envelope remains $0.18/run, with a database-backed hard reservation ledger capped at $2.16/UTC day. A full twelve-run day screens up to 1,200 fresh domains and deep-proofs up to 60 for a modeled maximum of $2.1492; empty queues and exhausted budgets skip without provider calls. The free/cached ranking pool covers the 10,000-name daily dropped-domain feed so later slots do not starve after the first 1,000 checks.
+
+Only the approved scheduler owns recurring dispatch. The production batch workflow has no second cron route, preventing duplicate paid runs. Paid calls are disabled again after every slot.
+
+### YouTube free-quota capacity
+
 Current official YouTube quota documentation was rechecked on 19 August 2026. `search.list` has a separate default bucket of 100 calls/day; `channels.list`, `playlistItems.list`, and `videos.list` cost 1 unit per call. Inventory and video requests are batched/pages of up to 50.
 
 The default schedule retains about 48 search seeds/day and runs 12 upload-playlist pages every 30 minutes. That creates a theoretical ceiling of about 28,800 newly discovered video IDs/day before deduplication, while using roughly 1,200 daily units for playlist plus video-detail calls. Adaptive statistics refresh is capped at 2,500 due linked videos per six-hour run (50 batched calls). These are safe starting limits, not a promise that every channel contains 28,800 new public videos.

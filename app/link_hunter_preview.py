@@ -17,9 +17,10 @@ from app.models import (
     SourceLink,
     SourcePage,
 )
+from app.provider_budget import provider_daily_budget_snapshot
 
 _BLOCKED_AVAILABILITY = {"registered", "aftermarket", "premium"}
-_RECENT_FALLBACK_POOL = 1000
+_RECENT_FALLBACK_POOL = 10_000
 
 
 def _dataforseo_checked_targets(db: Session) -> set[str]:
@@ -419,6 +420,7 @@ def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, A
     free_positive_count = sum(
         1 for target in targets if _has_meaningful_free_signal(signals.get(target, {}))
     )
+    daily_budget = provider_daily_budget_snapshot(db, settings)
 
     return {
         "targets": targets,
@@ -437,6 +439,8 @@ def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, A
         "max_source_pages": max_source_pages,
         "estimated_max_cost_usd": estimated_max_cost,
         "configured_cost_cap_usd": settings.link_hunter_proof_max_cost_usd,
+        "daily_cost_cap_usd": settings.link_hunter_daily_max_cost_usd,
+        "daily_budget": daily_budget,
         "within_cost_cap": estimated_max_cost <= settings.link_hunter_proof_max_cost_usd,
         "dataforseo_configured": settings.dataforseo_enabled,
         "link_hunter_enabled": settings.link_hunter_enabled,

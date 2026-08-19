@@ -32,6 +32,11 @@ from app.models import (
     SourceSite,
     utcnow,
 )
+from app.provider_budget import (
+    finalize_provider_daily_budget,
+    provider_daily_budget_snapshot,
+    reserve_provider_daily_budget,
+)
 
 MAX_VERIFY_BYTES = 2_000_000
 MAX_VERIFY_REDIRECTS = 5
@@ -796,12 +801,44 @@ def run_provider_proof_job() -> dict[str, Any]:
     """Run Phase B manually and record it in the shared operational run ledger."""
     settings = get_settings()
     with SessionLocal() as db:
+        reservation = reserve_provider_daily_budget(db, settings)
+        if reservation is None:
+            budget = provider_daily_budget_snapshot(db, settings)
+            counters = {
+                "targets": 0,
+                "summary_screened": 0,
+                "deep_proof_target_count": 0,
+                "provider_cost_usd": 0.0,
+                "errors": 0,
+                "daily_budget_skipped": True,
+                "daily_budget": budget,
+            }
+            run = RunLog(
+                job="link_hunter_proof",
+                started_at=utcnow(),
+                finished_at=utcnow(),
+                status="skipped",
+                counters=counters,
+            )
+            db.add(run)
+            db.commit()
+            return counters
+
         run = RunLog(job="link_hunter_proof", started_at=utcnow(), status="running", counters={})
         db.add(run)
         db.commit()
         db.refresh(run)
         try:
             counters = run_provider_proof(db, settings)
+            release_unused = not bool(counters.get("errors"))
+            finalize_provider_daily_budget(
+                db,
+                reservation,
+                float(counters.get("provider_cost_usd") or 0.0),
+                release_unused=release_unused,
+            )
+            counters["daily_budget_skipped"] = False
+            counters["daily_budget"] = provider_daily_budget_snapshot(db, settings)
             run.status = "complete" if not counters.get("errors") else "partial"
             run.counters = counters
             run.finished_at = utcnow()

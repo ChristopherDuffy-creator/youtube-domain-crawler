@@ -49,3 +49,38 @@ def test_old_free_signal_candidate_is_not_lost_behind_recent_noise() -> None:
     assert preview["targets"][0] == "older-signal.example"
     assert preview["provisional_deep_targets"] == ["older-signal.example"]
     assert preview["target_free_rank_signals"]["older-signal.example"]["commoncrawl_hits"] == 5
+
+
+def test_daily_pool_keeps_supplying_fresh_targets_after_first_thousand() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 19, 6, 0, tzinfo=UTC)
+    settings = Settings(link_hunter_summary_batch_size=100, link_hunter_proof_batch_size=5)
+
+    with Session(engine) as db:
+        drops = [
+            DroppedDomain(
+                name=f"pool-{index:04}.example",
+                source="test",
+                first_seen_at=now - timedelta(seconds=index),
+            )
+            for index in range(1_200)
+        ]
+        db.add_all(drops)
+        db.add_all(
+            [
+                ProviderQuery(
+                    provider="dataforseo",
+                    endpoint="bulk_backlink_summary",
+                    target=f"pool-{index:04}.example",
+                    status="complete",
+                )
+                for index in range(1_000)
+            ]
+        )
+        db.commit()
+
+        preview = build_provider_proof_preview(db, settings)
+
+    assert preview["summary_target_count"] == 100
+    assert all(int(target[5:9]) >= 1_000 for target in preview["targets"])

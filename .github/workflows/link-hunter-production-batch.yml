@@ -7,8 +7,6 @@ on:
         description: "Type APPROVE_MAX_0.18_USD to run one production batch"
         required: true
         type: string
-  schedule:
-    - cron: "43 4,16 * * *"
 
 permissions:
   contents: read
@@ -20,7 +18,6 @@ concurrency:
 
 jobs:
   batch:
-    if: ${{ github.event_name == 'workflow_dispatch' || vars.EXPANDOSAURUS_LINK_HUNTER_AUTOMATION_APPROVED_2026 == 'APPROVE_MAX_0.36_USD_PER_DAY' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -130,6 +127,7 @@ jobs:
           target_count = int(preview.get('target_count') or 0)
           summary_count = int(preview.get('summary_target_count') or 0)
           deep_count = int(preview.get('deep_proof_target_count') or 0)
+          daily_cap = float(preview.get('daily_cost_cap_usd') or 0.0)
           base_ok = (
               payload.get('provider_calls_made') == 0
               and preview.get('paid_requests_made') == 0
@@ -140,6 +138,7 @@ jobs:
               and 0 <= deep_count <= 5
               and deep_count <= summary_count
               and cost <= 0.18
+              and daily_cap == 2.16
           )
           ready = preview.get('ready_for_controlled_proof') is True
           print(json.dumps({
@@ -149,6 +148,7 @@ jobs:
               'summary_count': summary_count,
               'deep_count': deep_count,
               'cost': cost,
+              'daily_cap': daily_cap,
               'blockers': preview.get('activation_blockers') or [],
           }))
           PY
@@ -183,6 +183,7 @@ jobs:
           npx -y @railway/cli@latest variable set \
             LINK_HUNTER_ENABLED=true \
             LINK_HUNTER_PROOF_MAX_COST_USD="$RUN_CAP_USD" \
+            LINK_HUNTER_DAILY_MAX_COST_USD=2.16 \
             LINK_HUNTER_SUMMARY_BATCH_SIZE=100 \
             LINK_HUNTER_PROOF_BATCH_SIZE=5 \
             LINK_HUNTER_BACKLINKS_PER_DOMAIN=25 \
@@ -227,18 +228,28 @@ jobs:
           counters = payload.get('counters') or {}
           cost = float(counters.get('provider_cost_usd') or 0.0)
           errors = int(counters.get('errors') or 0)
+          daily_budget = counters.get('daily_budget') or {}
+          daily_limit = float(daily_budget.get('limit_usd') or 0.0)
+          daily_committed = float(daily_budget.get('spent_usd') or 0.0) + float(
+              daily_budget.get('reserved_usd') or 0.0
+          )
           if payload.get('status') != 'complete':
               raise SystemExit('production batch response was not complete')
           if errors > 0:
               raise SystemExit('production batch reported item/provider errors')
           if cost > 0.18:
               raise SystemExit('provider cost exceeded hard per-run ceiling')
-          description = (
-              f"Batch complete: ${cost:.4f}; "
-              f"{int(counters.get('summary_screened') or 0)} screened; "
-              f"{int(counters.get('deep_proof_target_count') or 0)} deep; "
-              f"{int(counters.get('source_links_verified') or 0)} verified"
-          )[:140]
+          if daily_limit != 2.16 or daily_committed > 2.160001:
+              raise SystemExit('daily provider spend ledger exceeded the approved ceiling')
+          if counters.get('daily_budget_skipped') is True:
+              description = "Daily $2.16 provider cap reached; zero paid calls made"
+          else:
+              description = (
+                  f"Batch complete: ${cost:.4f}; "
+                  f"{int(counters.get('summary_screened') or 0)} screened; "
+                  f"{int(counters.get('deep_proof_target_count') or 0)} deep; "
+                  f"{int(counters.get('source_links_verified') or 0)} verified"
+              )[:140]
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
               stream.write('batch_state=success\n')
               stream.write(f'description={description}\n')
