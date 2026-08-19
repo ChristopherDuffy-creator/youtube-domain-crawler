@@ -1,0 +1,86 @@
+name: Approved Link Hunter Scheduler
+
+on:
+  schedule:
+    - cron: "43 4,16 * * *"
+
+permissions:
+  contents: read
+  actions: write
+  statuses: write
+
+concurrency:
+  group: link-hunter-approved-scheduler
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out approval marker
+        uses: actions/checkout@v4
+
+      - name: Verify recurring approval and dispatch guarded batch
+        id: dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          state=error
+          description="Recurring approval marker missing or invalid; zero paid calls made"
+
+          approval="$(tr -d '\r\n' < .github/link-hunter-recurring-approval.txt 2>/dev/null)"
+          if [ "$approval" = "APPROVE_MAX_0.36_USD_PER_DAY" ]; then
+            python - <<'PY' >/tmp/dispatch.json
+          import json
+          print(json.dumps({
+              "ref": "main",
+              "inputs": {"approval": "APPROVE_MAX_0.18_USD"},
+          }))
+          PY
+
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/link-hunter-production-batch.yml/dispatches" \
+              --data-binary @/tmp/dispatch.json >/dev/null
+            if [ $? -eq 0 ]; then
+              state=success
+              description="Dispatched one guarded production batch; hard per-run cap $0.18"
+            else
+              description="Production batch dispatch failed; zero provider calls made by scheduler"
+            fi
+          fi
+
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "description=$description" >> "$GITHUB_OUTPUT"
+          rm -f /tmp/dispatch.json
+          exit 0
+
+      - name: Publish recurring scheduler status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ steps.dispatch.outputs.state }}
+          DESCRIPTION: ${{ steps.dispatch.outputs.description }}
+        run: |
+          python - <<'PY' >/tmp/scheduler-status.json
+          import json
+          import os
+
+          print(json.dumps({
+              "state": os.environ.get("STATE") or "error",
+              "context": "link-hunter/recurring-scheduler",
+              "description": (os.environ.get("DESCRIPTION") or "Recurring scheduler did not complete")[:140],
+          }))
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data-binary @/tmp/scheduler-status.json >/dev/null
