@@ -217,8 +217,11 @@ jobs:
               payload = json.load(stream)
           counters = payload.get('counters') or {}
           cost = float(counters.get('provider_cost_usd') or 0.0)
+          errors = int(counters.get('errors') or 0)
           if payload.get('status') != 'complete':
               raise SystemExit('production batch response was not complete')
+          if errors > 0:
+              raise SystemExit('production batch reported item/provider errors')
           if cost > 0.18:
               raise SystemExit('provider cost exceeded hard per-run ceiling')
           description = (
@@ -261,3 +264,69 @@ jobs:
           }
           publish "$BATCH_STATE" "link-hunter/production-batch" "$DESCRIPTION"
           publish "$CLEANUP_STATE" "link-hunter/production-disabled" "Link Hunter disabled after production batch"
+
+      - name: Audit production safe state after cleanup
+        if: always()
+        id: audit
+        shell: bash
+        env:
+          BATCH_STATE: ${{ steps.batch.outputs.batch_state }}
+          CLEANUP_STATE: ${{ steps.batch.outputs.cleanup_state }}
+        run: |
+          set +e
+          audit_state=error
+          description="Production post-run audit did not pass"
+
+          if [ "$BATCH_STATE" != "success" ]; then
+            description="Production batch status is not successful"
+          elif [ "$CLEANUP_STATE" != "success" ]; then
+            description="Production cleanup status is not successful"
+          else
+            for attempt in $(seq 1 18); do
+              body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
+              BODY="$body" python - <<'PY' 2>/dev/null
+          import json
+          import os
+
+          payload = json.loads(os.environ.get("BODY", ""))
+          assert payload.get("database") == "ok"
+          assert payload.get("dataforseo_configured") is True
+          assert payload.get("link_hunter_enabled") is False
+          PY
+              if [ $? -eq 0 ]; then
+                audit_state=success
+                description="Batch succeeded and production is healthy with paid calls disabled"
+                break
+              fi
+              sleep 10
+            done
+          fi
+
+          echo "state=$audit_state" >> "$GITHUB_OUTPUT"
+          echo "description=$description" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish production post-run audit status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUDIT_STATE: ${{ steps.audit.outputs.state }}
+          DESCRIPTION: ${{ steps.audit.outputs.description }}
+        run: |
+          python - <<'PY' >/tmp/post-run-status.json
+          import json
+          import os
+
+          print(json.dumps({
+              "state": os.environ.get("AUDIT_STATE") or "error",
+              "context": "link-hunter/post-run-audit",
+              "description": (os.environ.get("DESCRIPTION") or "Production post-run audit did not complete")[:140],
+          }))
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data-binary @/tmp/post-run-status.json >/dev/null
