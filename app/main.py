@@ -8,6 +8,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -274,29 +275,34 @@ def link_hunter_proof_preview(
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
+    view: Literal["web", "youtube"] = "web",
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    candidate_rows = db.execute(
-        select(Candidate, Domain, Video)
-        .join(Domain, Domain.id == Candidate.domain_id)
-        .join(Video, Video.id == Candidate.best_video_id)
-        .where(Candidate.tier != "rejected")
-        .order_by(
-            case(
-                (Candidate.tier == "priority", 0),
-                (Candidate.tier == "qualified", 1),
-                (Candidate.tier == "watchlist", 2),
-                else_=3,
-            ),
-            Candidate.score.desc(),
-            Candidate.monthly_views.desc(),
-        )
-        .limit(100)
-    ).all()
-
-    web_evidence_rows = _load_web_evidence_rows(db, limit=100)
-    proof_preview = build_provider_proof_preview(db, settings)
+    candidate_rows = []
+    web_evidence_rows = []
+    proof_preview: dict[str, object] = {}
+    if view == "youtube":
+        candidate_rows = db.execute(
+            select(Candidate, Domain, Video)
+            .join(Domain, Domain.id == Candidate.domain_id)
+            .join(Video, Video.id == Candidate.best_video_id)
+            .where(Candidate.tier != "rejected")
+            .order_by(
+                case(
+                    (Candidate.tier == "priority", 0),
+                    (Candidate.tier == "qualified", 1),
+                    (Candidate.tier == "watchlist", 2),
+                    else_=3,
+                ),
+                Candidate.score.desc(),
+                Candidate.monthly_views.desc(),
+            )
+            .limit(100)
+        ).all()
+    else:
+        web_evidence_rows = _load_web_evidence_rows(db, limit=100)
+        proof_preview = build_provider_proof_preview(db, settings)
     latest_runs = db.scalars(select(RunLog).order_by(RunLog.started_at.desc()).limit(16)).all()
 
     qualified = (
@@ -350,6 +356,7 @@ def dashboard(
         request=request,
         name="dashboard.html",
         context={
+            "dashboard_view": view,
             "candidate_rows": candidate_rows,
             "web_evidence_rows": web_evidence_rows,
             "proof_preview": proof_preview,

@@ -112,6 +112,7 @@ Scale controls:
 
 The dashboard shows:
 
+- separate Web Link Hunter and YouTube views, with Web Link Hunter as the default;
 - progress toward 100 very good domains;
 - qualified, priority, watchlist and pending candidates;
 - verified versus projected 30-day views;
