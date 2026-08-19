@@ -1,0 +1,80 @@
+name: Common Crawl Prefilter
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/commoncrawl-prefilter.yml
+      - app/commoncrawl.py
+      - app/commoncrawl_prefilter.py
+      - scripts/commoncrawl_prefilter.py
+  schedule:
+    - cron: "17 1,13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: commoncrawl-prefilter
+  cancel-in-progress: false
+
+jobs:
+  prefilter:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      PROJECT_ID: 31fbe878-aa83-4b74-9820-e9f0d13b984c
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run free prefilter against production ledger
+        id: run
+        shell: bash
+        run: |
+          set +e
+          npx -y @railway/cli@latest run \
+            --project "$PROJECT_ID" \
+            --environment production \
+            --service Postgres \
+            -- bash -lc '
+              if [ -z "${DATABASE_PUBLIC_URL:-}" ]; then
+                echo "DATABASE_PUBLIC_URL is unavailable"
+                exit 2
+              fi
+              export DATABASE_URL="$DATABASE_PUBLIC_URL"
+              export PYTHONPATH=.
+              python scripts/commoncrawl_prefilter.py
+            ' > /tmp/prefilter.out 2>/tmp/prefilter.err
+          code=$?
+          if [ $code -eq 0 ]; then
+            echo "state=success" >> "$GITHUB_OUTPUT"
+            echo "Common Crawl prefilter completed"
+            tail -1 /tmp/prefilter.out || true
+          else
+            echo "state=error" >> "$GITHUB_OUTPUT"
+            echo "Common Crawl prefilter did not complete; details suppressed"
+          fi
+          rm -f /tmp/prefilter.out /tmp/prefilter.err
+          exit 0
+
+      - name: Publish prefilter status without failing workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ steps.run.outputs.state }}
+        run: |
+          curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"commoncrawl/prefilter\",\"description\":\"Free historical-domain prefilter\"}"
