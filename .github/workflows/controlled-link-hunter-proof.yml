@@ -118,10 +118,15 @@ jobs:
               payload = json.load(stream)
           preview = payload.get('preview') or {}
           cost = float(preview.get('estimated_max_cost_usd') or 0.0)
+          summary_count = int(preview.get('summary_target_count') or 0)
+          deep_count = int(preview.get('deep_proof_target_count') or 0)
           assert payload.get('provider_calls_made') == 0
           assert preview.get('paid_requests_made') == 0
           assert preview.get('ready_for_controlled_proof') is True
-          assert int(preview.get('target_count') or 0) > 0
+          assert int(preview.get('target_count') or 0) == summary_count
+          assert 0 < summary_count <= 100
+          assert 0 < deep_count <= 5
+          assert deep_count <= summary_count
           assert preview.get('within_cost_cap') is True
           assert cost <= 0.18
           assert preview.get('credentials_exposed') is False
@@ -146,7 +151,7 @@ jobs:
           fi
           rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
 
-          npx -y @railway/cli@latest variable set LINK_HUNTER_ENABLED=true LINK_HUNTER_PROOF_MAX_COST_USD=0.18 LINK_HUNTER_PROOF_BATCH_SIZE=5 LINK_HUNTER_BACKLINKS_PER_DOMAIN=25 --service "$SERVICE_ID" --environment "$ENVIRONMENT_ID" >/tmp/link-hunter-enable.out 2>/tmp/link-hunter-enable.err
+          npx -y @railway/cli@latest variable set LINK_HUNTER_ENABLED=true LINK_HUNTER_PROOF_MAX_COST_USD=0.18 LINK_HUNTER_SUMMARY_BATCH_SIZE=100 LINK_HUNTER_PROOF_BATCH_SIZE=5 LINK_HUNTER_BACKLINKS_PER_DOMAIN=25 --service "$SERVICE_ID" --environment "$ENVIRONMENT_ID" >/tmp/link-hunter-enable.out 2>/tmp/link-hunter-enable.err
           if [ $? -ne 0 ]; then
             fail "activation" "Feature activation failed before paid proof"
           fi
@@ -178,9 +183,11 @@ jobs:
               payload=json.load(stream)
           counters=payload.get("counters") or {}
           cost=float(counters.get("provider_cost_usd") or 0.0)
+          errors=int(counters.get("errors") or 0)
           if payload.get("status") != "complete": raise SystemExit("proof response was not complete")
+          if errors > 0: raise SystemExit("proof reported item/provider errors")
           if cost > 0.18: raise SystemExit("provider cost exceeded approved ceiling")
-          description=(f"Proof complete: ${cost:.4f}; {int(counters.get('domains_with_live_backlinks') or 0)} domains with links; {int(counters.get('source_links_verified') or 0)} verified")[:140]
+          description=(f"Proof complete: ${cost:.4f}; {int(counters.get('summary_screened') or 0)} screened; {int(counters.get('deep_proof_target_count') or 0)} deep; {int(counters.get('source_links_verified') or 0)} verified")[:140]
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
               stream.write("proof_state=success\n")
               stream.write("failure_stage=none\n")

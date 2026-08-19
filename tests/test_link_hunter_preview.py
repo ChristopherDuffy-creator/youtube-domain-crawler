@@ -17,6 +17,7 @@ def test_preview_selects_next_unchecked_drops_without_paid_calls() -> None:
         dataforseo_login="configured-login",
         dataforseo_password="configured-password",
         link_hunter_enabled=False,
+        link_hunter_summary_batch_size=3,
         link_hunter_proof_batch_size=3,
         link_hunter_backlinks_per_domain=25,
         link_hunter_proof_max_cost_usd=0.50,
@@ -44,6 +45,9 @@ def test_preview_selects_next_unchecked_drops_without_paid_calls() -> None:
 
     assert preview["targets"] == ["three.example", "two.example", "one.example"]
     assert preview["target_count"] == 3
+    assert preview["summary_target_count"] == 3
+    assert preview["deep_proof_target_count"] == 3
+    assert preview["provisional_deep_targets"] == preview["targets"]
     assert preview["backlinks_per_domain"] == 25
     assert preview["max_source_pages"] == 75
     assert 0 < preview["estimated_max_cost_usd"] <= 0.50
@@ -74,11 +78,39 @@ def test_preview_is_zero_cost_even_without_credentials() -> None:
     assert preview["paid_requests_made"] == 0
 
 
+def test_preview_models_100_summary_targets_and_only_five_deep_proofs() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        dataforseo_login="configured-login",
+        dataforseo_password="configured-password",
+        link_hunter_summary_batch_size=100,
+        link_hunter_proof_batch_size=5,
+        link_hunter_backlinks_per_domain=25,
+        link_hunter_proof_max_cost_usd=0.18,
+    )
+
+    with Session(engine) as db:
+        db.add_all(
+            [DroppedDomain(name=f"screen-{index:03}.example", source="test") for index in range(100)]
+        )
+        db.commit()
+        preview = build_provider_proof_preview(db, settings)
+
+    assert preview["summary_target_count"] == 100
+    assert preview["deep_proof_target_count"] == 5
+    assert len(preview["provisional_deep_targets"]) == 5
+    assert preview["max_source_pages"] == 125
+    assert preview["estimated_max_cost_usd"] == 0.1791
+    assert preview["within_cost_cap"] is True
+    assert preview["paid_requests_made"] == 0
+
+
 def test_commoncrawl_positive_targets_move_ahead_of_newer_unknown_and_negative() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     now = datetime(2026, 8, 19, 6, 0, tzinfo=UTC)
-    settings = Settings(link_hunter_proof_batch_size=3)
+    settings = Settings(link_hunter_summary_batch_size=3, link_hunter_proof_batch_size=3)
 
     with Session(engine) as db:
         db.add_all(

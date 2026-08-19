@@ -46,5 +46,6 @@ def test_old_free_signal_candidate_is_not_lost_behind_recent_noise() -> None:
 
         preview = build_provider_proof_preview(db, settings)
 
-    assert preview["targets"] == ["older-signal.example"]
+    assert preview["targets"][0] == "older-signal.example"
+    assert preview["provisional_deep_targets"] == ["older-signal.example"]
     assert preview["target_free_rank_signals"]["older-signal.example"]["commoncrawl_hits"] == 5

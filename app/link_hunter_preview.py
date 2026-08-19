@@ -226,7 +226,7 @@ def _priority_candidate_names(context: dict[str, Any]) -> set[str]:
     return names
 
 
-def _select_provider_proof_targets_with_ranking(
+def _select_provider_summary_targets_with_ranking(
     db: Session, settings: Settings
 ) -> tuple[
     list[str],
@@ -266,14 +266,100 @@ def _select_provider_proof_targets_with_ranking(
     }
     candidates = [drop for drop in unchecked if drop.name not in blocked_names]
     ordered, scores, signals = _rank_free_candidates(candidates, context)
-    targets = [drop.name for drop in ordered[: settings.link_hunter_proof_batch_size]]
+    targets = [drop.name for drop in ordered[: settings.link_hunter_summary_batch_size]]
     return targets, scores, signals, len(blocked_names), context
 
 
-def select_provider_proof_targets(db: Session, settings: Settings) -> list[str]:
-    """Select the highest-ranked paid-proof targets using only cached/free evidence."""
-    targets, _, _, _, _ = _select_provider_proof_targets_with_ranking(db, settings)
+def select_provider_summary_targets(db: Session, settings: Settings) -> list[str]:
+    """Select the large cheap-screen batch using only cached/free evidence."""
+    targets, _, _, _, _ = _select_provider_summary_targets_with_ranking(db, settings)
     return targets
+
+
+def select_provider_summary_targets_with_ranking(
+    db: Session, settings: Settings
+) -> tuple[
+    list[str],
+    dict[str, float],
+    dict[str, dict[str, int | str]],
+    int,
+    dict[str, Any],
+]:
+    """Return the summary screen and its cached/free ranking evidence."""
+    return _select_provider_summary_targets_with_ranking(db, settings)
+
+
+def select_provider_proof_targets(db: Session, settings: Settings) -> list[str]:
+    """Return the provisional deep targets before paid summary evidence exists.
+
+    Kept as a compatibility helper for callers that only need the zero-cost
+    preview. The paid workflow always reranks the full summary screen before it
+    chooses its actual deep-proof targets.
+    """
+    return select_provider_summary_targets(db, settings)[: settings.link_hunter_proof_batch_size]
+
+
+def _summary_signal_score(summary: dict[str, Any]) -> float:
+    """Turn cheap aggregate backlink evidence into a deliberately capped score."""
+    referring_pages = max(0, int(summary.get("referring_pages") or 0))
+    referring_domains = max(
+        0,
+        int(summary.get("referring_main_domains") or summary.get("referring_domains") or 0),
+    )
+    backlinks = max(0, int(summary.get("backlinks") or 0))
+    rank = max(0.0, min(100.0, float(summary.get("rank") or 0.0)))
+
+    rank_points = min(8.0, rank * 0.08)
+    domain_points = min(10.0, 2.2 * math.log2(1 + referring_domains))
+    page_points = min(7.0, 1.4 * math.log2(1 + referring_pages))
+    backlink_points = min(3.0, 0.5 * math.log2(1 + backlinks))
+    diversity_points = (
+        min(2.0, 2.0 * referring_domains / referring_pages) if referring_pages else 0.0
+    )
+    return round(
+        rank_points + domain_points + page_points + backlink_points + diversity_points,
+        2,
+    )
+
+
+def rerank_summary_screen_targets(
+    targets: list[str],
+    free_scores: dict[str, float],
+    free_signals: dict[str, dict[str, int | str]],
+    summaries: dict[str, dict[str, Any]],
+    deep_limit: int,
+) -> tuple[list[str], dict[str, float], dict[str, float]]:
+    """Choose only the best live-summary targets for detailed paid proof."""
+    original_position = {target: position for position, target in enumerate(targets)}
+    summary_scores = {
+        target: _summary_signal_score(summaries.get(target, {})) for target in targets
+    }
+    combined_scores = {
+        target: round(float(free_scores.get(target, 0.0)) + summary_scores[target], 2)
+        for target in targets
+    }
+    eligible = [
+        target
+        for target in targets
+        if int(summaries.get(target, {}).get("referring_pages") or 0) > 0
+    ]
+    ordered = sorted(
+        eligible,
+        key=lambda target: (
+            -combined_scores[target],
+            -float(free_scores.get(target, 0.0)),
+            -int(free_signals.get(target, {}).get("verified_links", 0) or 0),
+            -int(free_signals.get(target, {}).get("independent_sites", 0) or 0),
+            -int(
+                summaries.get(target, {}).get("referring_main_domains")
+                or summaries.get(target, {}).get("referring_domains")
+                or 0
+            ),
+            -int(summaries.get(target, {}).get("referring_pages") or 0),
+            original_position[target],
+        ),
+    )
+    return ordered[: max(0, deep_limit)], combined_scores, summary_scores
 
 
 def _proof_readiness(
@@ -317,15 +403,17 @@ def _has_meaningful_free_signal(signal: dict[str, int | str]) -> bool:
 
 def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, Any]:
     """Describe the next provider proof without making any network/provider calls."""
-    targets, scores, signals, blocked_count, context = _select_provider_proof_targets_with_ranking(
-        db, settings
+    targets, scores, signals, blocked_count, context = (
+        _select_provider_summary_targets_with_ranking(db, settings)
     )
     commoncrawl: dict[str, int] = context["commoncrawl"]
     exact_links: dict[str, int] = context["exact_links"]
+    deep_target_count = min(len(targets), settings.link_hunter_proof_batch_size)
+    provisional_deep_targets = targets[:deep_target_count]
     estimated_max_cost = estimate_provider_proof_max_cost_usd(
-        len(targets), settings.link_hunter_backlinks_per_domain
+        len(targets), deep_target_count, settings.link_hunter_backlinks_per_domain
     )
-    max_source_pages = len(targets) * settings.link_hunter_backlinks_per_domain
+    max_source_pages = deep_target_count * settings.link_hunter_backlinks_per_domain
     target_cc = {target: commoncrawl.get(target) for target in targets}
     target_exact = {target: exact_links.get(target, 0) for target in targets}
     free_positive_count = sum(
@@ -335,7 +423,13 @@ def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, A
     return {
         "targets": targets,
         "target_count": len(targets),
+        "summary_targets": targets,
+        "summary_target_count": len(targets),
+        "summary_targets_sample": targets[:10],
+        "deep_proof_target_count": deep_target_count,
+        "provisional_deep_targets": provisional_deep_targets,
         "selection_strategy": "free_preproof_score",
+        "deep_selection_strategy": "free_preproof_plus_bulk_summary",
         "target_free_scores": {target: scores.get(target, 0.0) for target in targets},
         "target_free_rank_signals": {target: signals.get(target, {}) for target in targets},
         "known_unavailable_targets_skipped": blocked_count,

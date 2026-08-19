@@ -108,7 +108,8 @@
       <section class="notice">
         <strong>Latest controlled proof: {{ run.status }}.</strong>
         {% if run.counters %}
-          Cost ${{ "%.4f"|format(run.counters.get('provider_cost_usd', 0.0)) }} · {{ run.counters.get('domains_with_live_backlinks', 0) }} domain{% if run.counters.get('domains_with_live_backlinks', 0) != 1 %}s{% endif %} with live backlinks · {{ run.counters.get('source_links_verified', 0) }} verified source link{% if run.counters.get('source_links_verified', 0) != 1 %}s{% endif %}.
+          Cost ${{ "%.4f"|format(run.counters.get('provider_cost_usd', 0.0)) }} · {{ run.counters.get('summary_screened', run.counters.get('targets', 0)) }} cheaply screened · {{ run.counters.get('deep_proof_target_count', run.counters.get('backlink_calls', 0)) }} selected for deep proof · {{ run.counters.get('source_links_verified', 0) }} verified source link{% if run.counters.get('source_links_verified', 0) != 1 %}s{% endif %}.
+          {% if run.counters.get('deep_proof_targets') %}<small>Deep-proof domains: {{ run.counters.get('deep_proof_targets')|join(', ') }}</small>{% endif %}
         {% endif %}
         <small>{% if run.finished_at %}Finished {{ run.finished_at.strftime('%d %b %Y %H:%M') }} UTC.{% else %}Proof is still running.{% endif %} Paid calls return to safe/off after the controlled run.</small>
       </section>
@@ -123,15 +124,16 @@
 
       {% if dataforseo_enabled and not link_hunter_enabled %}
       <section class="notice">
-        <strong>Provider ready, automatic spending disabled.</strong> DataForSEO is configured and the controlled proof path has been validated; routine paid Link Hunter runs remain off unless deliberately enabled.
+        <strong>Provider ready; safe/off between guarded batches.</strong> The approved twice-daily controller enables one capped run, then automatically disables paid calls and checks production health.
       </section>
       {% endif %}
 
       <section class="notice">
         <strong>Next proof preview — zero provider calls.</strong>
         {% if proof_preview.target_count %}
-          {{ proof_preview.target_count }} domain{% if proof_preview.target_count != 1 %}s{% endif %}, up to {{ proof_preview.max_source_pages }} source pages, conservative maximum spend ${{ "%.4f"|format(proof_preview.estimated_max_cost_usd) }} against a ${{ "%.2f"|format(proof_preview.configured_cost_cap_usd) }} cap.
-          <small>Targets: {{ proof_preview.targets|join(', ') }}</small>
+          {{ proof_preview.summary_target_count }} domain{% if proof_preview.summary_target_count != 1 %}s{% endif %} in one cheap summary screen → up to {{ proof_preview.deep_proof_target_count }} deep proofs → up to {{ proof_preview.max_source_pages }} source pages. Conservative maximum spend ${{ "%.4f"|format(proof_preview.estimated_max_cost_usd) }} against a ${{ "%.2f"|format(proof_preview.configured_cost_cap_usd) }} cap.
+          <small>Provisional deep-proof leaders: {{ proof_preview.provisional_deep_targets|join(', ') }}. The paid bulk summary reranks these before any detailed backlink call.</small>
+          <small>First summary-screen targets: {{ proof_preview.summary_targets_sample|join(', ') }}{% if proof_preview.summary_target_count > proof_preview.summary_targets_sample|length %}, …{% endif %}</small>
           <small>{% if proof_preview.within_cost_cap %}✓ preflight is inside the configured cap{% else %}✗ preflight exceeds the cap and the paid proof will refuse to start{% endif %} · paid requests made by this preview: {{ proof_preview.paid_requests_made }}</small>
         {% else %}
           No unchecked dropped-domain targets are currently queued for the proof.

@@ -10,6 +10,7 @@ def test_production_batch_is_dormant_capped_and_self_disabling() -> None:
     assert "APPROVE_MAX_0.18_USD" in text
     assert 'RUN_CAP_USD: "0.18"' in text
     assert 'LINK_HUNTER_PROOF_MAX_COST_USD="$RUN_CAP_USD"' in text
+    assert "LINK_HUNTER_SUMMARY_BATCH_SIZE=100" in text
     assert "LINK_HUNTER_PROOF_BATCH_SIZE=5" in text
     assert "LINK_HUNTER_BACKLINKS_PER_DOMAIN=25" in text
     assert "LINK_HUNTER_ENABLED=true" in text
@@ -21,6 +22,8 @@ def test_production_batch_is_dormant_capped_and_self_disabling() -> None:
     assert "No unchecked targets queued; zero paid calls made" in text
     assert "/admin/link-hunter/proof-preview" in text
     assert "/api/link-hunter/proof" in text
+    assert "summary_count <= 100" in text
+    assert "deep_count <= 5" in text
 
 
 def test_production_batch_has_direct_post_run_safety_audit() -> None:

@@ -70,8 +70,10 @@ def test_link_hunter_is_safe_by_default() -> None:
     settings = Settings(dataforseo_login="login", dataforseo_password="password")
     assert settings.dataforseo_enabled is True
     assert settings.link_hunter_enabled is False
+    assert settings.link_hunter_summary_batch_size == 100
     assert settings.link_hunter_proof_batch_size == 5
     assert settings.link_hunter_backlinks_per_domain == 25
+    assert settings.link_hunter_proof_max_cost_usd == 0.18
 
 
 def test_dataforseo_client_requires_credentials() -> None:

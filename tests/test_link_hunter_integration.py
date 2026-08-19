@@ -94,6 +94,7 @@ def test_provider_proof_builds_ranked_web_opportunity(monkeypatch) -> None:
         dataforseo_login="login",
         dataforseo_password="password",
         link_hunter_enabled=True,
+        link_hunter_summary_batch_size=1,
         link_hunter_proof_batch_size=1,
         link_hunter_backlinks_per_domain=25,
         link_hunter_proof_max_cost_usd=1.0,
@@ -137,6 +138,9 @@ def test_provider_proof_builds_ranked_web_opportunity(monkeypatch) -> None:
         counters = link_hunter.run_provider_proof(db, settings)
 
         assert counters["targets"] == 1
+        assert counters["summary_screened"] == 1
+        assert counters["deep_proof_target_count"] == 1
+        assert counters["deep_proof_targets"] == ["example.com"]
         assert counters["summary_calls"] == 1
         assert counters["backlink_calls"] == 1
         assert counters["traffic_calls"] == 1
@@ -170,3 +174,104 @@ def test_provider_proof_builds_ranked_web_opportunity(monkeypatch) -> None:
         provider_queries = db.scalars(select(ProviderQuery)).all()
         assert len(provider_queries) == 3
         assert {query.status for query in provider_queries} == {"complete"}
+
+
+def test_summary_screen_reranks_100_and_allows_only_five_deep_calls(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        dataforseo_login="login",
+        dataforseo_password="password",
+        link_hunter_enabled=True,
+        link_hunter_summary_batch_size=100,
+        link_hunter_proof_batch_size=5,
+        link_hunter_backlinks_per_domain=25,
+        link_hunter_proof_max_cost_usd=0.18,
+    )
+
+    class FunnelClient:
+        summary_targets: list[str] = []
+        detailed_targets: list[str] = []
+
+        def __init__(self, _: Settings):
+            pass
+
+        def bulk_backlink_summaries(self, targets: list[str]) -> DataForSEOResponse:
+            self.__class__.summary_targets = targets
+            return DataForSEOResponse(
+                result={
+                    "items_count": len(targets),
+                    "items": [
+                        {
+                            "url": target,
+                            "rank": index,
+                            "backlinks": index + 1,
+                            "referring_pages": index + 1,
+                            "referring_domains": index + 1,
+                            "referring_main_domains": index + 1,
+                        }
+                        for index, target in enumerate(sorted(targets))
+                    ],
+                },
+                task_cost_usd=0.0276,
+                task_id="summary-100",
+            )
+
+        def backlinks(self, target: str, limit: int = 25) -> DataForSEOResponse:
+            assert limit == 25
+            self.__class__.detailed_targets.append(target)
+            return DataForSEOResponse(
+                result={"items_count": 0, "items": []},
+                task_cost_usd=0.0249,
+                task_id=f"deep-{target}",
+            )
+
+        def bulk_traffic_estimation(self, targets: list[str]) -> DataForSEOResponse:
+            raise AssertionError(f"no traffic call expected for empty backlink rows: {targets}")
+
+    def registered_domain(
+        _: str, __: Settings, exact_registrar_check: bool = False
+    ) -> AvailabilityResult:
+        assert exact_registrar_check is False
+        return AvailabilityResult(
+            status="registered",
+            source="rdap_dns",
+            rdap_status="registered",
+            dns_status="resolved",
+        )
+
+    monkeypatch.setattr(link_hunter, "DataForSEOClient", FunnelClient)
+    monkeypatch.setattr(link_hunter, "check_domain", registered_domain)
+
+    with Session(engine) as db:
+        db.add_all(
+            [DroppedDomain(name=f"domain-{index:03}.example", source="test") for index in range(100)]
+        )
+        db.commit()
+
+        counters = link_hunter.run_provider_proof(db, settings)
+
+        assert len(FunnelClient.summary_targets) == 100
+        assert counters["summary_screened"] == 100
+        assert counters["summary_domains_with_live_backlinks"] == 100
+        assert counters["deep_proof_target_count"] == 5
+        assert counters["backlink_calls"] == 5
+        assert FunnelClient.detailed_targets == counters["deep_proof_targets"]
+        assert set(FunnelClient.detailed_targets) == {
+            "domain-095.example",
+            "domain-096.example",
+            "domain-097.example",
+            "domain-098.example",
+            "domain-099.example",
+        }
+        assert counters["provider_cost_usd"] == 0.1521
+        assert counters["errors"] == 0
+
+        summary_queries = db.scalars(
+            select(ProviderQuery).where(ProviderQuery.endpoint == "bulk_backlink_summary")
+        ).all()
+        deep_queries = db.scalars(
+            select(ProviderQuery).where(ProviderQuery.endpoint == "backlinks")
+        ).all()
+        assert len(summary_queries) == 100
+        assert len(deep_queries) == 5
