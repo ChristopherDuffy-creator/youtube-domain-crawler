@@ -22,42 +22,50 @@ jobs:
         run: |
           set +e
           body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health)"
-          code=$?
-          if [ $code -ne 0 ]; then
-            state=error
-            description="Production health endpoint is unreachable"
-          else
-            BODY="$body" python - <<'PY'
+          if [ $? -ne 0 ]; then
+            echo "db_state=error" >> "$GITHUB_OUTPUT"
+            echo "flag_state=error" >> "$GITHUB_OUTPUT"
+            echo "creds_state=error" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BODY="$body" python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           import os
 
-          payload = json.loads(os.environ["BODY"])
-          assert payload.get("database") == "ok"
-          assert payload.get("link_hunter_enabled") is False
-          assert payload.get("dataforseo_configured") is True
+          try:
+              payload = json.loads(os.environ["BODY"])
+          except Exception:
+              print("db_state=error")
+              print("flag_state=error")
+              print("creds_state=error")
+          else:
+              print("db_state=" + ("success" if payload.get("database") == "ok" else "error"))
+              print("flag_state=" + ("success" if payload.get("link_hunter_enabled") is False else "error"))
+              print("creds_state=" + ("success" if payload.get("dataforseo_configured") is True else "error"))
           PY
-            if [ $? -eq 0 ]; then
-              state=success
-              description="DB healthy; DataForSEO configured; Link Hunter safely disabled"
-            else
-              state=error
-              description="Production is not ready for the controlled proof"
-            fi
-          fi
-          echo "state=$state" >> "$GITHUB_OUTPUT"
-          echo "description=$description" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Publish readiness status
+      - name: Publish readiness statuses
         env:
           GH_TOKEN: ${{ github.token }}
-          STATE: ${{ steps.health.outputs.state }}
-          DESCRIPTION: ${{ steps.health.outputs.description }}
+          DB_STATE: ${{ steps.health.outputs.db_state }}
+          FLAG_STATE: ${{ steps.health.outputs.flag_state }}
+          CREDS_STATE: ${{ steps.health.outputs.creds_state }}
         run: |
-          curl -fsS \
-            -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"link-hunter/readiness\",\"description\":\"$DESCRIPTION\"}"
+          publish() {
+            state="$1"
+            context="$2"
+            description="$3"
+            curl -fsS \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+              -d "{\"state\":\"$state\",\"context\":\"$context\",\"description\":\"$description\"}"
+          }
+
+          publish "$DB_STATE" "link-hunter/database" "Production database health"
+          publish "$FLAG_STATE" "link-hunter/disabled" "Link Hunter remains disabled before live proof"
+          publish "$CREDS_STATE" "link-hunter/dataforseo" "DataForSEO credentials visible to production"
