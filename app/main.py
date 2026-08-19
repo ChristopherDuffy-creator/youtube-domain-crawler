@@ -152,9 +152,31 @@ def _load_web_evidence_rows(db: Session, *, limit: int | None = 100) -> list[Web
 
 @app.get("/health")
 def health(db: Session = Depends(get_db)) -> dict[str, object]:
+    commoncrawl_summary: dict[str, object] | None = None
     try:
         db.scalar(select(func.count()).select_from(RunLog))
         database = "ok"
+        last_commoncrawl = db.scalar(
+            select(RunLog)
+            .where(RunLog.job == "commoncrawl_prefilter")
+            .order_by(RunLog.started_at.desc())
+            .limit(1)
+        )
+        if last_commoncrawl is not None:
+            counters = last_commoncrawl.counters or {}
+            commoncrawl_summary = {
+                "status": last_commoncrawl.status,
+                "checked": int(counters.get("checked") or 0),
+                "with_capture": int(counters.get("with_capture") or 0),
+                "without_capture": int(counters.get("without_capture") or 0),
+                "errors": int(counters.get("errors") or 0),
+                "provider_cost_usd": float(counters.get("provider_cost_usd") or 0.0),
+                "finished_at": (
+                    last_commoncrawl.finished_at.isoformat()
+                    if last_commoncrawl.finished_at is not None
+                    else None
+                ),
+            }
     except Exception:
         database = "error"
     return {
@@ -163,6 +185,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         "scheduler": bool(scheduler and scheduler.running),
         "link_hunter_enabled": settings.link_hunter_enabled,
         "dataforseo_configured": settings.dataforseo_enabled,
+        "commoncrawl_prefilter": commoncrawl_summary,
         "time": datetime.now(UTC).isoformat(),
     }
 
