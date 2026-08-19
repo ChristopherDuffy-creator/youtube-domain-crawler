@@ -46,9 +46,9 @@
     <section class="status-strip" aria-label="Crawler status">
       <article><span>${{ "%.4f"|format(daily_budget.spent_usd) }}</span><small>Spent today{% if daily_budget.reserved_usd %} · ${{ "%.4f"|format(daily_budget.reserved_usd) }} reserved{% endif %}</small></article>
       <article><span>${{ "%.4f"|format(daily_budget.remaining_usd) }}</span><small>Remaining of ${{ "%.2f"|format(daily_budget.limit_usd) }} today</small></article>
-      <article><span>{{ next_web_run.strftime('%H:%M') }}</span><small>Next Web run · {{ next_web_run.strftime('%d %b') }} UTC</small></article>
-      <article><span>{% if last_web_success and last_web_success.finished_at %}{{ last_web_success.finished_at.strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest Web success{% if last_web_success and last_web_success.finished_at %} · {{ last_web_success.finished_at.strftime('%d %b') }} UTC{% endif %}</small></article>
-      <article><span>{% if last_youtube_success and last_youtube_success.finished_at %}{{ last_youtube_success.finished_at.strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest YouTube success{% if last_youtube_success and last_youtube_success.finished_at %} · {{ last_youtube_success.finished_at.strftime('%d %b') }} UTC{% endif %}</small></article>
+      <article><span>{{ (next_web_run|dashboard_time).strftime('%H:%M') }}</span><small>Next Web run · {{ (next_web_run|dashboard_time).strftime('%d %b') }} · Prague time</small></article>
+      <article><span>{% if last_web_success and last_web_success.finished_at %}{{ (last_web_success.finished_at|dashboard_time).strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest Web success{% if last_web_success and last_web_success.finished_at %} · {{ (last_web_success.finished_at|dashboard_time).strftime('%d %b') }} · Prague time{% endif %}</small></article>
+      <article><span>{% if last_youtube_success and last_youtube_success.finished_at %}{{ (last_youtube_success.finished_at|dashboard_time).strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest YouTube success{% if last_youtube_success and last_youtube_success.finished_at %} · {{ (last_youtube_success.finished_at|dashboard_time).strftime('%d %b') }} · Prague time{% endif %}</small></article>
       <article><span>{{ decision_counts.get('shortlisted', 0) }}</span><small>Shortlisted · {{ decision_counts.get('bought', 0) }} bought · {{ decision_counts.get('ignored', 0) }} ignored</small></article>
     </section>
 
@@ -161,51 +161,11 @@
         <article><span>{% if link_hunter_enabled %}On{% else %}Safe{% endif %}</span><small>{% if link_hunter_enabled %}Proof calls enabled{% else %}Paid calls disabled{% endif %}</small></article>
       </section>
 
-      {% set proof_state = namespace(found=false) %}
-      {% for run in latest_runs %}
-        {% if not proof_state.found and run.job == 'link_hunter_proof' %}
-      <section class="notice">
-        <strong>Latest controlled proof: {{ run.status }}.</strong>
-        {% if run.counters %}
-          Cost ${{ "%.4f"|format(run.counters.get('provider_cost_usd', 0.0)) }} · {{ run.counters.get('summary_screened', run.counters.get('targets', 0)) }} cheaply screened · {{ run.counters.get('deep_proof_target_count', run.counters.get('backlink_calls', 0)) }} selected for deep proof · {{ run.counters.get('source_links_verified', 0) }} verified source link{% if run.counters.get('source_links_verified', 0) != 1 %}s{% endif %}.
-          {% if run.counters.get('deep_proof_targets') %}<small>Deep-proof domains: {{ run.counters.get('deep_proof_targets')|join(', ') }}</small>{% endif %}
-        {% endif %}
-        <small>{% if run.finished_at %}Finished {{ run.finished_at.strftime('%d %b %Y %H:%M') }} UTC.{% else %}Proof is still running.{% endif %} Paid calls return to safe/off after the controlled run.</small>
-      </section>
-          {% set proof_state.found = true %}
-        {% endif %}
-      {% endfor %}
-      {% if not proof_state.found %}
-      <section class="notice">
-        <strong>No controlled proof has been recorded yet.</strong> Paid calls remain disabled until a guarded proof is run.
-      </section>
-      {% endif %}
-
-      {% if dataforseo_enabled and not link_hunter_enabled %}
-      <section class="notice">
-        <strong>Provider ready; safe/off between guarded batches.</strong> The approved twelve-slot controller runs every two hours, enables one capped batch, then automatically disables paid calls and checks production health. The database ledger enforces $0.18/run and $2.16/UTC day.
-      </section>
-      {% endif %}
-
       {% if result_tier != 'all' %}
       <section class="filter-summary panel-filter">
         Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> Web opportunities only · <a href="/?view=web">Show all results</a>
       </section>
       {% endif %}
-
-      <section class="notice">
-        <strong>Next proof preview — zero provider calls.</strong>
-        {% if proof_preview.target_count %}
-          {{ proof_preview.summary_target_count }} domain{% if proof_preview.summary_target_count != 1 %}s{% endif %} in one cheap summary screen → up to {{ proof_preview.deep_proof_target_count }} deep proofs → up to {{ proof_preview.max_source_pages }} source pages. Conservative maximum spend ${{ "%.4f"|format(proof_preview.estimated_max_cost_usd) }} against a ${{ "%.2f"|format(proof_preview.configured_cost_cap_usd) }} cap.
-          <small>UTC daily ledger: ${{ "%.4f"|format(proof_preview.daily_budget.spent_usd) }} spent + ${{ "%.4f"|format(proof_preview.daily_budget.reserved_usd) }} reserved · ${{ "%.4f"|format(proof_preview.daily_budget.remaining_usd) }} remaining of ${{ "%.2f"|format(proof_preview.daily_budget.limit_usd) }}.</small>
-          <small>Provisional deep-proof leaders: {{ proof_preview.provisional_deep_targets|join(', ') }}. The paid bulk summary reranks these before any detailed backlink call.</small>
-          <small>First summary-screen targets: {{ proof_preview.summary_targets_sample|join(', ') }}{% if proof_preview.summary_target_count > proof_preview.summary_targets_sample|length %}, …{% endif %}</small>
-          <small>{% if proof_preview.within_cost_cap %}✓ preflight is inside the configured cap{% else %}✗ preflight exceeds the cap and the paid proof will refuse to start{% endif %} · paid requests made by this preview: {{ proof_preview.paid_requests_made }}</small>
-        {% else %}
-          No unchecked dropped-domain targets are currently queued for the proof.
-        {% endif %}
-        <small><a href="/admin/link-hunter/proof-preview">View JSON preview</a></small>
-      </section>
 
       <div class="table-wrap">
         <table>
@@ -278,6 +238,51 @@
           </tbody>
         </table>
       </div>
+
+      <details class="system-details">
+        <summary>Web crawler technical details</summary>
+        <div class="system-details-body">
+          {% set proof_state = namespace(found=false) %}
+          {% for run in latest_runs %}
+            {% if not proof_state.found and run.job == 'link_hunter_proof' %}
+          <section class="technical-note">
+            <strong>Latest controlled proof: {{ run.status }}.</strong>
+            {% if run.counters %}
+              Cost ${{ "%.4f"|format(run.counters.get('provider_cost_usd', 0.0)) }} · {{ run.counters.get('summary_screened', run.counters.get('targets', 0)) }} cheaply screened · {{ run.counters.get('deep_proof_target_count', run.counters.get('backlink_calls', 0)) }} selected for deep proof · {{ run.counters.get('source_links_verified', 0) }} verified source link{% if run.counters.get('source_links_verified', 0) != 1 %}s{% endif %}.
+              {% if run.counters.get('deep_proof_targets') %}<small>Deep-proof domains: {{ run.counters.get('deep_proof_targets')|join(', ') }}</small>{% endif %}
+            {% endif %}
+            <small>{% if run.finished_at %}Finished {{ (run.finished_at|dashboard_time).strftime('%d %b %Y %H:%M') }} Prague time.{% else %}Proof is still running.{% endif %} Paid calls return to safe/off after the controlled run.</small>
+          </section>
+              {% set proof_state.found = true %}
+            {% endif %}
+          {% endfor %}
+          {% if not proof_state.found %}
+          <section class="technical-note">
+            <strong>No controlled proof is visible in the latest run window.</strong> The guarded scheduler remains responsible for enabling and disabling paid calls.
+          </section>
+          {% endif %}
+
+          {% if dataforseo_enabled and not link_hunter_enabled %}
+          <section class="technical-note">
+            <strong>Provider ready; safe/off between guarded batches.</strong> The approved twelve-slot controller runs every two hours, enables one capped batch, then automatically disables paid calls and checks production health. The database ledger enforces $0.18/run and $2.16/UTC day.
+          </section>
+          {% endif %}
+
+          <section class="technical-note">
+            <strong>Next proof preview — zero provider calls.</strong>
+            {% if proof_preview.target_count %}
+              {{ proof_preview.summary_target_count }} domain{% if proof_preview.summary_target_count != 1 %}s{% endif %} in one cheap summary screen → up to {{ proof_preview.deep_proof_target_count }} deep proofs → up to {{ proof_preview.max_source_pages }} source pages. Conservative maximum spend ${{ "%.4f"|format(proof_preview.estimated_max_cost_usd) }} against a ${{ "%.2f"|format(proof_preview.configured_cost_cap_usd) }} cap.
+              <small>UTC daily ledger: ${{ "%.4f"|format(proof_preview.daily_budget.spent_usd) }} spent + ${{ "%.4f"|format(proof_preview.daily_budget.reserved_usd) }} reserved · ${{ "%.4f"|format(proof_preview.daily_budget.remaining_usd) }} remaining of ${{ "%.2f"|format(proof_preview.daily_budget.limit_usd) }}.</small>
+              <small>Provisional deep-proof leaders: {{ proof_preview.provisional_deep_targets|join(', ') }}. The paid bulk summary reranks these before any detailed backlink call.</small>
+              <small>First summary-screen targets: {{ proof_preview.summary_targets_sample|join(', ') }}{% if proof_preview.summary_target_count > proof_preview.summary_targets_sample|length %}, …{% endif %}</small>
+              <small>{% if proof_preview.within_cost_cap %}✓ preflight is inside the configured cap{% else %}✗ preflight exceeds the cap and the paid proof will refuse to start{% endif %} · paid requests made by this preview: {{ proof_preview.paid_requests_made }}</small>
+            {% else %}
+              No unchecked dropped-domain targets are currently queued for the proof.
+            {% endif %}
+            <small><a href="/admin/link-hunter/proof-preview">View JSON preview</a></small>
+          </section>
+        </div>
+      </details>
     </section>
     {% endif %}
 
@@ -287,7 +292,7 @@
         <div class="runs">
         {% for run in latest_runs %}
           <div class="run-row">
-            <div><strong>{{ run.job.replace('_', ' ') }}</strong><small>{{ run.started_at.strftime('%d %b %Y %H:%M') }} UTC</small></div>
+            <div><strong>{{ run.job.replace('_', ' ') }}</strong><small>{{ (run.started_at|dashboard_time).strftime('%d %b %Y %H:%M') }} Prague time</small></div>
             <span class="pill {{ run.status }}">{{ run.status }}</span>
           </div>
         {% else %}<p class="empty">No runs yet.</p>{% endfor %}

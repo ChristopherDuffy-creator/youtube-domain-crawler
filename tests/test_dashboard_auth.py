@@ -7,6 +7,7 @@ from app.main import (
     DASHBOARD_SESSION_COOKIE,
     _create_dashboard_session,
     _dashboard_session_valid,
+    _dashboard_time,
     _dashboard_visit_window,
     _next_link_hunter_slot,
     _safe_next_path,
@@ -116,3 +117,11 @@ def test_next_link_hunter_slot_matches_the_two_hour_schedule() -> None:
     assert _next_link_hunter_slot(datetime(2026, 8, 19, 18, 44, tzinfo=UTC)).strftime(
         "%H:%M"
     ) == "20:43"
+
+
+def test_dashboard_times_are_presented_in_prague_with_dst() -> None:
+    summer = _dashboard_time(datetime(2026, 8, 19, 20, 43, tzinfo=UTC))
+    winter = _dashboard_time(datetime(2026, 12, 19, 20, 43, tzinfo=UTC))
+
+    assert summer is not None and summer.strftime("%H:%M %z") == "22:43 +0200"
+    assert winter is not None and winter.strftime("%H:%M %z") == "21:43 +0100"

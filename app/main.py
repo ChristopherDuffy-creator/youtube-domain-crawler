@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -64,6 +65,7 @@ DASHBOARD_VISIT_BASELINE_COOKIE = "expandosaurus_visit_baseline"
 DASHBOARD_LAST_ACTIVITY_COOKIE = "expandosaurus_last_activity"
 DASHBOARD_VISIT_GAP_SECONDS = 2 * 60 * 60
 DASHBOARD_VISIT_COOKIE_SECONDS = 365 * 24 * 60 * 60
+DASHBOARD_TIMEZONE = ZoneInfo("Europe/Prague")
 ResultTier = Literal["all", "new", "priority", "qualified", "watchlist", "pending"]
 DashboardSystem = Literal["web", "youtube"]
 DecisionStatus = Literal["shortlisted", "bought", "ignored"]
@@ -76,6 +78,18 @@ WebEvidenceRow = tuple[
     SourceLink | None,
     FetchVerification | None,
 ]
+
+
+def _dashboard_time(value: datetime | None) -> datetime | None:
+    """Present stored UTC timestamps in the dashboard owner's Prague timezone."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(DASHBOARD_TIMEZONE)
+
+
+templates.env.filters["dashboard_time"] = _dashboard_time
 
 
 @asynccontextmanager

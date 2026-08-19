@@ -115,7 +115,8 @@ The dashboard shows:
 - separate Web Link Hunter and YouTube views, with Web Link Hunter as the default;
 - clickable All, Priority, Qualified, Watchlist and Pending totals that filter the result table;
 - a visit-aware New filter, persistent Shortlist/Bought/Ignore decisions and an action queue;
-- a live status strip for daily spend, remaining budget, next paid run and latest successful jobs;
+- a live status strip for daily spend, remaining budget, next paid run and latest successful jobs, with all dashboard timestamps shown in Prague time;
+- unobtrusive, collapsed Web crawler technical details below the result table;
 - a signed seven-day dashboard session with an explicit logout button;
 - progress toward 100 very good domains;
 - qualified, priority, watchlist and pending candidates;

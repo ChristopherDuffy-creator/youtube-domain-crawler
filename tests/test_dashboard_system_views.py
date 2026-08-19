@@ -43,6 +43,11 @@ def test_dashboard_exposes_status_strip_and_action_workflow() -> None:
     assert "Next Web run" in template
     assert "Latest Web success" in template
     assert "Latest YouTube success" in template
+    assert "Prague time" in template
+    assert 'class="system-details"' in template
+    assert template.index('<div class="table-wrap">', template.index("WEB-WIDE")) < template.index(
+        'class="system-details"'
+    )
     assert 'action="/admin/dashboard-decision"' in template
     assert "Shortlist" in template
     assert "Bought" in template
