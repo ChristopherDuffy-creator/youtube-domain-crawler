@@ -1,6 +1,7 @@
 name: Railway CLI Deploy
 
 # Direct source upload fallback for Railway GitHub snapshot failures.
+# Triggered after the verified-backup Phase B merge; Link Hunter remains disabled by default.
 on:
   push:
     branches:
