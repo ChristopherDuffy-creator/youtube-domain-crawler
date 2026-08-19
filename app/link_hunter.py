@@ -74,6 +74,34 @@ def _href_points_to_domain(href: str, target_domain: str) -> bool:
     return bool(host and target and (host == target or host.endswith(f".{target}")))
 
 
+def _normalized_link_identity(value: str) -> tuple[str, str]:
+    raw = (value or "").strip()
+    if not raw:
+        return "", "/"
+    if raw.startswith("//"):
+        raw = f"https:{raw}"
+    elif "://" not in raw:
+        raw = f"https://{raw}"
+    parsed = urlparse(raw)
+    host = _normalize_host(raw)
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+    return host, path
+
+
+def _href_matches_provider_target(href: str, target_url: str, target_domain: str) -> bool:
+    if not _href_points_to_domain(href, target_domain):
+        return False
+    target_host, target_path = _normalized_link_identity(target_url)
+    href_host, href_path = _normalized_link_identity(href)
+    if not target_host:
+        return False
+    if target_path == "/":
+        return True
+    return href_host == target_host and href_path == target_path
+
+
 def _validate_public_url(url: str) -> str:
     parsed = urlparse((url or "").strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -509,7 +537,12 @@ def _verify_source_link(
         parser = _HrefParser()
         parser.feed(text)
         verification.link_present = any(
-            _href_points_to_domain(urljoin(final_url, href), target_domain) for href in parser.hrefs
+            _href_matches_provider_target(
+                urljoin(final_url, href),
+                link.target_url,
+                target_domain,
+            )
+            for href in parser.hrefs
         )
         verification.error = None
     except Exception as exc:
