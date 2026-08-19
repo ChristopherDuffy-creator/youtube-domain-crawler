@@ -3,7 +3,7 @@ name: Railway CLI Deploy
 # Direct source upload fallback for Railway GitHub snapshot failures.
 # This workflow verifies the live production health endpoint after deployment
 # and publishes a commit status that can be inspected without Railway UI access.
-# Phase C zero-cost preview deploy trigger.
+# Railway-native Common Crawl scheduler deploy trigger.
 on:
   push:
     branches:
@@ -51,7 +51,7 @@ jobs:
               echo "$body"
               exit 0
             fi
-            echo "Waiting for Phase B health endpoint ($attempt/30)"
+            echo "Waiting for production health endpoint ($attempt/30)"
             sleep 10
           done
           echo "Production health verification failed"
