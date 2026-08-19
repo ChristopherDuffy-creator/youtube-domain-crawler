@@ -1,0 +1,37 @@
+name: Run Approved Production Test
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/run-approved-production-test.yml
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    if: ${{ startsWith(github.event.head_commit.message, 'Run approved $0.18 production test') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch one guarded production batch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY' >/tmp/dispatch.json
+          import json
+          print(json.dumps({
+              "ref": "main",
+              "inputs": {"approval": "APPROVE_MAX_0.18_USD"},
+          }))
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/link-hunter-production-batch.yml/dispatches" \
+            --data-binary @/tmp/dispatch.json
