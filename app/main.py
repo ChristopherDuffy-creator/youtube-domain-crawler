@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import csv
 import hashlib
 import hmac
@@ -9,10 +11,10 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func, select
@@ -53,8 +55,10 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-security = HTTPBasic(auto_error=False)
 scheduler = None
+DASHBOARD_SESSION_COOKIE = "expandosaurus_session"
+DASHBOARD_SESSION_SECONDS = 7 * 24 * 60 * 60
+ResultTier = Literal["all", "priority", "qualified", "watchlist", "pending"]
 
 WebEvidenceRow = tuple[
     Opportunity,
@@ -85,22 +89,129 @@ app = FastAPI(title=settings.app_name, version="0.4.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
-def require_dashboard_auth(
-    credentials: HTTPBasicCredentials | None = Depends(security),
-) -> str:
-    supplied_user = credentials.username if credentials else ""
-    supplied_password = credentials.password if credentials else ""
-    valid_user = hmac.compare_digest(supplied_user.encode(), b"admin")
+def _valid_dashboard_credentials(username: str, password: str) -> bool:
+    supplied_user = username.encode()
+    supplied_password = password.encode()
+    valid_user = hmac.compare_digest(supplied_user, b"admin")
     valid_password = hmac.compare_digest(
-        supplied_password.encode(), settings.dashboard_password.encode()
+        supplied_password, settings.dashboard_password.encode()
     )
-    if not (valid_user and valid_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Basic"},
+    return valid_user and valid_password
+
+
+def _dashboard_session_secret() -> bytes:
+    material = (
+        f"expandosaurus-dashboard:{settings.admin_token}:{settings.dashboard_password}"
+    ).encode()
+    return hashlib.sha256(material).digest()
+
+
+def _create_dashboard_session(*, expires_at: int | None = None) -> str:
+    if expires_at is None:
+        expires_at = int(datetime.now(UTC).timestamp()) + DASHBOARD_SESSION_SECONDS
+    payload = f"admin:{expires_at}".encode()
+    signature = hmac.new(_dashboard_session_secret(), payload, hashlib.sha256).digest()
+    encoded_payload = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return f"{encoded_payload}.{encoded_signature}"
+
+
+def _dashboard_session_valid(token: str, *, now: int | None = None) -> bool:
+    try:
+        encoded_payload, encoded_signature = token.split(".", 1)
+        payload_padding = "=" * (-len(encoded_payload) % 4)
+        signature_padding = "=" * (-len(encoded_signature) % 4)
+        payload = base64.urlsafe_b64decode(encoded_payload + payload_padding)
+        supplied_signature = base64.urlsafe_b64decode(
+            encoded_signature + signature_padding
         )
-    return supplied_user
+        expected_signature = hmac.new(
+            _dashboard_session_secret(), payload, hashlib.sha256
+        ).digest()
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            return False
+        username, expires_text = payload.decode().split(":", 1)
+        current_time = now if now is not None else int(datetime.now(UTC).timestamp())
+        return username == "admin" and int(expires_text) > current_time
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return False
+
+
+def _safe_next_path(next_path: str) -> str:
+    if not next_path.startswith("/") or next_path.startswith("//"):
+        return "/"
+    return next_path
+
+
+def require_dashboard_auth(request: Request) -> str:
+    token = request.cookies.get(DASHBOARD_SESSION_COOKIE, "")
+    if _dashboard_session_valid(token):
+        return "admin"
+    next_path = request.url.path
+    if request.url.query:
+        next_path += f"?{request.url.query}"
+    login_url = f"/login?next={quote(_safe_next_path(next_path), safe='')}"
+    raise HTTPException(
+        status_code=status.HTTP_303_SEE_OTHER,
+        detail="Authentication required",
+        headers={"Location": login_url, "Cache-Control": "no-store"},
+    )
+
+
+@app.get("/login", response_class=HTMLResponse)
+def dashboard_login_page(request: Request, next: str = "/") -> Response:
+    if _dashboard_session_valid(request.cookies.get(DASHBOARD_SESSION_COOKIE, "")):
+        return RedirectResponse(url=_safe_next_path(next), status_code=303)
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={"error": "", "next_path": _safe_next_path(next)},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/login", response_class=HTMLResponse)
+def dashboard_login(
+    request: Request,
+    username: str = Form(default=""),
+    password: str = Form(default=""),
+    next: str = Form(default="/"),
+) -> Response:
+    next_path = _safe_next_path(next)
+    if not _valid_dashboard_credentials(username, password):
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={"error": "Incorrect username or password.", "next_path": next_path},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"Cache-Control": "no-store"},
+        )
+    response = RedirectResponse(url=next_path, status_code=303)
+    response.set_cookie(
+        key=DASHBOARD_SESSION_COOKIE,
+        value=_create_dashboard_session(),
+        max_age=DASHBOARD_SESSION_SECONDS,
+        httponly=True,
+        secure=settings.environment == "production",
+        samesite="lax",
+        path="/",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/logout")
+def dashboard_logout() -> RedirectResponse:
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie(
+        key=DASHBOARD_SESSION_COOKIE,
+        httponly=True,
+        secure=settings.environment == "production",
+        samesite="lax",
+        path="/",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def require_admin_token(x_admin_token: str | None = Header(default=None)) -> None:
@@ -110,21 +221,28 @@ def require_admin_token(x_admin_token: str | None = Header(default=None)) -> Non
         raise HTTPException(status_code=401, detail="Invalid admin token")
 
 
-def _load_web_evidence_rows(db: Session, *, limit: int | None = 100) -> list[WebEvidenceRow]:
+def _load_web_evidence_rows(
+    db: Session,
+    *,
+    limit: int | None = 100,
+    tier: ResultTier = "all",
+) -> list[WebEvidenceRow]:
     statement = (
         select(Opportunity, Domain, SourcePage)
         .join(Domain, Domain.id == Opportunity.domain_id)
         .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
-        .order_by(
-            case(
-                (Opportunity.tier == "priority", 0),
-                (Opportunity.tier == "qualified", 1),
-                (Opportunity.tier == "watchlist", 2),
-                else_=3,
-            ),
-            Opportunity.score.desc(),
-            Opportunity.link_strength.desc(),
-        )
+    )
+    if tier != "all":
+        statement = statement.where(Opportunity.tier == tier)
+    statement = statement.order_by(
+        case(
+            (Opportunity.tier == "priority", 0),
+            (Opportunity.tier == "qualified", 1),
+            (Opportunity.tier == "watchlist", 2),
+            else_=3,
+        ),
+        Opportunity.score.desc(),
+        Opportunity.link_strength.desc(),
     )
     if limit is not None:
         statement = statement.limit(limit)
@@ -276,6 +394,7 @@ def link_hunter_proof_preview(
 def dashboard(
     request: Request,
     view: Literal["web", "youtube"] = "web",
+    tier: ResultTier = "all",
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
@@ -283,12 +402,16 @@ def dashboard(
     web_evidence_rows = []
     proof_preview: dict[str, object] = {}
     if view == "youtube":
-        candidate_rows = db.execute(
+        candidate_statement = (
             select(Candidate, Domain, Video)
             .join(Domain, Domain.id == Candidate.domain_id)
             .join(Video, Video.id == Candidate.best_video_id)
             .where(Candidate.tier != "rejected")
-            .order_by(
+        )
+        if tier != "all":
+            candidate_statement = candidate_statement.where(Candidate.tier == tier)
+        candidate_rows = db.execute(
+            candidate_statement.order_by(
                 case(
                     (Candidate.tier == "priority", 0),
                     (Candidate.tier == "qualified", 1),
@@ -301,21 +424,28 @@ def dashboard(
             .limit(100)
         ).all()
     else:
-        web_evidence_rows = _load_web_evidence_rows(db, limit=100)
+        web_evidence_rows = _load_web_evidence_rows(db, limit=100, tier=tier)
         proof_preview = build_provider_proof_preview(db, settings)
     latest_runs = db.scalars(select(RunLog).order_by(RunLog.started_at.desc()).limit(16)).all()
 
-    qualified = (
-        db.scalar(
-            select(func.count())
-            .select_from(Candidate)
-            .where(Candidate.tier.in_(["qualified", "priority"]))
-        )
-        or 0
+    youtube_tier_counts = {
+        tier_name: int(count)
+        for tier_name, count in db.execute(
+            select(Candidate.tier, func.count()).group_by(Candidate.tier)
+        ).all()
+    }
+    web_tier_counts = {
+        tier_name: int(count)
+        for tier_name, count in db.execute(
+            select(Opportunity.tier, func.count()).group_by(Opportunity.tier)
+        ).all()
+    }
+    qualified = youtube_tier_counts.get("qualified", 0) + youtube_tier_counts.get(
+        "priority", 0
     )
-    watchlist = (
-        db.scalar(select(func.count()).select_from(Candidate).where(Candidate.tier == "watchlist"))
-        or 0
+    youtube_results = sum(
+        youtube_tier_counts.get(tier_name, 0)
+        for tier_name in ("priority", "qualified", "watchlist", "pending")
     )
     crawler_videos = db.scalar(select(func.count()).select_from(Video)) or 0
     crawler_domains = db.scalar(select(func.count()).select_from(Domain)) or 0
@@ -342,7 +472,7 @@ def dashboard(
     )
     dropped_ingested = db.scalar(select(func.count()).select_from(DroppedDomain)) or 0
 
-    web_opportunities = db.scalar(select(func.count()).select_from(Opportunity)) or 0
+    web_opportunities = sum(web_tier_counts.values())
     web_source_sites = db.scalar(select(func.count()).select_from(SourceSite)) or 0
     web_source_pages = db.scalar(select(func.count()).select_from(SourcePage)) or 0
     web_source_links = (
@@ -357,12 +487,15 @@ def dashboard(
         name="dashboard.html",
         context={
             "dashboard_view": view,
+            "result_tier": tier,
             "candidate_rows": candidate_rows,
             "web_evidence_rows": web_evidence_rows,
             "proof_preview": proof_preview,
             "latest_runs": latest_runs,
             "qualified": qualified,
-            "watchlist": watchlist,
+            "youtube_results": youtube_results,
+            "youtube_tier_counts": youtube_tier_counts,
+            "web_tier_counts": web_tier_counts,
             "crawler_videos": crawler_videos,
             "crawler_domains": crawler_domains,
             "exact_links": exact_links,
@@ -392,16 +525,20 @@ def dashboard(
 
 @app.get("/export/candidates.csv")
 def export_candidates(
+    tier: ResultTier = "all",
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
 ) -> Response:
-    rows = db.execute(
+    statement = (
         select(Candidate, Domain, Video)
         .join(Domain, Domain.id == Candidate.domain_id)
         .join(Video, Video.id == Candidate.best_video_id)
-        .where(Candidate.tier.in_(["priority", "qualified", "watchlist"]))
-        .order_by(Candidate.score.desc())
-    ).all()
+    )
+    if tier == "all":
+        statement = statement.where(Candidate.tier.in_(["priority", "qualified", "watchlist"]))
+    else:
+        statement = statement.where(Candidate.tier == tier)
+    rows = db.execute(statement.order_by(Candidate.score.desc())).all()
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
@@ -446,10 +583,11 @@ def export_candidates(
 
 @app.get("/export/link-hunter.csv")
 def export_link_hunter(
+    tier: ResultTier = "all",
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
 ) -> Response:
-    rows = _load_web_evidence_rows(db, limit=None)
+    rows = _load_web_evidence_rows(db, limit=None, tier=tier)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(

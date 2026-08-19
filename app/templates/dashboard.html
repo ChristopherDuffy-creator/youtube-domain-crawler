@@ -16,8 +16,11 @@
       </div>
       <div class="topbar-actions">
         <a class="button secondary" href="/admin/database-backup">Database backup</a>
-        <a class="button secondary" href="/export/candidates.csv">YouTube CSV</a>
-        <a class="button secondary" href="/export/link-hunter.csv">Web CSV</a>
+        <a class="button secondary" href="/export/candidates.csv{% if dashboard_view == 'youtube' and result_tier != 'all' %}?tier={{ result_tier }}{% endif %}">YouTube CSV</a>
+        <a class="button secondary" href="/export/link-hunter.csv{% if dashboard_view == 'web' and result_tier != 'all' %}?tier={{ result_tier }}{% endif %}">Web CSV</a>
+        <form action="/logout" method="post" class="inline-form">
+          <button class="button secondary" type="submit">Logout</button>
+        </form>
       </div>
     </header>
 
@@ -61,8 +64,11 @@
     </section>
 
     <section class="stats-grid">
-      <article><span>{{ qualified }}</span><small>YouTube qualified / priority</small></article>
-      <article><span>{{ watchlist }}</span><small>YouTube watchlist</small></article>
+      <a class="stat-card{% if result_tier == 'all' %} active{% endif %}" href="/?view=youtube"><span>{{ "{:,}".format(youtube_results) }}</span><small>All YouTube results</small></a>
+      <a class="stat-card priority{% if result_tier == 'priority' %} active{% endif %}" href="/?view=youtube&amp;tier=priority"><span>{{ "{:,}".format(youtube_tier_counts.get('priority', 0)) }}</span><small>Priority — click to view</small></a>
+      <a class="stat-card qualified{% if result_tier == 'qualified' %} active{% endif %}" href="/?view=youtube&amp;tier=qualified"><span>{{ "{:,}".format(youtube_tier_counts.get('qualified', 0)) }}</span><small>Qualified — click to view</small></a>
+      <a class="stat-card watchlist{% if result_tier == 'watchlist' %} active{% endif %}" href="/?view=youtube&amp;tier=watchlist"><span>{{ "{:,}".format(youtube_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — click to view</small></a>
+      <a class="stat-card pending{% if result_tier == 'pending' %} active{% endif %}" href="/?view=youtube&amp;tier=pending"><span>{{ "{:,}".format(youtube_tier_counts.get('pending', 0)) }}</span><small>Pending — click to view</small></a>
       <article><span>{{ "{:,}".format(cumulative_videos) }}</span><small>Videos checked cumulative</small></article>
       <article><span>{{ "{:,}".format(cumulative_domains) }}</span><small>Domains checked cumulative</small></article>
       <article><span>{{ "{:,}".format(cumulative_dropped) }}</span><small>Dropped names checked/loaded</small></article>
@@ -77,6 +83,7 @@
           <p class="eyebrow">YOUTUBE</p>
           <h2>YouTube opportunities</h2>
           <p>Priority {{ "{:,}".format(priority_threshold) }}+ · Qualified {{ "{:,}".format(qualified_threshold) }}+ · Watchlist {{ "{:,}".format(watch_threshold) }}+</p>
+          {% if result_tier != 'all' %}<p class="filter-summary">Showing <strong>{{ result_tier }}</strong> only · <a href="/?view=youtube">Show all results</a></p>{% endif %}
         </div>
       </div>
       <div class="table-wrap">
@@ -99,7 +106,7 @@
               <td>{{ candidate.link_count }}<small>{{ candidate.video_count }} video{% if candidate.video_count != 1 %}s{% endif %}</small></td>
             </tr>
           {% else %}
-            <tr><td colspan="7" class="empty">No ranked YouTube candidates yet.</td></tr>
+            <tr><td colspan="7" class="empty">No {{ result_tier if result_tier != 'all' else 'ranked' }} YouTube candidates yet.</td></tr>
           {% endfor %}
           </tbody>
         </table>
@@ -118,7 +125,11 @@
       </div>
 
       <section class="stats-grid">
-        <article><span>{{ "{:,}".format(web_opportunities) }}</span><small>Web opportunities</small></article>
+        <a class="stat-card{% if result_tier == 'all' %} active{% endif %}" href="/?view=web"><span>{{ "{:,}".format(web_opportunities) }}</span><small>All Web opportunities</small></a>
+        <a class="stat-card priority{% if result_tier == 'priority' %} active{% endif %}" href="/?view=web&amp;tier=priority"><span>{{ "{:,}".format(web_tier_counts.get('priority', 0)) }}</span><small>Priority — click to view</small></a>
+        <a class="stat-card qualified{% if result_tier == 'qualified' %} active{% endif %}" href="/?view=web&amp;tier=qualified"><span>{{ "{:,}".format(web_tier_counts.get('qualified', 0)) }}</span><small>Qualified — click to view</small></a>
+        <a class="stat-card watchlist{% if result_tier == 'watchlist' %} active{% endif %}" href="/?view=web&amp;tier=watchlist"><span>{{ "{:,}".format(web_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — click to view</small></a>
+        <a class="stat-card pending{% if result_tier == 'pending' %} active{% endif %}" href="/?view=web&amp;tier=pending"><span>{{ "{:,}".format(web_tier_counts.get('pending', 0)) }}</span><small>Pending — click to view</small></a>
         <article><span>{{ "{:,}".format(web_source_sites) }}</span><small>Independent source sites</small></article>
         <article><span>{{ "{:,}".format(web_source_pages) }}</span><small>Source pages</small></article>
         <article><span>{{ "{:,}".format(web_source_links) }}</span><small>Provider-live links</small></article>
@@ -149,6 +160,12 @@
       {% if dataforseo_enabled and not link_hunter_enabled %}
       <section class="notice">
         <strong>Provider ready; safe/off between guarded batches.</strong> The approved twelve-slot controller runs every two hours, enables one capped batch, then automatically disables paid calls and checks production health. The database ledger enforces $0.18/run and $2.16/UTC day.
+      </section>
+      {% endif %}
+
+      {% if result_tier != 'all' %}
+      <section class="filter-summary panel-filter">
+        Showing <strong>{{ result_tier }}</strong> Web opportunities only · <a href="/?view=web">Show all results</a>
       </section>
       {% endif %}
 
@@ -219,7 +236,7 @@
               </td>
             </tr>
           {% else %}
-            <tr><td colspan="7" class="empty">No web-wide proof results yet. This section is ready for controlled DataForSEO batches.</td></tr>
+            <tr><td colspan="7" class="empty">No {{ result_tier if result_tier != 'all' else 'web-wide proof' }} results yet.</td></tr>
           {% endfor %}
           </tbody>
         </table>
