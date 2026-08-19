@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - Controlled Link Hunter Proof
+      - Production Link Hunter Batch
     types:
       - completed
   workflow_dispatch:
@@ -23,30 +24,34 @@ jobs:
     env:
       PUBLIC_URL: https://youtube-domain-crawler-production.up.railway.app
     steps:
-      - name: Resolve audited commit
+      - name: Resolve audited commit and run type
         id: target
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           FALLBACK_SHA: ${{ github.sha }}
         run: |
           if [ "$EVENT_NAME" = "workflow_run" ] && [ -n "$WORKFLOW_HEAD_SHA" ]; then
             echo "sha=$WORKFLOW_HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "workflow_name=$WORKFLOW_NAME" >> "$GITHUB_OUTPUT"
           else
             echo "sha=$FALLBACK_SHA" >> "$GITHUB_OUTPUT"
+            echo "workflow_name=manual" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Verify proof statuses and production safe state
+      - name: Verify paid-run statuses and production safe state
         id: audit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ steps.target.outputs.sha }}
+          WORKFLOW_NAME: ${{ steps.target.outputs.workflow_name }}
         run: |
           set +e
           echo "state=error" >> "$GITHUB_OUTPUT"
-          echo "description=Post-proof audit did not complete" >> "$GITHUB_OUTPUT"
+          echo "description=Post-run audit did not complete" >> "$GITHUB_OUTPUT"
 
           statuses="$(curl -fsS \
             -H "Authorization: Bearer $GH_TOKEN" \
@@ -55,11 +60,11 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/statuses?per_page=100" \
             2>/dev/null)"
           if [ $? -ne 0 ]; then
-            echo "description=Could not read proof statuses" >> "$GITHUB_OUTPUT"
+            echo "description=Could not read Link Hunter run statuses" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          STATUSES="$statuses" python - <<'PY'
+          STATUSES="$statuses" WORKFLOW_NAME="$WORKFLOW_NAME" python - <<'PY'
           import json
           import os
 
@@ -68,11 +73,27 @@ jobs:
           for row in rows:
               context = str(row.get("context") or "")
               latest.setdefault(context, str(row.get("state") or ""))
-          assert latest.get("link-hunter/paid-proof") == "success"
-          assert latest.get("link-hunter/proof-disabled") == "success"
+
+          workflow_name = os.environ.get("WORKFLOW_NAME") or ""
+          if workflow_name == "Production Link Hunter Batch":
+              assert latest.get("link-hunter/production-batch") == "success"
+              assert latest.get("link-hunter/production-disabled") == "success"
+          elif workflow_name == "Controlled Link Hunter Proof":
+              assert latest.get("link-hunter/paid-proof") == "success"
+              assert latest.get("link-hunter/proof-disabled") == "success"
+          else:
+              proof_ok = (
+                  latest.get("link-hunter/paid-proof") == "success"
+                  and latest.get("link-hunter/proof-disabled") == "success"
+              )
+              production_ok = (
+                  latest.get("link-hunter/production-batch") == "success"
+                  and latest.get("link-hunter/production-disabled") == "success"
+              )
+              assert proof_ok or production_ok
           PY
           if [ $? -ne 0 ]; then
-            echo "description=Proof or cleanup status is not successful" >> "$GITHUB_OUTPUT"
+            echo "description=Paid run or cleanup status is not successful" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -101,10 +122,10 @@ jobs:
           fi
 
           echo "state=success" >> "$GITHUB_OUTPUT"
-          echo "description=Proof succeeded and production is healthy with paid calls disabled" >> "$GITHUB_OUTPUT"
+          echo "description=Paid run succeeded and production is healthy with paid calls disabled" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Publish post-proof audit status
+      - name: Publish post-run audit status
         if: always()
         shell: bash
         env:
@@ -120,7 +141,7 @@ jobs:
           print(json.dumps({
               "state": os.environ.get("AUDIT_STATE") or "error",
               "context": "link-hunter/post-proof-audit",
-              "description": (os.environ.get("DESCRIPTION") or "Post-proof audit did not complete")[:140],
+              "description": (os.environ.get("DESCRIPTION") or "Post-run audit did not complete")[:140],
           }))
           PY
           curl -fsS -X POST \
