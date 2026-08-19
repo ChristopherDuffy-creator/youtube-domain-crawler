@@ -52,6 +52,7 @@ def test_preview_selects_next_unchecked_drops_without_paid_calls() -> None:
     assert preview["dataforseo_configured"] is True
     assert preview["link_hunter_enabled"] is False
     assert preview["paid_requests_made"] == 0
+    assert preview["commoncrawl_signal_count"] == 0
 
 
 def test_preview_is_zero_cost_even_without_credentials() -> None:
@@ -71,3 +72,50 @@ def test_preview_is_zero_cost_even_without_credentials() -> None:
     assert preview["targets"] == ["preview-only.example"]
     assert preview["dataforseo_configured"] is False
     assert preview["paid_requests_made"] == 0
+
+
+def test_commoncrawl_positive_targets_move_ahead_of_newer_unknown_and_negative() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 19, 6, 0, tzinfo=UTC)
+    settings = Settings(link_hunter_proof_batch_size=3)
+
+    with Session(engine) as db:
+        db.add_all(
+            [
+                DroppedDomain(name="newest.example", source="test", first_seen_at=now),
+                DroppedDomain(
+                    name="positive.example", source="test", first_seen_at=now - timedelta(minutes=1)
+                ),
+                DroppedDomain(
+                    name="unknown.example", source="test", first_seen_at=now - timedelta(minutes=2)
+                ),
+                DroppedDomain(
+                    name="negative.example", source="test", first_seen_at=now - timedelta(minutes=3)
+                ),
+                ProviderQuery(
+                    provider="commoncrawl",
+                    endpoint="url_index",
+                    target="positive.example",
+                    status="complete",
+                    row_count=2,
+                ),
+                ProviderQuery(
+                    provider="commoncrawl",
+                    endpoint="url_index",
+                    target="negative.example",
+                    status="complete",
+                    row_count=0,
+                ),
+            ]
+        )
+        db.commit()
+        preview = build_provider_proof_preview(db, settings)
+
+    assert preview["targets"] == ["positive.example", "newest.example", "unknown.example"]
+    assert preview["commoncrawl_positive_targets"] == ["positive.example"]
+    assert preview["target_commoncrawl_hits"] == {
+        "positive.example": 2,
+        "newest.example": None,
+        "unknown.example": None,
+    }
