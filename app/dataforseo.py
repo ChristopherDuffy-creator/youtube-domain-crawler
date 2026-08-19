@@ -7,6 +7,16 @@ import httpx
 
 from app.config import Settings
 
+# Current DataForSEO public pricing checked 2026-08-19. The proof uses these
+# conservative per-request/per-row ceilings to refuse an oversized batch before
+# making any paid request. Actual task costs are still recorded from responses.
+BACKLINK_REQUEST_USD = 0.024
+BACKLINK_ROW_USD = 0.000036
+LABS_REQUEST_USD = 0.012
+LABS_ITEM_USD = 0.00012
+MAX_BULK_SUMMARY_DOMAINS = 100
+MAX_TRAFFIC_TARGETS = 1000
+
 
 class DataForSEOError(RuntimeError):
     pass
@@ -17,6 +27,31 @@ class DataForSEOResponse:
     result: dict[str, Any]
     task_cost_usd: float
     task_id: str
+
+
+def estimate_provider_proof_max_cost_usd(domain_count: int, backlinks_per_domain: int) -> float:
+    """Return the worst-case provider spend implied by the configured proof limits.
+
+    The estimate assumes every target survives the bulk summary, every detailed
+    backlink request returns its full row limit, and every returned source page
+    requires a traffic-estimation item. This deliberately overestimates a normal
+    proof so the configured spend cap is checked before the first paid call.
+    """
+    if domain_count <= 0:
+        return 0.0
+    if domain_count > MAX_BULK_SUMMARY_DOMAINS:
+        raise ValueError(f"proof cost estimate supports at most {MAX_BULK_SUMMARY_DOMAINS} domains")
+    if backlinks_per_domain <= 0 or backlinks_per_domain > 1000:
+        raise ValueError("backlinks_per_domain must be between 1 and 1000")
+
+    summary_cost = BACKLINK_REQUEST_USD + BACKLINK_ROW_USD * domain_count
+    detailed_cost = domain_count * (
+        BACKLINK_REQUEST_USD + BACKLINK_ROW_USD * backlinks_per_domain
+    )
+    source_pages = domain_count * backlinks_per_domain
+    traffic_requests = (source_pages + MAX_TRAFFIC_TARGETS - 1) // MAX_TRAFFIC_TARGETS
+    traffic_cost = traffic_requests * LABS_REQUEST_USD + source_pages * LABS_ITEM_USD
+    return round(summary_cost + detailed_cost + traffic_cost, 6)
 
 
 class DataForSEOClient:
@@ -84,8 +119,10 @@ class DataForSEOClient:
         # DataForSEO allows up to 1,000 targets, but at most 100 distinct
         # domains in a bulk-pages-summary request. Link Hunter feeds domains,
         # so 100 domain targets is the safe per-call ceiling here.
-        if not targets or len(targets) > 100:
-            raise ValueError("bulk backlink summary requires 1-100 domain targets")
+        if not targets or len(targets) > MAX_BULK_SUMMARY_DOMAINS:
+            raise ValueError(
+                f"bulk backlink summary requires 1-{MAX_BULK_SUMMARY_DOMAINS} domain targets"
+            )
         return self._post(
             "backlinks/bulk_pages_summary/live",
             {
@@ -115,8 +152,8 @@ class DataForSEOClient:
         )
 
     def bulk_traffic_estimation(self, targets: list[str]) -> DataForSEOResponse:
-        if not targets or len(targets) > 1000:
-            raise ValueError("bulk traffic estimation requires 1-1000 targets")
+        if not targets or len(targets) > MAX_TRAFFIC_TARGETS:
+            raise ValueError(f"bulk traffic estimation requires 1-{MAX_TRAFFIC_TARGETS} targets")
         return self._post(
             "dataforseo_labs/google/bulk_traffic_estimation/live",
             {
