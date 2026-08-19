@@ -43,6 +43,15 @@
       </a>
     </nav>
 
+    <section class="status-strip" aria-label="Crawler status">
+      <article><span>${{ "%.4f"|format(daily_budget.spent_usd) }}</span><small>Spent today{% if daily_budget.reserved_usd %} · ${{ "%.4f"|format(daily_budget.reserved_usd) }} reserved{% endif %}</small></article>
+      <article><span>${{ "%.4f"|format(daily_budget.remaining_usd) }}</span><small>Remaining of ${{ "%.2f"|format(daily_budget.limit_usd) }} today</small></article>
+      <article><span>{{ next_web_run.strftime('%H:%M') }}</span><small>Next Web run · {{ next_web_run.strftime('%d %b') }} UTC</small></article>
+      <article><span>{% if last_web_success and last_web_success.finished_at %}{{ last_web_success.finished_at.strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest Web success{% if last_web_success and last_web_success.finished_at %} · {{ last_web_success.finished_at.strftime('%d %b') }} UTC{% endif %}</small></article>
+      <article><span>{% if last_youtube_success and last_youtube_success.finished_at %}{{ last_youtube_success.finished_at.strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest YouTube success{% if last_youtube_success and last_youtube_success.finished_at %} · {{ last_youtube_success.finished_at.strftime('%d %b') }} UTC{% endif %}</small></article>
+      <article><span>{{ decision_counts.get('shortlisted', 0) }}</span><small>Shortlisted · {{ decision_counts.get('bought', 0) }} bought · {{ decision_counts.get('ignored', 0) }} ignored</small></article>
+    </section>
+
     {% if not registrar_enabled or not email_enabled %}
     <section class="notice">
       <strong>Core setup still to finish:</strong>
@@ -65,6 +74,7 @@
 
     <section class="stats-grid">
       <a class="stat-card{% if result_tier == 'all' %} active{% endif %}" href="/?view=youtube"><span>{{ "{:,}".format(youtube_results) }}</span><small>All YouTube results</small></a>
+      <a class="stat-card new{% if result_tier == 'new' %} active{% endif %}" href="/?view=youtube&amp;tier=new"><span>{{ "{:,}".format(youtube_new_count) }}</span><small>New since your last visit</small></a>
       <a class="stat-card priority{% if result_tier == 'priority' %} active{% endif %}" href="/?view=youtube&amp;tier=priority"><span>{{ "{:,}".format(youtube_tier_counts.get('priority', 0)) }}</span><small>Priority — click to view</small></a>
       <a class="stat-card qualified{% if result_tier == 'qualified' %} active{% endif %}" href="/?view=youtube&amp;tier=qualified"><span>{{ "{:,}".format(youtube_tier_counts.get('qualified', 0)) }}</span><small>Qualified — click to view</small></a>
       <a class="stat-card watchlist{% if result_tier == 'watchlist' %} active{% endif %}" href="/?view=youtube&amp;tier=watchlist"><span>{{ "{:,}".format(youtube_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — click to view</small></a>
@@ -83,17 +93,17 @@
           <p class="eyebrow">YOUTUBE</p>
           <h2>YouTube opportunities</h2>
           <p>Priority {{ "{:,}".format(priority_threshold) }}+ · Qualified {{ "{:,}".format(qualified_threshold) }}+ · Watchlist {{ "{:,}".format(watch_threshold) }}+</p>
-          {% if result_tier != 'all' %}<p class="filter-summary">Showing <strong>{{ result_tier }}</strong> only · <a href="/?view=youtube">Show all results</a></p>{% endif %}
+          {% if result_tier != 'all' %}<p class="filter-summary">Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> only · <a href="/?view=youtube">Show all results</a></p>{% endif %}
         </div>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Domain</th><th>Tier</th><th>30-day views</th><th>Availability</th><th>Score</th><th>Linked video</th><th>Links</th></tr>
+            <tr><th>Domain</th><th>Tier</th><th>30-day views</th><th>Availability</th><th>Score</th><th>Linked video</th><th>Links</th><th>Action</th></tr>
           </thead>
           <tbody>
           {% for candidate, domain, video in candidate_rows %}
-            <tr>
+            <tr{% if decision_by_domain.get(domain.id) == 'ignored' %} class="decision-ignored"{% endif %}>
               <td><strong>{{ domain.name }}</strong>{% if domain.registrar_price_usd %}<small>${{ "%.2f"|format(domain.registrar_price_usd) }}</small>{% endif %}</td>
               <td><span class="pill {{ candidate.tier }}">{{ candidate.tier }}</span></td>
               <td>
@@ -104,9 +114,22 @@
               <td><strong>{{ "%.1f"|format(candidate.score) }}</strong></td>
               <td><a href="https://www.youtube.com/watch?v={{ video.id }}" target="_blank" rel="noopener">{{ video.title[:75] }}</a><small>{{ "{:,}".format(video.lifetime_views) }} lifetime views</small></td>
               <td>{{ candidate.link_count }}<small>{{ candidate.video_count }} video{% if candidate.video_count != 1 %}s{% endif %}</small></td>
+              <td>
+                <div class="decision-actions">
+                  {% for decision_value, decision_label in [('shortlisted', 'Shortlist'), ('bought', 'Bought'), ('ignored', 'Ignore')] %}
+                  <form action="/admin/dashboard-decision" method="post">
+                    <input type="hidden" name="system" value="youtube">
+                    <input type="hidden" name="domain_id" value="{{ domain.id }}">
+                    <input type="hidden" name="decision_status" value="{{ decision_value }}">
+                    <input type="hidden" name="return_to" value="{{ return_to }}">
+                    <button class="decision-button {{ decision_value }}{% if decision_by_domain.get(domain.id) == decision_value %} active{% endif %}" type="submit">{{ decision_label }}</button>
+                  </form>
+                  {% endfor %}
+                </div>
+              </td>
             </tr>
           {% else %}
-            <tr><td colspan="7" class="empty">No {{ result_tier if result_tier != 'all' else 'ranked' }} YouTube candidates yet.</td></tr>
+            <tr><td colspan="8" class="empty">No {{ 'new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'ranked') }} YouTube candidates yet.</td></tr>
           {% endfor %}
           </tbody>
         </table>
@@ -126,6 +149,7 @@
 
       <section class="stats-grid">
         <a class="stat-card{% if result_tier == 'all' %} active{% endif %}" href="/?view=web"><span>{{ "{:,}".format(web_opportunities) }}</span><small>All Web opportunities</small></a>
+        <a class="stat-card new{% if result_tier == 'new' %} active{% endif %}" href="/?view=web&amp;tier=new"><span>{{ "{:,}".format(web_new_count) }}</span><small>New since your last visit</small></a>
         <a class="stat-card priority{% if result_tier == 'priority' %} active{% endif %}" href="/?view=web&amp;tier=priority"><span>{{ "{:,}".format(web_tier_counts.get('priority', 0)) }}</span><small>Priority — click to view</small></a>
         <a class="stat-card qualified{% if result_tier == 'qualified' %} active{% endif %}" href="/?view=web&amp;tier=qualified"><span>{{ "{:,}".format(web_tier_counts.get('qualified', 0)) }}</span><small>Qualified — click to view</small></a>
         <a class="stat-card watchlist{% if result_tier == 'watchlist' %} active{% endif %}" href="/?view=web&amp;tier=watchlist"><span>{{ "{:,}".format(web_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — click to view</small></a>
@@ -165,7 +189,7 @@
 
       {% if result_tier != 'all' %}
       <section class="filter-summary panel-filter">
-        Showing <strong>{{ result_tier }}</strong> Web opportunities only · <a href="/?view=web">Show all results</a>
+        Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> Web opportunities only · <a href="/?view=web">Show all results</a>
       </section>
       {% endif %}
 
@@ -186,11 +210,11 @@
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Domain</th><th>Tier / score</th><th>Best source</th><th>Traffic</th><th>Link evidence</th><th>Referrers</th><th>Availability</th></tr>
+            <tr><th>Domain</th><th>Tier / score</th><th>Best source</th><th>Traffic</th><th>Link evidence</th><th>Referrers</th><th>Availability</th><th>Action</th></tr>
           </thead>
           <tbody>
           {% for opportunity, domain, page, site, link, verification in web_evidence_rows %}
-            <tr>
+            <tr{% if decision_by_domain.get(domain.id) == 'ignored' %} class="decision-ignored"{% endif %}>
               <td>
                 <strong>{{ domain.name }}</strong>
                 {% if opportunity.niche %}<small>{{ opportunity.niche }}</small>{% endif %}
@@ -234,9 +258,22 @@
                 <span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span>
                 <small>{{ domain.availability_source or 'not checked' }}</small>
               </td>
+              <td>
+                <div class="decision-actions">
+                  {% for decision_value, decision_label in [('shortlisted', 'Shortlist'), ('bought', 'Bought'), ('ignored', 'Ignore')] %}
+                  <form action="/admin/dashboard-decision" method="post">
+                    <input type="hidden" name="system" value="web">
+                    <input type="hidden" name="domain_id" value="{{ domain.id }}">
+                    <input type="hidden" name="decision_status" value="{{ decision_value }}">
+                    <input type="hidden" name="return_to" value="{{ return_to }}">
+                    <button class="decision-button {{ decision_value }}{% if decision_by_domain.get(domain.id) == decision_value %} active{% endif %}" type="submit">{{ decision_label }}</button>
+                  </form>
+                  {% endfor %}
+                </div>
+              </td>
             </tr>
           {% else %}
-            <tr><td colspan="7" class="empty">No {{ result_tier if result_tier != 'all' else 'web-wide proof' }} results yet.</td></tr>
+            <tr><td colspan="8" class="empty">No {{ 'new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'web-wide proof') }} results yet.</td></tr>
           {% endfor %}
           </tbody>
         </table>

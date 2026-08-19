@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -95,3 +97,38 @@ def test_dashboard_web_rows_can_be_filtered_by_tier() -> None:
         assert len(rows) == 1
         assert rows[0][0].tier == "qualified"
         assert rows[0][1].name == "qualified.example"
+
+
+def test_dashboard_web_rows_can_be_filtered_since_the_last_visit() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 19, 18, 0, tzinfo=UTC)
+
+    with Session(engine) as db:
+        new_domain = Domain(name="new.example")
+        old_domain = Domain(name="old.example")
+        db.add_all([new_domain, old_domain])
+        db.flush()
+        db.add_all(
+            [
+                Opportunity(
+                    domain_id=new_domain.id,
+                    tier="pending",
+                    updated_at=now - timedelta(minutes=5),
+                ),
+                Opportunity(
+                    domain_id=old_domain.id,
+                    tier="pending",
+                    updated_at=now - timedelta(days=2),
+                ),
+            ]
+        )
+        db.commit()
+
+        rows = _load_web_evidence_rows(
+            db,
+            tier="new",
+            new_since=now - timedelta(hours=1),
+        )
+
+        assert [row[1].name for row in rows] == ["new.example"]
