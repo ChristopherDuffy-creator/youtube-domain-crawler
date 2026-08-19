@@ -123,6 +123,13 @@ class Settings(BaseSettings):
     discovery_interval_minutes: int = Field(default=90, ge=15)
     search_calls_per_run: int = Field(default=3, ge=1, le=10)
     published_before_years: int = Field(default=3, ge=1, le=15)
+    youtube_channel_fanout_enabled: bool = True
+    youtube_channel_fanout_interval_minutes: int = Field(default=30, ge=15, le=360)
+    youtube_channel_pages_per_run: int = Field(default=12, ge=1, le=200)
+    youtube_channel_page_burst: int = Field(default=3, ge=1, le=20)
+    youtube_channel_recrawl_hours: int = Field(default=24, ge=1, le=720)
+    youtube_view_refresh_interval_hours: int = Field(default=6, ge=1, le=168)
+    youtube_view_refresh_batch_size: int = Field(default=2_500, ge=50, le=10_000)
     availability_batch_size: int = Field(default=100, ge=1, le=500)
     scheduler_enabled: bool = True
 
