@@ -153,6 +153,7 @@ class Settings(BaseSettings):
     link_hunter_proof_batch_size: int = Field(default=5, ge=1, le=25)
     link_hunter_backlinks_per_domain: int = Field(default=25, ge=1, le=100)
     link_hunter_proof_max_cost_usd: float = Field(default=0.18, ge=0.05, le=5.0)
+    link_hunter_daily_max_cost_usd: float = Field(default=2.16, ge=0.18, le=20.0)
     link_hunter_verify_timeout_seconds: float = Field(default=10.0, ge=3.0, le=30.0)
 
     # Free Q&A prefilter. Anonymous API calls are deliberately tiny, cached in

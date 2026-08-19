@@ -315,6 +315,17 @@ class ProviderQuery(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class ProviderDailyBudget(Base):
+    __tablename__ = "provider_daily_budgets"
+
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    spend_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    spent_microusd: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_microusd: Mapped[int] = mapped_column(Integer, default=0)
+    completed_runs: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class FetchVerification(Base):
     __tablename__ = "fetch_verifications"
 

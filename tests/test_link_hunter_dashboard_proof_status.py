@@ -10,5 +10,6 @@ def test_dashboard_reports_latest_controlled_proof_and_safe_paid_state() -> None
     assert "deep_proof_target_count" in text
     assert "source_links_verified" in text
     assert "safe/off between guarded batches" in text
-    assert "approved twice-daily controller" in text
+    assert "approved twelve-slot controller" in text
+    assert "$2.16/UTC day" in text
     assert "until the first controlled proof is deliberately enabled" not in text

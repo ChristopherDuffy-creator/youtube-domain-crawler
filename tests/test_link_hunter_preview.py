@@ -52,6 +52,8 @@ def test_preview_selects_next_unchecked_drops_without_paid_calls() -> None:
     assert preview["max_source_pages"] == 75
     assert 0 < preview["estimated_max_cost_usd"] <= 0.50
     assert preview["configured_cost_cap_usd"] == 0.50
+    assert preview["daily_cost_cap_usd"] == 2.16
+    assert preview["daily_budget"]["remaining_usd"] == 2.16
     assert preview["within_cost_cap"] is True
     assert preview["dataforseo_configured"] is True
     assert preview["link_hunter_enabled"] is False

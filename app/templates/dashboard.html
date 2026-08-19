@@ -126,7 +126,7 @@
 
       {% if dataforseo_enabled and not link_hunter_enabled %}
       <section class="notice">
-        <strong>Provider ready; safe/off between guarded batches.</strong> The approved twice-daily controller enables one capped run, then automatically disables paid calls and checks production health.
+        <strong>Provider ready; safe/off between guarded batches.</strong> The approved twelve-slot controller runs every two hours, enables one capped batch, then automatically disables paid calls and checks production health. The database ledger enforces $0.18/run and $2.16/UTC day.
       </section>
       {% endif %}
 
@@ -134,6 +134,7 @@
         <strong>Next proof preview — zero provider calls.</strong>
         {% if proof_preview.target_count %}
           {{ proof_preview.summary_target_count }} domain{% if proof_preview.summary_target_count != 1 %}s{% endif %} in one cheap summary screen → up to {{ proof_preview.deep_proof_target_count }} deep proofs → up to {{ proof_preview.max_source_pages }} source pages. Conservative maximum spend ${{ "%.4f"|format(proof_preview.estimated_max_cost_usd) }} against a ${{ "%.2f"|format(proof_preview.configured_cost_cap_usd) }} cap.
+          <small>UTC daily ledger: ${{ "%.4f"|format(proof_preview.daily_budget.spent_usd) }} spent + ${{ "%.4f"|format(proof_preview.daily_budget.reserved_usd) }} reserved · ${{ "%.4f"|format(proof_preview.daily_budget.remaining_usd) }} remaining of ${{ "%.2f"|format(proof_preview.daily_budget.limit_usd) }}.</small>
           <small>Provisional deep-proof leaders: {{ proof_preview.provisional_deep_targets|join(', ') }}. The paid bulk summary reranks these before any detailed backlink call.</small>
           <small>First summary-screen targets: {{ proof_preview.summary_targets_sample|join(', ') }}{% if proof_preview.summary_target_count > proof_preview.summary_targets_sample|length %}, …{% endif %}</small>
           <small>{% if proof_preview.within_cost_cap %}✓ preflight is inside the configured cap{% else %}✗ preflight exceeds the cap and the paid proof will refuse to start{% endif %} · paid requests made by this preview: {{ proof_preview.paid_requests_made }}</small>

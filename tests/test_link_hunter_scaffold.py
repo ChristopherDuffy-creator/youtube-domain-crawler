@@ -50,6 +50,7 @@ WEB_LINK_HUNTER_TABLES = {
     "source_links",
     "source_metric_snapshots",
     "provider_queries",
+    "provider_daily_budgets",
     "fetch_verifications",
     "opportunities",
 }
@@ -74,6 +75,7 @@ def test_link_hunter_is_safe_by_default() -> None:
     assert settings.link_hunter_proof_batch_size == 5
     assert settings.link_hunter_backlinks_per_domain == 25
     assert settings.link_hunter_proof_max_cost_usd == 0.18
+    assert settings.link_hunter_daily_max_cost_usd == 2.16
 
 
 def test_dataforseo_client_requires_credentials() -> None:

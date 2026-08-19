@@ -2,7 +2,7 @@ name: Approved Link Hunter Scheduler
 
 on:
   schedule:
-    - cron: "43 4,16 * * *"
+    - cron: "43 0,2,4,6,8,10,12,14,16,18,20,22 * * *"
 
 permissions:
   contents: read
@@ -32,7 +32,7 @@ jobs:
           description="Recurring approval marker missing or invalid; zero paid calls made"
 
           approval="$(tr -d '\r\n' < .github/link-hunter-recurring-approval.txt 2>/dev/null)"
-          if [ "$approval" = "APPROVE_MAX_0.36_USD_PER_DAY" ]; then
+          if [ "$approval" = "APPROVE_MAX_2.16_USD_PER_DAY" ]; then
             python - <<'PY' >/tmp/dispatch.json
           import json
           print(json.dumps({
@@ -49,7 +49,7 @@ jobs:
               --data-binary @/tmp/dispatch.json >/dev/null
             if [ $? -eq 0 ]; then
               state=success
-              description="Dispatched one guarded production batch; hard per-run cap $0.18"
+              description="Dispatched guarded batch; caps $0.18/run and $2.16/UTC day"
             else
               description="Production batch dispatch failed; zero provider calls made by scheduler"
             fi
