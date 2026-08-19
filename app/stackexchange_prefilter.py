@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlparse
