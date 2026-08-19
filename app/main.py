@@ -153,6 +153,7 @@ def _load_web_evidence_rows(db: Session, *, limit: int | None = 100) -> list[Web
 @app.get("/health")
 def health(db: Session = Depends(get_db)) -> dict[str, object]:
     commoncrawl_summary: dict[str, object] | None = None
+    stackexchange_summary: dict[str, object] | None = None
     try:
         db.scalar(select(func.count()).select_from(RunLog))
         database = "ok"
@@ -177,6 +178,29 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                     else None
                 ),
             }
+        last_stackexchange = db.scalar(
+            select(RunLog)
+            .where(RunLog.job == "stackexchange_prefilter")
+            .order_by(RunLog.started_at.desc())
+            .limit(1)
+        )
+        if last_stackexchange is not None:
+            counters = last_stackexchange.counters or {}
+            stackexchange_summary = {
+                "status": last_stackexchange.status,
+                "queries": int(counters.get("queries") or 0),
+                "questions_matched": int(counters.get("questions_matched") or 0),
+                "exact_links_saved": int(counters.get("exact_links_saved") or 0),
+                "domains_with_links": int(counters.get("domains_with_links") or 0),
+                "quota_remaining": counters.get("quota_remaining"),
+                "errors": int(counters.get("errors") or 0),
+                "provider_cost_usd": float(counters.get("provider_cost_usd") or 0.0),
+                "finished_at": (
+                    last_stackexchange.finished_at.isoformat()
+                    if last_stackexchange.finished_at is not None
+                    else None
+                ),
+            }
     except Exception:
         database = "error"
     return {
@@ -186,6 +210,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         "link_hunter_enabled": settings.link_hunter_enabled,
         "dataforseo_configured": settings.dataforseo_enabled,
         "commoncrawl_prefilter": commoncrawl_summary,
+        "stackexchange_prefilter": stackexchange_summary,
         "time": datetime.now(UTC).isoformat(),
     }
 
