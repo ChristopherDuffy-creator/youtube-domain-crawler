@@ -1,5 +1,6 @@
 name: Link Hunter Readiness
 
+# Sanitized production readiness audit; no provider calls and no secret output.
 on:
   push:
     branches:
