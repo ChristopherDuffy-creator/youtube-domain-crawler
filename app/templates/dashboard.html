@@ -99,12 +99,31 @@
         <article><span>{{ "{:,}".format(web_source_pages) }}</span><small>Source pages</small></article>
         <article><span>{{ "{:,}".format(web_source_links) }}</span><small>Provider-live links</small></article>
         <article><span>{% if dataforseo_enabled %}Ready{% else %}Missing{% endif %}</span><small>DataForSEO credentials</small></article>
-        <article><span>{% if link_hunter_enabled %}On{% else %}Safe{% endif %}</span><small>{% if link_hunter_enabled %}Proof calls enabled{% else %}Feature flag off{% endif %}</small></article>
+        <article><span>{% if link_hunter_enabled %}On{% else %}Safe{% endif %}</span><small>{% if link_hunter_enabled %}Proof calls enabled{% else %}Paid calls disabled{% endif %}</small></article>
       </section>
+
+      {% set proof_state = namespace(found=false) %}
+      {% for run in latest_runs %}
+        {% if not proof_state.found and run.job == 'link_hunter_proof' %}
+      <section class="notice">
+        <strong>Latest controlled proof: {{ run.status }}.</strong>
+        {% if run.counters %}
+          Cost ${{ "%.4f"|format(run.counters.get('provider_cost_usd', 0.0)) }} · {{ run.counters.get('domains_with_live_backlinks', 0) }} domain{% if run.counters.get('domains_with_live_backlinks', 0) != 1 %}s{% endif %} with live backlinks · {{ run.counters.get('source_links_verified', 0) }} verified source link{% if run.counters.get('source_links_verified', 0) != 1 %}s{% endif %}.
+        {% endif %}
+        <small>{% if run.finished_at %}Finished {{ run.finished_at.strftime('%d %b %Y %H:%M') }} UTC.{% else %}Proof is still running.{% endif %} Paid calls return to safe/off after the controlled run.</small>
+      </section>
+          {% set proof_state.found = true %}
+        {% endif %}
+      {% endfor %}
+      {% if not proof_state.found %}
+      <section class="notice">
+        <strong>No controlled proof has been recorded yet.</strong> Paid calls remain disabled until a guarded proof is run.
+      </section>
+      {% endif %}
 
       {% if dataforseo_enabled and not link_hunter_enabled %}
       <section class="notice">
-        <strong>Provider ready, spending disabled.</strong> Production has the DataForSEO credentials, but Link Hunter remains off until the first controlled proof is deliberately enabled.
+        <strong>Provider ready, automatic spending disabled.</strong> DataForSEO is configured and the controlled proof path has been validated; routine paid Link Hunter runs remain off unless deliberately enabled.
       </section>
       {% endif %}
 
@@ -173,7 +192,7 @@
               </td>
             </tr>
           {% else %}
-            <tr><td colspan="7" class="empty">No web-wide proof results yet. This section is ready for the first controlled DataForSEO batch.</td></tr>
+            <tr><td colspan="7" class="empty">No web-wide proof results yet. This section is ready for controlled DataForSEO batches.</td></tr>
           {% endfor %}
           </tbody>
         </table>
