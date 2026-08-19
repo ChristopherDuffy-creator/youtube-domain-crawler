@@ -89,8 +89,21 @@ jobs:
             python -c 'import os,sys; sys.exit(0 if os.getenv("ADMIN_TOKEN") else 2)' >/dev/null 2>&1
           if [ $? -ne 0 ]; then echo "description=Admin control token unavailable; zero paid calls made" >> "$GITHUB_OUTPUT"; exit 0; fi
 
+          # GitHub Actions cannot reach Railway's private Postgres hostname. Read the
+          # public database URL from the Postgres service, then pass it explicitly to
+          # the app-service environment before importing app.database. This preview
+          # uses cached/free evidence only and makes zero DataForSEO requests.
+          public_database_url="$(
+            npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service Postgres \
+              python -c 'import os; print(os.getenv("DATABASE_PUBLIC_URL", ""))' 2>/dev/null
+          )"
+          if [ -z "$public_database_url" ]; then
+            echo "description=Preflight database bridge unavailable; zero paid calls made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
-            python -c 'import json,os,sys; public=os.getenv("DATABASE_PUBLIC_URL"); public and os.environ.__setitem__("DATABASE_URL",public); from app.config import get_settings; from app.database import SessionLocal; from app.link_hunter_preview import build_provider_proof_preview; settings=get_settings(); db=SessionLocal(); preview=build_provider_proof_preview(db,settings); db.close(); cost=float(preview.get("estimated_max_cost_usd") or 0.0); ok=(preview.get("paid_requests_made")==0 and preview.get("ready_for_controlled_proof") is True and int(preview.get("target_count") or 0)>0 and preview.get("within_cost_cap") is True and cost<=0.18 and preview.get("credentials_exposed") is False); print(json.dumps({"ready":bool(preview.get("ready_for_controlled_proof")),"target_count":int(preview.get("target_count") or 0),"estimated_max_cost_usd":cost,"activation_blockers":preview.get("activation_blockers") or [],"activation_warnings":preview.get("activation_warnings") or [],"paid_requests_made":preview.get("paid_requests_made"),"public_database_url_present":bool(public)})); sys.exit(0 if ok else 3)' \
+            python -c 'import json,os,sys; os.environ["DATABASE_URL"]=sys.argv[1]; from app.config import get_settings; from app.database import SessionLocal; from app.link_hunter_preview import build_provider_proof_preview; settings=get_settings(); db=SessionLocal(); preview=build_provider_proof_preview(db,settings); db.close(); cost=float(preview.get("estimated_max_cost_usd") or 0.0); ok=(preview.get("paid_requests_made")==0 and preview.get("ready_for_controlled_proof") is True and int(preview.get("target_count") or 0)>0 and preview.get("within_cost_cap") is True and cost<=0.18 and preview.get("credentials_exposed") is False); print(json.dumps({"ready":bool(preview.get("ready_for_controlled_proof")),"target_count":int(preview.get("target_count") or 0),"estimated_max_cost_usd":cost,"activation_blockers":preview.get("activation_blockers") or [],"activation_warnings":preview.get("activation_warnings") or [],"paid_requests_made":preview.get("paid_requests_made")})); sys.exit(0 if ok else 3)' "$public_database_url" \
             >/tmp/link-hunter-preflight.json 2>/tmp/link-hunter-preflight.err
           preflight_code=$?
           if [ $preflight_code -ne 0 ]; then
