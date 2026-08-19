@@ -71,3 +71,27 @@ def test_dashboard_row_includes_source_and_fetch_evidence() -> None:
         assert row_site is not None and row_site.hostname == "publisher.test"
         assert row_link is not None and row_link.anchor_text == "buy software"
         assert row_verification is not None and row_verification.link_present is True
+
+
+def test_dashboard_web_rows_can_be_filtered_by_tier() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        qualified_domain = Domain(name="qualified.example")
+        pending_domain = Domain(name="pending.example")
+        db.add_all([qualified_domain, pending_domain])
+        db.flush()
+        db.add_all(
+            [
+                Opportunity(domain_id=qualified_domain.id, tier="qualified", score=70),
+                Opportunity(domain_id=pending_domain.id, tier="pending", score=20),
+            ]
+        )
+        db.commit()
+
+        rows = _load_web_evidence_rows(db, tier="qualified")
+
+        assert len(rows) == 1
+        assert rows[0][0].tier == "qualified"
+        assert rows[0][1].name == "qualified.example"

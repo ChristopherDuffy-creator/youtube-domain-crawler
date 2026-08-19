@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login · Expandosaurus Domain Traffic System</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="login-shell">
+    <section class="login-card">
+      <p class="eyebrow">EXPANDOSAURUS</p>
+      <h1>Domain Traffic System</h1>
+      <p class="subtitle">Sign in to the Web Link Hunter and YouTube dashboard.</p>
+      {% if error %}<div class="login-error" role="alert">{{ error }}</div>{% endif %}
+      <form action="/login" method="post" class="login-form">
+        <input type="hidden" name="next" value="{{ next_path }}">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" value="admin" autocomplete="username" required>
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+        <button class="button" type="submit">Login</button>
+      </form>
+      <small class="login-help">Use the same dashboard password as before.</small>
+    </section>
+  </main>
+</body>
+</html>
