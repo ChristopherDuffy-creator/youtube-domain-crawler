@@ -5,6 +5,7 @@ import pytest
 from app.config import Settings
 from app.dataforseo import DataForSEOClient
 from app.link_hunter import (
+    _href_matches_provider_target,
     _href_points_to_domain,
     _normalize_host,
     _score_opportunity,
@@ -24,6 +25,43 @@ def test_href_match_accepts_target_and_subdomain_only() -> None:
     assert _href_points_to_domain("https://shop.old-domain.com/offer", "old-domain.com")
     assert not _href_points_to_domain("https://old-domain.com.evil.test/", "old-domain.com")
     assert not _href_points_to_domain("mailto:test@old-domain.com", "old-domain.com")
+
+
+def test_provider_target_match_requires_the_reported_path() -> None:
+    target = "https://www.old-domain.com/products/offer/"
+    assert _href_matches_provider_target(
+        "http://old-domain.com/products/offer?utm_source=legacy#buy",
+        target,
+        "old-domain.com",
+    )
+    assert not _href_matches_provider_target(
+        "https://old-domain.com/products/different",
+        target,
+        "old-domain.com",
+    )
+    assert not _href_matches_provider_target(
+        "https://shop.old-domain.com/products/offer",
+        target,
+        "old-domain.com",
+    )
+
+
+def test_provider_root_target_allows_same_domain_paths() -> None:
+    assert _href_matches_provider_target(
+        "https://old-domain.com/legacy/page",
+        "https://old-domain.com/",
+        "old-domain.com",
+    )
+    assert _href_matches_provider_target(
+        "https://shop.old-domain.com/legacy/page",
+        "old-domain.com",
+        "old-domain.com",
+    )
+    assert not _href_matches_provider_target(
+        "https://old-domain.com.evil.test/legacy/page",
+        "old-domain.com",
+        "old-domain.com",
+    )
 
 
 def test_live_link_fetch_rejects_private_or_unsafe_urls_before_network() -> None:
