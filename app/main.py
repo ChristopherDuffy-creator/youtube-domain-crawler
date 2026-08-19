@@ -154,6 +154,7 @@ def _load_web_evidence_rows(db: Session, *, limit: int | None = 100) -> list[Web
 def health(db: Session = Depends(get_db)) -> dict[str, object]:
     commoncrawl_summary: dict[str, object] | None = None
     stackexchange_summary: dict[str, object] | None = None
+    hackernews_summary: dict[str, object] | None = None
     try:
         db.scalar(select(func.count()).select_from(RunLog))
         database = "ok"
@@ -201,6 +202,29 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                     else None
                 ),
             }
+        last_hackernews = db.scalar(
+            select(RunLog)
+            .where(RunLog.job == "hackernews_prefilter")
+            .order_by(RunLog.started_at.desc())
+            .limit(1)
+        )
+        if last_hackernews is not None:
+            counters = last_hackernews.counters or {}
+            hackernews_summary = {
+                "status": last_hackernews.status,
+                "queries": int(counters.get("queries") or 0),
+                "search_hits": int(counters.get("search_hits") or 0),
+                "items_with_exact_links": int(counters.get("items_with_exact_links") or 0),
+                "exact_links_saved": int(counters.get("exact_links_saved") or 0),
+                "domains_with_links": int(counters.get("domains_with_links") or 0),
+                "errors": int(counters.get("errors") or 0),
+                "provider_cost_usd": float(counters.get("provider_cost_usd") or 0.0),
+                "finished_at": (
+                    last_hackernews.finished_at.isoformat()
+                    if last_hackernews.finished_at is not None
+                    else None
+                ),
+            }
     except Exception:
         database = "error"
     return {
@@ -211,6 +235,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         "dataforseo_configured": settings.dataforseo_enabled,
         "commoncrawl_prefilter": commoncrawl_summary,
         "stackexchange_prefilter": stackexchange_summary,
+        "hackernews_prefilter": hackernews_summary,
         "time": datetime.now(UTC).isoformat(),
     }
 
