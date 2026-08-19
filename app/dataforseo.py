@@ -60,6 +60,7 @@ class DataForSEOClient:
     def __init__(self, settings: Settings):
         if not settings.dataforseo_enabled:
             raise DataForSEOError("DataForSEO credentials are not configured")
+        self.settings = settings
         self.base_url = settings.dataforseo_base_url.rstrip("/")
         self.timeout = settings.dataforseo_timeout_seconds
         self.auth = (settings.dataforseo_login, settings.dataforseo_password)
@@ -123,6 +124,22 @@ class DataForSEOClient:
             raise ValueError(
                 f"bulk backlink summary requires 1-{MAX_BULK_SUMMARY_DOMAINS} domain targets"
             )
+
+        source_page_ceiling = len(targets) * self.settings.link_hunter_backlinks_per_domain
+        if source_page_ceiling > MAX_TRAFFIC_TARGETS:
+            raise DataForSEOError(
+                "Proof configuration could produce more than 1,000 source pages; "
+                "reduce the proof batch size or backlinks-per-domain before spending"
+            )
+        estimated_max = estimate_provider_proof_max_cost_usd(
+            len(targets), self.settings.link_hunter_backlinks_per_domain
+        )
+        if estimated_max > self.settings.link_hunter_proof_max_cost_usd:
+            raise DataForSEOError(
+                f"Proof worst-case provider estimate ${estimated_max:.4f} exceeds configured "
+                f"cap ${self.settings.link_hunter_proof_max_cost_usd:.4f}"
+            )
+
         return self._post(
             "backlinks/bulk_pages_summary/live",
             {
