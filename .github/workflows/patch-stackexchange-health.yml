@@ -1,0 +1,54 @@
+name: Patch Stack Exchange Health
+
+on:
+  push:
+    branches:
+      - phase-d-stackexchange-prefilter
+    paths:
+      - .github/workflows/patch-stackexchange-health.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: phase-d-stackexchange-prefilter
+      - name: Add sanitized Stack Exchange health summary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/main.py')
+          text = path.read_text(encoding='utf-8')
+          old_head = '''def health(db: Session = Depends(get_db)) -> dict[str, object]:\n    commoncrawl_summary: dict[str, object] | None = None\n    try:\n'''
+          new_head = '''def health(db: Session = Depends(get_db)) -> dict[str, object]:\n    commoncrawl_summary: dict[str, object] | None = None\n    stackexchange_summary: dict[str, object] | None = None\n    try:\n'''
+          if old_head not in text:
+              raise SystemExit('health header not found')
+          text = text.replace(old_head, new_head, 1)
+
+          old_tail = '''                ),\n            }\n    except Exception:\n        database = "error"\n    return {\n'''
+          new_tail = '''                ),\n            }\n        last_stackexchange = db.scalar(\n            select(RunLog)\n            .where(RunLog.job == "stackexchange_prefilter")\n            .order_by(RunLog.started_at.desc())\n            .limit(1)\n        )\n        if last_stackexchange is not None:\n            counters = last_stackexchange.counters or {}\n            stackexchange_summary = {\n                "status": last_stackexchange.status,\n                "queries": int(counters.get("queries") or 0),\n                "questions_matched": int(counters.get("questions_matched") or 0),\n                "exact_links_saved": int(counters.get("exact_links_saved") or 0),\n                "domains_with_links": int(counters.get("domains_with_links") or 0),\n                "quota_remaining": counters.get("quota_remaining"),\n                "errors": int(counters.get("errors") or 0),\n                "provider_cost_usd": float(counters.get("provider_cost_usd") or 0.0),\n                "finished_at": (\n                    last_stackexchange.finished_at.isoformat()\n                    if last_stackexchange.finished_at is not None\n                    else None\n                ),\n            }\n    except Exception:\n        database = "error"\n    return {\n'''
+          if old_tail not in text:
+              raise SystemExit('health summary insertion point not found')
+          text = text.replace(old_tail, new_tail, 1)
+
+          old_return = '''        "commoncrawl_prefilter": commoncrawl_summary,\n        "time": datetime.now(UTC).isoformat(),\n'''
+          new_return = '''        "commoncrawl_prefilter": commoncrawl_summary,\n        "stackexchange_prefilter": stackexchange_summary,\n        "time": datetime.now(UTC).isoformat(),\n'''
+          if old_return not in text:
+              raise SystemExit('health return insertion point not found')
+          text = text.replace(old_return, new_return, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit health summary
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/main.py
+          git diff --cached --check
+          git commit -m "Expose sanitized Stack Exchange run health"
+          git push origin HEAD:phase-d-stackexchange-prefilter
