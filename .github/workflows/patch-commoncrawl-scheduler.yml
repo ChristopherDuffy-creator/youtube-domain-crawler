@@ -1,0 +1,71 @@
+name: Patch Common Crawl Scheduler
+
+on:
+  push:
+    branches:
+      - phase-c-inapp-commoncrawl-scheduler
+    paths:
+      - .github/workflows/patch-commoncrawl-scheduler.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: phase-c-inapp-commoncrawl-scheduler
+      - name: Move free prefilter into Railway app scheduler
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/jobs.py')
+          text = path.read_text(encoding='utf-8')
+
+          old_import = 'from app.availability import AvailabilityResult, check_domain\n'
+          new_import = (
+              'from app.availability import AvailabilityResult, check_domain\n'
+              'from app.commoncrawl_prefilter import run_commoncrawl_prefilter as run_commoncrawl_prefilter_batch\n'
+          )
+          if old_import not in text:
+              raise SystemExit('expected availability import not found')
+          text = text.replace(old_import, new_import, 1)
+
+          marker = '\n\nJOB_FUNCTIONS: dict[str, Callable[[], None]] = {\n'
+          job = '''\n\ndef run_commoncrawl_prefilter_job() -> None:\n    """Cache free historical-domain signals inside Railway's private network."""\n    with SessionLocal() as db:\n        run = _start_run(db, "commoncrawl_prefilter")\n        counters: dict[str, Any] = {\n            "candidates": 0,\n            "checked": 0,\n            "with_capture": 0,\n            "without_capture": 0,\n            "index_requests": 0,\n            "provider_cost_usd": 0.0,\n            "errors": 0,\n            "error_details": [],\n        }\n        try:\n            counters = run_commoncrawl_prefilter_batch(db, batch_size=10, index_count=2)\n            status = "complete" if not counters.get("errors") else "partial"\n            _finish_run(db, run, status, counters)\n        except Exception as exc:\n            db.rollback()\n            run = db.get(RunLog, run.id)\n            _finish_run(db, run, "failed", counters, str(exc))\n            logger.exception("Common Crawl prefilter failed")\n'''
+          if marker not in text:
+              raise SystemExit('JOB_FUNCTIONS marker not found')
+          text = text.replace(marker, job + marker, 1)
+
+          old_dict = '''    "dropped_search": run_dropped_youtube_search,\n    "digest": run_daily_digest,\n}'''
+          new_dict = '''    "dropped_search": run_dropped_youtube_search,\n    "commoncrawl_prefilter": run_commoncrawl_prefilter_job,\n    "digest": run_daily_digest,\n}'''
+          if old_dict not in text:
+              raise SystemExit('JOB_FUNCTIONS block not found')
+          text = text.replace(old_dict, new_dict, 1)
+
+          old_initial = '''    scheduler.add_job(\n        run_dropped_youtube_search,\n        DateTrigger(run_date=start + timedelta(minutes=4)),\n        id="initial_dropped_youtube_search",\n        replace_existing=True,\n    )\n'''
+          new_initial = old_initial + '''    scheduler.add_job(\n        run_commoncrawl_prefilter_job,\n        DateTrigger(run_date=start + timedelta(minutes=6)),\n        id="initial_commoncrawl_prefilter",\n        replace_existing=True,\n    )\n'''
+          if old_initial not in text:
+              raise SystemExit('initial dropped search scheduler block not found')
+          text = text.replace(old_initial, new_initial, 1)
+
+          old_daily = '''    scheduler.add_job(\n        run_daily_digest,\n        CronTrigger(hour=8, minute=0, timezone="UTC"),\n        id="daily_digest",\n        replace_existing=True,\n    )\n'''
+          new_daily = '''    scheduler.add_job(\n        run_commoncrawl_prefilter_job,\n        CronTrigger(hour="1,13", minute=17, timezone="UTC"),\n        id="commoncrawl_prefilter",\n        replace_existing=True,\n    )\n''' + old_daily
+          if old_daily not in text:
+              raise SystemExit('daily digest scheduler block not found')
+          text = text.replace(old_daily, new_daily, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit scheduler patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/jobs.py
+          git diff --cached --check
+          git commit -m "Run Common Crawl prefilter inside Railway scheduler"
+          git push origin HEAD:phase-c-inapp-commoncrawl-scheduler
