@@ -95,6 +95,8 @@ DEFAULT_DROPPED_DOMAIN_FEED_URLS = [
     "daily-expired-and-dropped-domains/main/0-latest-free-dropped-domains.csv",
 ]
 
+DEFAULT_STACKEXCHANGE_SITES = ["stackoverflow", "superuser", "webmasters"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -144,6 +146,14 @@ class Settings(BaseSettings):
     link_hunter_backlinks_per_domain: int = Field(default=25, ge=1, le=100)
     link_hunter_proof_max_cost_usd: float = Field(default=0.50, ge=0.05, le=5.0)
     link_hunter_verify_timeout_seconds: float = Field(default=10.0, ge=3.0, le=30.0)
+
+    # Free Q&A prefilter. Anonymous API calls are deliberately tiny, cached in
+    # ProviderQuery, and always respect Stack Exchange's returned backoff/quota.
+    stackexchange_prefilter_batch_size: int = Field(default=5, ge=1, le=20)
+    stackexchange_min_views: int = Field(default=1_000, ge=0)
+    stackexchange_sites: CsvList = Field(
+        default_factory=lambda: list(DEFAULT_STACKEXCHANGE_SITES)
+    )
 
     dropped_domain_feed_urls: CsvList = Field(
         default_factory=lambda: list(DEFAULT_DROPPED_DOMAIN_FEED_URLS)
