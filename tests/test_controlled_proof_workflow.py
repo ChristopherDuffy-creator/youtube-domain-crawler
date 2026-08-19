@@ -18,19 +18,20 @@ def test_controlled_proof_workflow_is_manual_capped_and_self_disabling() -> None
     assert "\n  push:" not in text
 
 
-def test_controlled_proof_runs_zero_cost_preflight_before_activation() -> None:
+def test_controlled_proof_uses_zero_cost_production_preview_before_activation() -> None:
     text = Path(".github/workflows/controlled-link-hunter-proof.yml").read_text(encoding="utf-8")
 
-    preflight = text.index("build_provider_proof_preview")
+    preflight = text.index("/admin/link-hunter/proof-preview")
     activation = text.index("LINK_HUNTER_ENABLED=true")
 
     assert preflight < activation
-    assert "from app.database import SessionLocal" in text
-    assert 'preview.get("paid_requests_made")==0' in text
-    assert 'preview.get("ready_for_controlled_proof") is True' in text
-    assert 'int(preview.get("target_count") or 0)>0' in text
-    assert 'cost<=0.18' in text
-    assert 'preview.get("credentials_exposed") is False' in text
-    assert "Preflight runtime failed before paid calls" in text
-    assert "Preflight blocked:" in text
-    assert "/admin/link-hunter/proof-preview" not in text
+    assert 'payload.get(\'provider_calls_made\') == 0' in text
+    assert "preview.get('paid_requests_made') == 0" in text
+    assert "preview.get('ready_for_controlled_proof') is True" in text
+    assert "int(preview.get('target_count') or 0) > 0" in text
+    assert "cost <= 0.18" in text
+    assert "preview.get('credentials_exposed') is False" in text
+    assert 'fail "preflight-http"' in text
+    assert 'fail "preflight-preview"' in text
+    assert "DATABASE_PUBLIC_URL" not in text
+    assert "--service Postgres" not in text

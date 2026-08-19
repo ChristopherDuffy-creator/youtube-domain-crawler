@@ -27,17 +27,6 @@ jobs:
       SERVICE_ID: 8aa9b741-7a20-4aef-8baf-c25ac82f6fce
       PUBLIC_URL: https://youtube-domain-crawler-production.up.railway.app
     steps:
-      - name: Check out proof code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install proof preview dependencies
-        run: pip install -r requirements.txt
-
       - name: Run one guarded proof and always disable afterwards
         id: proof
         shell: bash
@@ -97,42 +86,63 @@ jobs:
             fail "readiness" "Production readiness guard failed; zero paid calls made"
           fi
 
-          npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
-            python -c 'import os,sys; sys.exit(0 if os.getenv("ADMIN_TOKEN") else 2)' >/dev/null 2>&1
-          if [ $? -ne 0 ]; then
+          admin_token_present="$(
+            npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
+              python -c 'import os; print("yes" if os.getenv("ADMIN_TOKEN") else "")' 2>/dev/null
+          )"
+          if [ "$admin_token_present" != "yes" ]; then
             fail "admin-token" "Admin control token unavailable; zero paid calls made"
           fi
 
-          public_database_url="$(
-            npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service Postgres \
-              python -c 'import os; print(os.getenv("DATABASE_PUBLIC_URL", ""))' 2>/dev/null
+          dashboard_password="$(
+            npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
+              python -c 'import os; print(os.getenv("DASHBOARD_PASSWORD", ""))' 2>/dev/null
           )"
-          if [ -z "$public_database_url" ]; then
-            fail "database-bridge" "Preflight database bridge unavailable; zero paid calls made"
+          if [ -z "$dashboard_password" ]; then
+            fail "preview-auth" "Dashboard preview credential unavailable; zero paid calls made"
           fi
 
-          npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
-            python -c 'import json,os,sys; os.environ["DATABASE_URL"]=sys.argv[1]; from app.config import get_settings; from app.database import SessionLocal; from app.link_hunter_preview import build_provider_proof_preview; settings=get_settings(); db=SessionLocal(); preview=build_provider_proof_preview(db,settings); db.close(); cost=float(preview.get("estimated_max_cost_usd") or 0.0); ok=(preview.get("paid_requests_made")==0 and preview.get("ready_for_controlled_proof") is True and int(preview.get("target_count") or 0)>0 and preview.get("within_cost_cap") is True and cost<=0.18 and preview.get("credentials_exposed") is False); print(json.dumps({"ready":bool(preview.get("ready_for_controlled_proof")),"target_count":int(preview.get("target_count") or 0),"estimated_max_cost_usd":cost,"activation_blockers":preview.get("activation_blockers") or [],"activation_warnings":preview.get("activation_warnings") or [],"paid_requests_made":preview.get("paid_requests_made")})); sys.exit(0 if ok else 3)' "$public_database_url" \
+          curl -fsS -u "admin:$dashboard_password" \
+            "$PUBLIC_URL/admin/link-hunter/proof-preview" \
             >/tmp/link-hunter-preflight.json 2>/tmp/link-hunter-preflight.err
           preflight_code=$?
+          unset dashboard_password
           if [ $preflight_code -ne 0 ]; then
-            if [ -s /tmp/link-hunter-preflight.json ]; then
-              summary="$(python - <<'PY'
+            rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
+            fail "preflight-http" "Zero-cost production preview request failed"
+          fi
+
+          python - <<'PY'
+          import json
+          with open('/tmp/link-hunter-preflight.json', encoding='utf-8') as stream:
+              payload = json.load(stream)
+          preview = payload.get('preview') or {}
+          cost = float(preview.get('estimated_max_cost_usd') or 0.0)
+          assert payload.get('provider_calls_made') == 0
+          assert preview.get('paid_requests_made') == 0
+          assert preview.get('ready_for_controlled_proof') is True
+          assert int(preview.get('target_count') or 0) > 0
+          assert preview.get('within_cost_cap') is True
+          assert cost <= 0.18
+          assert preview.get('credentials_exposed') is False
+          PY
+          preflight_code=$?
+          if [ $preflight_code -ne 0 ]; then
+            summary="$(python - <<'PY'
           import json
           try:
-              with open('/tmp/link-hunter-preflight.json', encoding='utf-8') as stream: payload=json.load(stream)
+              with open('/tmp/link-hunter-preflight.json', encoding='utf-8') as stream:
+                  payload=json.load(stream)
           except Exception:
               print('preview unavailable')
           else:
-              blockers=','.join(payload.get('activation_blockers') or []) or 'none'
-              print(f"ready={payload.get('ready')}; targets={payload.get('target_count')}; max=${float(payload.get('estimated_max_cost_usd') or 0):.4f}; blockers={blockers}")
+              preview=payload.get('preview') or {}
+              blockers=','.join(preview.get('activation_blockers') or []) or 'none'
+              print(f"ready={preview.get('ready_for_controlled_proof')}; targets={preview.get('target_count')}; max=${float(preview.get('estimated_max_cost_usd') or 0):.4f}; blockers={blockers}")
           PY
-              )"
-              rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
-              fail "preflight-preview" "Preflight blocked: ${summary:0:118}"
-            fi
+            )"
             rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
-            fail "preflight-runtime" "Preflight runtime failed before paid calls"
+            fail "preflight-preview" "Preflight blocked: ${summary:0:118}"
           fi
           rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
 
@@ -164,7 +174,8 @@ jobs:
 
           python - <<'PY'
           import json, os
-          with open("/tmp/link-hunter-proof.json", encoding="utf-8") as stream: payload=json.load(stream)
+          with open("/tmp/link-hunter-proof.json", encoding="utf-8") as stream:
+              payload=json.load(stream)
           counters=payload.get("counters") or {}
           cost=float(counters.get("provider_cost_usd") or 0.0)
           if payload.get("status") != "complete": raise SystemExit("proof response was not complete")
