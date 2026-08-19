@@ -1,0 +1,177 @@
+name: Apply DataForSEO Staged Variables
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-dataforseo-staged.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: railway-production-config
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_ENVIRONMENT_ID: 9f670e7a-1b3d-4ccc-b450-092a70403ee9
+      RAILWAY_SERVICE_ID: 8aa9b741-7a20-4aef-8baf-c25ac82f6fce
+      PROJECT_ID: 31fbe878-aa83-4b74-9820-e9f0d13b984c
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard and commit exact staged variable patch
+        id: apply
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          endpoint = "https://backboard.railway.com/graphql/v2"
+          token = os.environ.get("RAILWAY_TOKEN", "")
+          environment_id = os.environ["RAILWAY_ENVIRONMENT_ID"]
+          service_id = os.environ["RAILWAY_SERVICE_ID"]
+          expected = {"DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"}
+
+          def graphql(query, variables):
+              request = urllib.request.Request(
+                  endpoint,
+                  data=json.dumps({"query": query, "variables": variables}).encode(),
+                  headers={
+                      "Project-Access-Token": token,
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+              if payload.get("errors"):
+                  raise RuntimeError("Railway GraphQL request failed")
+              return payload["data"]
+
+          try:
+              if not token:
+                  raise RuntimeError("RAILWAY_TOKEN is missing")
+              query = """
+              query EnvironmentStagedChanges($environmentId: String!) {
+                environmentStagedChanges(environmentId: $environmentId) { id status patch }
+              }
+              """
+              data = graphql(query, {"environmentId": environment_id})
+              staged = data.get("environmentStagedChanges") or {}
+              patch = staged.get("patch") or {}
+
+              # Railway's environment patch schema is services -> serviceId -> variables.
+              # Reject any other non-empty section, service, or service setting. Values are
+              # deliberately never printed or persisted outside this process.
+              nonempty_top = {
+                  key for key, value in patch.items()
+                  if value not in (None, {}, [], "")
+              }
+              if nonempty_top != {"services"}:
+                  raise RuntimeError("Unexpected staged change category; refusing to commit")
+
+              services = patch.get("services") or {}
+              if set(services) != {service_id}:
+                  raise RuntimeError("Unexpected staged service; refusing to commit")
+              service_patch = services[service_id] or {}
+              nonempty_service = {
+                  key for key, value in service_patch.items()
+                  if value not in (None, {}, [], "")
+              }
+              if nonempty_service != {"variables"}:
+                  raise RuntimeError("Unexpected staged service setting; refusing to commit")
+              variables = service_patch.get("variables") or {}
+              if set(variables) != expected:
+                  raise RuntimeError("Staged variable names do not exactly match DataForSEO pair")
+
+              mutation = """
+              mutation EnvironmentPatchCommitStaged(
+                $environmentId: String!, $commitMessage: String, $skipDeploys: Boolean
+              ) {
+                environmentPatchCommitStaged(
+                  environmentId: $environmentId,
+                  commitMessage: $commitMessage,
+                  skipDeploys: $skipDeploys
+                )
+              }
+              """
+              graphql(
+                  mutation,
+                  {
+                      "environmentId": environment_id,
+                      "commitMessage": "Activate DataForSEO credentials for disabled Link Hunter",
+                      "skipDeploys": True,
+                  },
+              )
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("committed=true\n")
+              print("Exact DataForSEO staged-variable patch committed without deployment")
+          except Exception as exc:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("committed=false\n")
+              print(f"Guarded staged-variable commit did not run: {exc}")
+          PY
+          exit 0
+
+      - name: Deploy current main with committed variables
+        id: deploy
+        if: steps.apply.outputs.committed == 'true'
+        continue-on-error: true
+        run: >-
+          npx -y @railway/cli@latest up
+          --project $PROJECT_ID
+          --environment production
+          --service youtube-domain-crawler
+          --ci
+
+      - name: Verify sanitized production readiness
+        id: verify
+        shell: bash
+        run: |
+          set +e
+          ready=false
+          if [ "${{ steps.apply.outputs.committed }}" = "true" ] && [ "${{ steps.deploy.outcome }}" = "success" ]; then
+            for attempt in $(seq 1 30); do
+              body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
+              BODY="$body" python -c 'import json,os; p=json.loads(os.environ["BODY"]); assert p.get("database")=="ok"; assert p.get("link_hunter_enabled") is False; assert p.get("dataforseo_configured") is True' 2>/dev/null
+              if [ $? -eq 0 ]; then
+                ready=true
+                break
+              fi
+              sleep 10
+            done
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish activation status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          READY: ${{ steps.verify.outputs.ready }}
+        run: |
+          if [ "$READY" = "true" ]; then
+            state=success
+            description="DataForSEO configured; Link Hunter remains safely disabled"
+          else
+            state=error
+            description="Guarded DataForSEO activation did not complete"
+          fi
+          curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"$state\",\"context\":\"link-hunter/dataforseo-activation\",\"description\":\"$description\"}"
