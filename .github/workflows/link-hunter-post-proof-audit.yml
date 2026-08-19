@@ -1,0 +1,131 @@
+name: Link Hunter Post-Proof Audit
+
+on:
+  workflow_run:
+    workflows:
+      - Controlled Link Hunter Proof
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: link-hunter-post-proof-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PUBLIC_URL: https://youtube-domain-crawler-production.up.railway.app
+    steps:
+      - name: Resolve audited commit
+        id: target
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          FALLBACK_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ -n "$WORKFLOW_HEAD_SHA" ]; then
+            echo "sha=$WORKFLOW_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=$FALLBACK_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify proof statuses and production safe state
+        id: audit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set +e
+          echo "state=error" >> "$GITHUB_OUTPUT"
+          echo "description=Post-proof audit did not complete" >> "$GITHUB_OUTPUT"
+
+          statuses="$(curl -fsS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/statuses?per_page=100" \
+            2>/dev/null)"
+          if [ $? -ne 0 ]; then
+            echo "description=Could not read proof statuses" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          STATUSES="$statuses" python - <<'PY'
+          import json
+          import os
+
+          rows = json.loads(os.environ["STATUSES"])
+          latest = {}
+          for row in rows:
+              context = str(row.get("context") or "")
+              latest.setdefault(context, str(row.get("state") or ""))
+          assert latest.get("link-hunter/paid-proof") == "success"
+          assert latest.get("link-hunter/proof-disabled") == "success"
+          PY
+          if [ $? -ne 0 ]; then
+            echo "description=Proof or cleanup status is not successful" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          healthy=false
+          for attempt in $(seq 1 18); do
+            body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
+            BODY="$body" python - <<'PY' 2>/dev/null
+          import json
+          import os
+
+          payload = json.loads(os.environ.get("BODY", ""))
+          assert payload.get("database") == "ok"
+          assert payload.get("dataforseo_configured") is True
+          assert payload.get("link_hunter_enabled") is False
+          PY
+            if [ $? -eq 0 ]; then
+              healthy=true
+              break
+            fi
+            sleep 10
+          done
+
+          if [ "$healthy" != true ]; then
+            echo "description=Production did not return to healthy safe/off state" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "state=success" >> "$GITHUB_OUTPUT"
+          echo "description=Proof succeeded and production is healthy with paid calls disabled" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish post-proof audit status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          AUDIT_STATE: ${{ steps.audit.outputs.state }}
+          DESCRIPTION: ${{ steps.audit.outputs.description }}
+        run: |
+          python - <<'PY' >/tmp/post-proof-status.json
+          import json
+          import os
+
+          print(json.dumps({
+              "state": os.environ.get("AUDIT_STATE") or "error",
+              "context": "link-hunter/post-proof-audit",
+              "description": (os.environ.get("DESCRIPTION") or "Post-proof audit did not complete")[:140],
+          }))
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${TARGET_SHA}" \
+            --data-binary @/tmp/post-proof-status.json >/dev/null
