@@ -69,10 +69,7 @@ def select_provider_proof_targets(db: Session, settings: Settings) -> list[str]:
         if drop.name not in exact_names and commoncrawl.get(drop.name, 0) > 0
     ]
     historical_positive.sort(
-        key=lambda drop: (
-            -commoncrawl[drop.name],
-            original_position[drop.name],
-        )
+        key=lambda drop: (-commoncrawl[drop.name], original_position[drop.name])
     )
     promoted = exact_names | {drop.name for drop in historical_positive}
     unknown = [
@@ -87,6 +84,32 @@ def select_provider_proof_targets(db: Session, settings: Settings) -> list[str]:
     return [drop.name for drop in ordered[: settings.link_hunter_proof_batch_size]]
 
 
+def _proof_readiness(
+    *, settings: Settings, targets: list[str], estimated_max_cost_usd: float, free_positive_count: int
+) -> dict[str, Any]:
+    """Return zero-cost activation diagnostics without exposing secrets."""
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if not settings.dataforseo_enabled:
+        blockers.append("dataforseo_credentials_not_configured")
+    if not targets:
+        blockers.append("no_unchecked_targets")
+    if estimated_max_cost_usd > settings.link_hunter_proof_max_cost_usd:
+        blockers.append("estimated_cost_exceeds_configured_cap")
+    if settings.link_hunter_enabled:
+        warnings.append("link_hunter_already_enabled")
+    if targets and free_positive_count == 0:
+        warnings.append("no_free_positive_signal_in_batch")
+    return {
+        "ready_for_controlled_proof": not blockers,
+        "activation_blockers": blockers,
+        "activation_warnings": warnings,
+        "requires_explicit_spend_approval": True,
+        "credentials_present": settings.dataforseo_enabled,
+        "credentials_exposed": False,
+    }
+
+
 def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, Any]:
     """Describe the next provider proof without making any network/provider calls."""
     commoncrawl = _commoncrawl_signals(db)
@@ -98,6 +121,11 @@ def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, A
     max_source_pages = len(targets) * settings.link_hunter_backlinks_per_domain
     target_cc = {target: commoncrawl.get(target) for target in targets}
     target_exact = {target: exact_links.get(target, 0) for target in targets}
+    free_positive_count = sum(
+        1
+        for target in targets
+        if exact_links.get(target, 0) > 0 or (commoncrawl.get(target) or 0) > 0
+    )
 
     return {
         "targets": targets,
@@ -119,4 +147,10 @@ def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, A
             target for target in targets if (commoncrawl.get(target) or 0) > 0
         ],
         "target_commoncrawl_hits": target_cc,
+        **_proof_readiness(
+            settings=settings,
+            targets=targets,
+            estimated_max_cost_usd=estimated_max_cost,
+            free_positive_count=free_positive_count,
+        ),
     }
