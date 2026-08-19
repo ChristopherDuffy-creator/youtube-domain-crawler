@@ -29,3 +29,9 @@ Production remains protected while the web-wide system is developed on a separat
 ## Production gate
 
 The production backup gate is cleared. The Link Hunter code may be merged with `LINK_HUNTER_ENABLED=false`. The first real provider run must remain a tiny controlled proof batch before any scaling or scheduling.
+
+## Progress checkpoint
+
+- First useful production Web Link Hunter version: about 85% complete.
+- Entire planned multi-source Link Hunter system: about 60% complete.
+- Remaining work is principally deployment, live provider proof/tuning, controlled scheduling/scale, and the additional non-DataForSEO source collectors.
