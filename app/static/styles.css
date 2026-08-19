@@ -114,6 +114,12 @@ tbody tr:hover { background: rgba(124,92,255,.05); }
 textarea, input[type=file], input[type=text], input[type=password] { width: 100%; border: 1px solid var(--line); background: #0a1020; color: var(--text); border-radius: 8px; padding: 12px; font: inherit; }
 .filter-summary { color: #d8d1ff !important; }
 .panel-filter { margin: 0 22px 18px; padding: 11px 14px; border: 1px solid rgba(124,92,255,.5); border-radius: 9px; background: rgba(124,92,255,.1); }
+.system-details { margin: 16px 20px 20px; border: 1px solid var(--line); border-radius: 10px; background: rgba(6,10,20,.24); color: var(--muted); }
+.system-details summary { padding: 12px 14px; cursor: pointer; color: #c2ccdd; font-size: 12px; font-weight: 750; }
+.system-details-body { padding: 0 14px 4px; }
+.technical-note { padding: 12px 0; border-top: 1px solid rgba(41,54,80,.7); font-size: 12px; line-height: 1.55; }
+.technical-note strong { color: #dbe3f1; }
+.technical-note small { display: block; margin-top: 5px; color: var(--muted); }
 .login-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
 .login-card { width: min(440px, 100%); padding: 30px; background: linear-gradient(145deg, rgba(23,33,57,.99), rgba(15,23,40,.99)); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 70px rgba(0,0,0,.36); }
 .login-card h1 { font-size: clamp(28px, 8vw, 40px); }
