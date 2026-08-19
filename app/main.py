@@ -22,6 +22,7 @@ from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db
 from app.jobs import JOB_FUNCTIONS, build_scheduler, ensure_seed_data, ingest_dropped_text
 from app.link_hunter import run_provider_proof_job
+from app.link_hunter_preview import build_provider_proof_preview
 from app.models import (
     Candidate,
     Domain,
@@ -183,6 +184,18 @@ def download_database_backup(_: str = Depends(require_dashboard_auth)) -> Respon
     )
 
 
+@app.get("/admin/link-hunter/proof-preview")
+def link_hunter_proof_preview(
+    _: str = Depends(require_dashboard_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return {
+        "status": "preview",
+        "provider_calls_made": 0,
+        "preview": build_provider_proof_preview(db, settings),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
     request: Request,
@@ -208,6 +221,7 @@ def dashboard(
     ).all()
 
     web_evidence_rows = _load_web_evidence_rows(db, limit=100)
+    proof_preview = build_provider_proof_preview(db, settings)
     latest_runs = db.scalars(select(RunLog).order_by(RunLog.started_at.desc()).limit(16)).all()
 
     qualified = (
@@ -246,6 +260,7 @@ def dashboard(
         context={
             "candidate_rows": candidate_rows,
             "web_evidence_rows": web_evidence_rows,
+            "proof_preview": proof_preview,
             "latest_runs": latest_runs,
             "qualified": qualified,
             "watchlist": watchlist,
