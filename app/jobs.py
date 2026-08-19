@@ -30,6 +30,7 @@ from app.emailer import (
     render_daily_digest,
     send_email,
 )
+from app.hackernews_prefilter import run_hackernews_prefilter as run_hackernews_prefilter_batch
 from app.metrics import ViewMetric, calculate_monthly_views
 from app.models import (
     AppCheckpoint,
@@ -1113,6 +1114,33 @@ def run_stackexchange_prefilter_job() -> None:
             logger.exception("Stack Exchange prefilter failed")
 
 
+def run_hackernews_prefilter_job() -> None:
+    """Cache free exact-link evidence from Hacker News stories/comments."""
+    with SessionLocal() as db:
+        run = _start_run(db, "hackernews_prefilter")
+        counters: dict[str, Any] = {
+            "candidates": 0,
+            "queries": 0,
+            "search_hits": 0,
+            "items_with_exact_links": 0,
+            "exact_links_saved": 0,
+            "new_links": 0,
+            "domains_with_links": 0,
+            "provider_cost_usd": 0.0,
+            "errors": 0,
+            "error_details": [],
+        }
+        try:
+            counters = run_hackernews_prefilter_batch(db, batch_size=10, hits_per_page=50)
+            status = "complete" if not counters.get("errors") else "partial"
+            _finish_run(db, run, status, counters)
+        except Exception as exc:
+            db.rollback()
+            run = db.get(RunLog, run.id)
+            _finish_run(db, run, "failed", counters, str(exc))
+            logger.exception("Hacker News prefilter failed")
+
+
 JOB_FUNCTIONS: dict[str, Callable[[], None]] = {
     "discovery": run_discovery,
     "snapshots": run_view_snapshots,
@@ -1121,6 +1149,7 @@ JOB_FUNCTIONS: dict[str, Callable[[], None]] = {
     "dropped_search": run_dropped_youtube_search,
     "commoncrawl_prefilter": run_commoncrawl_prefilter_job,
     "stackexchange_prefilter": run_stackexchange_prefilter_job,
+    "hackernews_prefilter": run_hackernews_prefilter_job,
     "digest": run_daily_digest,
 }
 
@@ -1175,6 +1204,12 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         replace_existing=True,
     )
     scheduler.add_job(
+        run_hackernews_prefilter_job,
+        DateTrigger(run_date=start + timedelta(minutes=12)),
+        id="initial_hackernews_prefilter",
+        replace_existing=True,
+    )
+    scheduler.add_job(
         run_view_snapshots,
         CronTrigger(hour=2, minute=15, timezone="UTC"),
         id="view_snapshots",
@@ -1202,6 +1237,12 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         run_stackexchange_prefilter_job,
         CronTrigger(hour="2,14", minute=27, timezone="UTC"),
         id="stackexchange_prefilter",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_hackernews_prefilter_job,
+        CronTrigger(hour="3,15", minute=37, timezone="UTC"),
+        id="hackernews_prefilter",
         replace_existing=True,
     )
     scheduler.add_job(
