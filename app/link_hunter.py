@@ -16,9 +16,9 @@ from app.availability import AvailabilityResult, check_domain
 from app.config import Settings, get_settings
 from app.database import SessionLocal
 from app.dataforseo import DataForSEOClient, DataForSEOError
+from app.link_hunter_preview import select_provider_proof_targets
 from app.models import (
     Domain,
-    DroppedDomain,
     FetchVerification,
     Opportunity,
     ProviderQuery,
@@ -565,21 +565,10 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
     if not settings.dataforseo_enabled:
         raise DataForSEOError("DataForSEO credentials are not configured")
 
-    already_checked = set(
-        db.scalars(
-            select(ProviderQuery.target).where(
-                ProviderQuery.provider == "dataforseo",
-                ProviderQuery.endpoint == "bulk_backlink_summary",
-                ProviderQuery.status == "complete",
-            )
-        ).all()
-    )
-    recent_drops = db.scalars(
-        select(DroppedDomain).order_by(DroppedDomain.first_seen_at.desc()).limit(250)
-    ).all()
-    targets = [drop.name for drop in recent_drops if drop.name not in already_checked][
-        : settings.link_hunter_proof_batch_size
-    ]
+    # Use the exact same free/cached target selector shown by the zero-cost
+    # dashboard preview. This prevents a paid proof from silently testing a
+    # different set of domains than the operator reviewed.
+    targets = select_provider_proof_targets(db, settings)
 
     counters: dict[str, Any] = {
         "targets": len(targets),
