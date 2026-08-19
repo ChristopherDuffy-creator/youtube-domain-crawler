@@ -97,7 +97,7 @@ def test_returned_backoff_is_respected_before_next_method_call(monkeypatch) -> N
         FakeResponse({"items": [], "quota_remaining": 8999}),
     ]
     monkeypatch.setattr(httpx, "Client", FakeClient)
-    monotonic = iter([10.0, 11.0])
+    monotonic = iter([10.0, 11.0, 12.0])
     monkeypatch.setattr("app.stackexchange.time.monotonic", lambda: next(monotonic))
     sleeps: list[float] = []
     monkeypatch.setattr("app.stackexchange.time.sleep", sleeps.append)
