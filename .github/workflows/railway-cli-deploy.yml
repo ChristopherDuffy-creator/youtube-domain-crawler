@@ -1,5 +1,6 @@
 name: Railway CLI Deploy
 
+# Direct source upload fallback for Railway GitHub snapshot failures.
 on:
   push:
     branches:
