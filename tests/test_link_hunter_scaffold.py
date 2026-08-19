@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-import app.models  # noqa: F401 - importing registers all model tables
+from app import models
 from app.config import Settings
 from app.database import Base
 from app.dataforseo import DataForSEOClient, DataForSEOError
@@ -75,6 +75,7 @@ def test_dataforseo_client_requires_credentials() -> None:
 
 
 def test_generic_link_hunter_tables_are_registered() -> None:
+    assert models.SourceSite.__tablename__ == "source_sites"
     assert WEB_LINK_HUNTER_TABLES.issubset(set(Base.metadata.tables))
 
 
