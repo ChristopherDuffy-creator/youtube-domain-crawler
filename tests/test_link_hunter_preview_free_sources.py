@@ -89,7 +89,6 @@ def test_verified_links_and_independent_sites_drive_free_ranking() -> None:
         strong = Domain(name="strong.example", availability_status="likely_available")
         db.add(strong)
         db.flush()
-        links: list[SourceLink] = []
         for index, hostname in enumerate(("one.example.org", "two.example.org", "three.example.org")):
             site = SourceSite(hostname=hostname, source_type="web")
             db.add(site)
@@ -105,7 +104,6 @@ def test_verified_links_and_independent_sites_drive_free_ranking() -> None:
             )
             db.add(link)
             db.flush()
-            links.append(link)
             if index == 0:
                 db.add(FetchVerification(source_link_id=link.id, link_present=True, http_status=200))
 
