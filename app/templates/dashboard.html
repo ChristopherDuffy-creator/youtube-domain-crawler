@@ -104,9 +104,21 @@
 
       {% if dataforseo_enabled and not link_hunter_enabled %}
       <section class="notice">
-        <strong>Provider credentials detected.</strong> Link Hunter calls are still deliberately disabled until the backup/test gate is cleared.
+        <strong>Provider ready, spending disabled.</strong> Production has the DataForSEO credentials, but Link Hunter remains off until the first controlled proof is deliberately enabled.
       </section>
       {% endif %}
+
+      <section class="notice">
+        <strong>Next proof preview — zero provider calls.</strong>
+        {% if proof_preview.target_count %}
+          {{ proof_preview.target_count }} domain{% if proof_preview.target_count != 1 %}s{% endif %}, up to {{ proof_preview.max_source_pages }} source pages, conservative maximum spend ${{ "%.4f"|format(proof_preview.estimated_max_cost_usd) }} against a ${{ "%.2f"|format(proof_preview.configured_cost_cap_usd) }} cap.
+          <small>Targets: {{ proof_preview.targets|join(', ') }}</small>
+          <small>{% if proof_preview.within_cost_cap %}✓ preflight is inside the configured cap{% else %}✗ preflight exceeds the cap and the paid proof will refuse to start{% endif %} · paid requests made by this preview: {{ proof_preview.paid_requests_made }}</small>
+        {% else %}
+          No unchecked dropped-domain targets are currently queued for the proof.
+        {% endif %}
+        <small><a href="/admin/link-hunter/proof-preview">View JSON preview</a></small>
+      </section>
 
       <div class="table-wrap">
         <table>
