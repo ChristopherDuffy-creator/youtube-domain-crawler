@@ -6,6 +6,10 @@ on:
     branches:
       - main
     paths:
+      - app/link_hunter.py
+      - app/link_hunter_preview.py
+      - app/main.py
+      - .github/workflows/controlled-link-hunter-proof.yml
       - .github/workflows/link-hunter-readiness.yml
   workflow_dispatch:
 
@@ -16,35 +20,46 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
-      - name: Check sanitized production health
+      - name: Wait for sanitized production readiness
         id: health
         shell: bash
         run: |
           set +e
-          body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health)"
-          if [ $? -ne 0 ]; then
-            echo "db_state=error" >> "$GITHUB_OUTPUT"
-            echo "flag_state=error" >> "$GITHUB_OUTPUT"
-            echo "creds_state=error" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          db_state=error
+          flag_state=error
+          creds_state=error
 
-          BODY="$body" python - <<'PY' >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 30); do
+            body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health 2>/dev/null)"
+            if [ $? -eq 0 ]; then
+              states="$(BODY="$body" python - <<'PY'
           import json
           import os
 
           try:
               payload = json.loads(os.environ["BODY"])
           except Exception:
-              print("db_state=error")
-              print("flag_state=error")
-              print("creds_state=error")
+              print("error error error")
           else:
-              print("db_state=" + ("success" if payload.get("database") == "ok" else "error"))
-              print("flag_state=" + ("success" if payload.get("link_hunter_enabled") is False else "error"))
-              print("creds_state=" + ("success" if payload.get("dataforseo_configured") is True else "error"))
+              db = "success" if payload.get("database") == "ok" else "error"
+              flag = "success" if payload.get("link_hunter_enabled") is False else "error"
+              creds = "success" if payload.get("dataforseo_configured") is True else "error"
+              print(db, flag, creds)
           PY
+              )"
+              read -r db_state flag_state creds_state <<< "$states"
+              if [ "$db_state" = success ] && [ "$flag_state" = success ] && [ "$creds_state" = success ]; then
+                break
+              fi
+            fi
+            sleep 20
+          done
+
+          echo "db_state=$db_state" >> "$GITHUB_OUTPUT"
+          echo "flag_state=$flag_state" >> "$GITHUB_OUTPUT"
+          echo "creds_state=$creds_state" >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Publish readiness statuses
