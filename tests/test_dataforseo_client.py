@@ -10,7 +10,7 @@ from app.dataforseo import DataForSEOClient, DataForSEOError
 
 
 class FakeHTTPResponse:
-    def __init__(self, payload: dict[str, Any], status_code: int = 200):
+    def __init__(self, payload: Any, status_code: int = 200):
         self._payload = payload
         self.status_code = status_code
 
@@ -20,17 +20,19 @@ class FakeHTTPResponse:
             response = httpx.Response(self.status_code, request=request)
             raise httpx.HTTPStatusError("provider error", request=request, response=response)
 
-    def json(self) -> dict[str, Any]:
+    def json(self) -> Any:
         return self._payload
 
 
 class FakeHTTPClient:
     calls: list[tuple[str, list[dict[str, Any]]]] = []
-    response_payload: dict[str, Any] = {}
+    instances: list[FakeHTTPClient] = []
+    response_payload: Any = {}
 
     def __init__(self, *args: Any, **kwargs: Any):
         self.args = args
         self.kwargs = kwargs
+        self.__class__.instances.append(self)
 
     def __enter__(self) -> FakeHTTPClient:
         return self
@@ -41,6 +43,11 @@ class FakeHTTPClient:
     def post(self, url: str, json: list[dict[str, Any]]) -> FakeHTTPResponse:
         self.__class__.calls.append((url, json))
         return FakeHTTPResponse(self.__class__.response_payload)
+
+
+def _reset_fake() -> None:
+    FakeHTTPClient.calls = []
+    FakeHTTPClient.instances = []
 
 
 def _settings() -> Settings:
@@ -67,7 +74,7 @@ def _ok_payload(result: dict[str, Any], cost: float = 0.024) -> dict[str, Any]:
 
 
 def test_bulk_backlink_summary_contract(monkeypatch) -> None:
-    FakeHTTPClient.calls = []
+    _reset_fake()
     FakeHTTPClient.response_payload = _ok_payload(
         {
             "items_count": 1,
@@ -100,8 +107,22 @@ def test_bulk_backlink_summary_contract(monkeypatch) -> None:
     ]
 
 
+def test_transport_does_not_inherit_proxy_environment(monkeypatch) -> None:
+    _reset_fake()
+    FakeHTTPClient.response_payload = _ok_payload({"items_count": 0, "items": []})
+    monkeypatch.setattr(httpx, "Client", FakeHTTPClient)
+
+    DataForSEOClient(_settings()).backlink_summary("example.com")
+
+    assert len(FakeHTTPClient.instances) == 1
+    kwargs = FakeHTTPClient.instances[0].kwargs
+    assert kwargs["trust_env"] is False
+    assert kwargs["headers"]["Accept"] == "application/json"
+    assert kwargs["headers"]["User-Agent"] == "Expandosaurus-Link-Hunter/0.3"
+
+
 def test_detailed_backlinks_contract(monkeypatch) -> None:
-    FakeHTTPClient.calls = []
+    _reset_fake()
     FakeHTTPClient.response_payload = _ok_payload({"items_count": 0, "items": []})
     monkeypatch.setattr(httpx, "Client", FakeHTTPClient)
 
@@ -124,7 +145,7 @@ def test_detailed_backlinks_contract(monkeypatch) -> None:
 
 
 def test_bulk_page_traffic_contract(monkeypatch) -> None:
-    FakeHTTPClient.calls = []
+    _reset_fake()
     FakeHTTPClient.response_payload = _ok_payload({"items_count": 0, "items": []}, cost=0.01)
     monkeypatch.setattr(httpx, "Client", FakeHTTPClient)
 
@@ -133,13 +154,18 @@ def test_bulk_page_traffic_contract(monkeypatch) -> None:
     assert FakeHTTPClient.calls == [
         (
             "https://api.dataforseo.com/v3/dataforseo_labs/google/bulk_traffic_estimation/live",
-            [{"targets": ["https://publisher.example/article"]}],
+            [
+                {
+                    "targets": ["https://publisher.example/article"],
+                    "item_types": ["organic"],
+                }
+            ],
         )
     ]
 
 
 def test_provider_task_error_is_not_silently_accepted(monkeypatch) -> None:
-    FakeHTTPClient.calls = []
+    _reset_fake()
     FakeHTTPClient.response_payload = {
         "status_code": 20000,
         "status_message": "Ok.",
@@ -159,8 +185,29 @@ def test_provider_task_error_is_not_silently_accepted(monkeypatch) -> None:
         DataForSEOClient(_settings()).backlinks("example.com")
 
 
+def test_malformed_provider_shapes_are_rejected(monkeypatch) -> None:
+    _reset_fake()
+    monkeypatch.setattr(httpx, "Client", FakeHTTPClient)
+    client = DataForSEOClient(_settings())
+
+    FakeHTTPClient.response_payload = []
+    with pytest.raises(DataForSEOError, match="malformed response"):
+        client.backlink_summary("example.com")
+
+    FakeHTTPClient.response_payload = {"status_code": 20000, "tasks": {"bad": "shape"}}
+    with pytest.raises(DataForSEOError, match="no valid task"):
+        client.backlink_summary("example.com")
+
+    FakeHTTPClient.response_payload = {
+        "status_code": 20000,
+        "tasks": [{"status_code": 20000, "result": {"bad": "shape"}}],
+    }
+    with pytest.raises(DataForSEOError, match="malformed results"):
+        client.backlink_summary("example.com")
+
+
 def test_bulk_limits_are_enforced_before_provider_call(monkeypatch) -> None:
-    FakeHTTPClient.calls = []
+    _reset_fake()
     monkeypatch.setattr(httpx, "Client", FakeHTTPClient)
     client = DataForSEOClient(_settings())
 
