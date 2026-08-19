@@ -24,6 +24,7 @@ from app.emailer import (
     EmailError,
     EmailPendingCandidate,
     EmailRunIssue,
+    EmailWebOpportunity,
     render_candidate_table,
     render_daily_digest,
     send_email,
@@ -34,8 +35,13 @@ from app.models import (
     Candidate,
     Domain,
     DroppedDomain,
+    FetchVerification,
+    Opportunity,
+    ProviderQuery,
     RunLog,
     SearchState,
+    SourcePage,
+    SourceSite,
     Video,
     VideoDomain,
     ViewSnapshot,
@@ -740,9 +746,8 @@ def _build_daily_digest_report(
     current_run_id: int | None = None,
 ) -> DailyDigest:
     report_time = now or utcnow()
-    recent_statement = select(RunLog).where(
-        RunLog.started_at >= report_time - timedelta(hours=24)
-    )
+    recent_cutoff = report_time - timedelta(hours=24)
+    recent_statement = select(RunLog).where(RunLog.started_at >= recent_cutoff)
     if current_run_id is not None:
         recent_statement = recent_statement.where(RunLog.id != current_run_id)
     recent_runs = db.scalars(recent_statement.order_by(RunLog.started_at.desc())).all()
@@ -815,6 +820,80 @@ def _build_daily_digest_report(
         )
         for candidate, domain, video in pending_rows
     ]
+
+    web_tier_counts = dict(
+        db.execute(select(Opportunity.tier, func.count()).group_by(Opportunity.tier)).all()
+    )
+    web_rows = db.execute(
+        select(Opportunity, Domain, SourcePage, SourceSite)
+        .join(Domain, Domain.id == Opportunity.domain_id)
+        .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
+        .outerjoin(SourceSite, SourceSite.id == SourcePage.site_id)
+        .where(Opportunity.tier.in_(["priority", "qualified", "watchlist", "pending"]))
+        .order_by(
+            case(
+                (Opportunity.tier == "priority", 0),
+                (Opportunity.tier == "qualified", 1),
+                (Opportunity.tier == "watchlist", 2),
+                else_=3,
+            ),
+            Opportunity.score.desc(),
+            Opportunity.source_page_traffic_estimate.desc(),
+        )
+        .limit(15)
+    ).all()
+    web_opportunities = [
+        EmailWebOpportunity(
+            domain=domain.name,
+            tier=opportunity.tier,
+            score=opportunity.score,
+            source_page_traffic=opportunity.source_page_traffic_estimate,
+            referring_pages=opportunity.referring_page_count,
+            independent_sites=opportunity.independent_site_count,
+            niche=opportunity.niche,
+            verified_live_link=opportunity.verified_live_link,
+            availability=domain.availability_status,
+            price_usd=domain.registrar_price_usd,
+            source_site=site.hostname if site is not None else "",
+            source_title=page.title if page is not None else "",
+            source_url=page.url if page is not None else "",
+        )
+        for opportunity, domain, page, site in web_rows
+    ]
+    web_domains_checked_24h = (
+        db.scalar(
+            select(func.count())
+            .select_from(ProviderQuery)
+            .where(
+                ProviderQuery.provider == "dataforseo",
+                ProviderQuery.endpoint == "bulk_backlink_summary",
+                ProviderQuery.status == "complete",
+                ProviderQuery.completed_at >= recent_cutoff,
+            )
+        )
+        or 0
+    )
+    web_links_verified_24h = (
+        db.scalar(
+            select(func.count())
+            .select_from(FetchVerification)
+            .where(
+                FetchVerification.link_present.is_(True),
+                FetchVerification.fetched_at >= recent_cutoff,
+            )
+        )
+        or 0
+    )
+    web_provider_cost_usd_24h = (
+        db.scalar(
+            select(func.sum(ProviderQuery.cost_usd)).where(
+                ProviderQuery.provider == "dataforseo",
+                ProviderQuery.status == "complete",
+                ProviderQuery.completed_at >= recent_cutoff,
+            )
+        )
+        or 0.0
+    )
 
     availability_counts = dict(
         db.execute(
@@ -904,6 +983,14 @@ def _build_daily_digest_report(
         qualified_candidates=_to_email_candidates(qualified_rows[:25]),
         pending_candidates=pending_candidates,
         issues=issues,
+        web_priority_count=int(web_tier_counts.get("priority", 0)),
+        web_qualified_count=int(web_tier_counts.get("qualified", 0)),
+        web_watchlist_count=int(web_tier_counts.get("watchlist", 0)),
+        web_pending_count=int(web_tier_counts.get("pending", 0)),
+        web_domains_checked_24h=int(web_domains_checked_24h),
+        web_links_verified_24h=int(web_links_verified_24h),
+        web_provider_cost_usd_24h=float(web_provider_cost_usd_24h),
+        web_opportunities=web_opportunities,
     )
 
 
@@ -917,6 +1004,10 @@ def run_daily_digest() -> None:
             "qualified": 0,
             "watchlist": 0,
             "pending": 0,
+            "web_priority": 0,
+            "web_qualified": 0,
+            "web_watchlist": 0,
+            "web_pending": 0,
             "issues": 0,
         }
         try:
@@ -931,6 +1022,10 @@ def run_daily_digest() -> None:
                     "qualified": report.qualified_count,
                     "watchlist": report.watchlist_count,
                     "pending": report.pending_count,
+                    "web_priority": report.web_priority_count,
+                    "web_qualified": report.web_qualified_count,
+                    "web_watchlist": report.web_watchlist_count,
+                    "web_pending": report.web_pending_count,
                     "issues": len(report.issues),
                 }
             )
@@ -938,8 +1033,8 @@ def run_daily_digest() -> None:
             if settings.email_enabled:
                 subject = (
                     "Daily crawler: "
-                    f"{report.priority_count + report.qualified_count} qualified, "
-                    f"{report.work.get('new_videos', 0)} new videos, "
+                    f"{report.priority_count + report.qualified_count} YouTube qualified, "
+                    f"{report.web_priority_count + report.web_qualified_count} web qualified, "
                     f"{report.work.get('drops_loaded', 0)} fresh drops"
                 )
                 send_email(settings, subject, body)

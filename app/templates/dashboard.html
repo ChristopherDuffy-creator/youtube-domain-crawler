@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>YouTube Domain Crawler</title>
+  <title>Expandosaurus Domain Traffic System</title>
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -11,53 +11,49 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">EXPANDOSAURUS</p>
-        <h1>YouTube Domain Crawler</h1>
-        <p class="subtitle">Permanent deduplication ledger · exact description links · real 30-day view tracking</p>
+        <h1>Domain Traffic System</h1>
+        <p class="subtitle">YouTube crawler + Web Link Hunter · permanent deduplication ledger · evidence-first ranking</p>
       </div>
       <div>
-        <a class="button secondary" href="/export/candidates.csv">Download results</a>
         <a class="button secondary" href="/admin/database-backup">Database backup</a>
+        <a class="button secondary" href="/export/candidates.csv">YouTube CSV</a>
+        <a class="button secondary" href="/export/link-hunter.csv">Web CSV</a>
       </div>
     </header>
 
-    <section class="notice">
-      <strong>Database safety:</strong>
-      Download a portable database backup before any Link Hunter schema deployment.
-      The backup contains the crawler ledger, so store it privately and do not upload it to GitHub.
-    </section>
-
     {% if not registrar_enabled or not email_enabled %}
     <section class="notice">
-      <strong>Setup still to finish:</strong>
+      <strong>Core setup still to finish:</strong>
       {% if not registrar_enabled %}exact registrar verification{% endif %}
       {% if not registrar_enabled and not email_enabled %} and {% endif %}
       {% if not email_enabled %}email delivery{% endif %}.
-      The crawler can collect and track links before these are connected.
+      Collection and tracking can continue before these are connected.
     </section>
     {% endif %}
 
     <section class="target-card">
       <div>
         <span class="target-number">{{ qualified }}</span>
-        <span class="target-label">of {{ target }} very good domains</span>
+        <span class="target-label">of {{ target }} very good YouTube domains</span>
       </div>
       <div class="progress"><span style="width: {{ progress }}%"></span></div>
       <p>Qualified means ordinary registration confirmed and at least {{ "{:,}".format(qualified_threshold) }} verified views in the latest 30 days.</p>
     </section>
 
     <section class="stats-grid">
-      <article><span>{{ qualified }}</span><small>Qualified / priority</small></article>
-      <article><span>{{ watchlist }}</span><small>Watchlist ({{ "{:,}".format(watch_threshold) }}+)</small></article>
+      <article><span>{{ qualified }}</span><small>YouTube qualified / priority</small></article>
+      <article><span>{{ watchlist }}</span><small>YouTube watchlist</small></article>
       <article><span>{{ "{:,}".format(cumulative_videos) }}</span><small>Videos checked cumulative</small></article>
       <article><span>{{ "{:,}".format(cumulative_domains) }}</span><small>Domains checked cumulative</small></article>
       <article><span>{{ "{:,}".format(cumulative_dropped) }}</span><small>Dropped names checked/loaded</small></article>
-      <article><span>{{ "{:,}".format(exact_links) }}</span><small>Active exact links indexed</small></article>
+      <article><span>{{ "{:,}".format(exact_links) }}</span><small>YouTube exact links indexed</small></article>
     </section>
 
     <section class="panel">
       <div class="panel-heading">
         <div>
-          <h2>Ranked candidates</h2>
+          <p class="eyebrow">YOUTUBE</p>
+          <h2>YouTube opportunities</h2>
           <p>Priority {{ "{:,}".format(priority_threshold) }}+ · Qualified {{ "{:,}".format(qualified_threshold) }}+ · Watchlist {{ "{:,}".format(watch_threshold) }}+</p>
         </div>
       </div>
@@ -81,7 +77,91 @@
               <td>{{ candidate.link_count }}<small>{{ candidate.video_count }} video{% if candidate.video_count != 1 %}s{% endif %}</small></td>
             </tr>
           {% else %}
-            <tr><td colspan="7" class="empty">No ranked candidates yet. The first discovery run starts automatically after deployment.</td></tr>
+            <tr><td colspan="7" class="empty">No ranked YouTube candidates yet.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">WEB-WIDE</p>
+          <h2>Expandosaurus Link Hunter</h2>
+          <p>Separate web-wide opportunity ledger: dropped domains → live backlinks → source-page traffic → direct link verification → registration.</p>
+        </div>
+      </div>
+
+      <section class="stats-grid">
+        <article><span>{{ "{:,}".format(web_opportunities) }}</span><small>Web opportunities</small></article>
+        <article><span>{{ "{:,}".format(web_source_sites) }}</span><small>Independent source sites</small></article>
+        <article><span>{{ "{:,}".format(web_source_pages) }}</span><small>Source pages</small></article>
+        <article><span>{{ "{:,}".format(web_source_links) }}</span><small>Provider-live links</small></article>
+        <article><span>{% if dataforseo_enabled %}Ready{% else %}Missing{% endif %}</span><small>DataForSEO credentials</small></article>
+        <article><span>{% if link_hunter_enabled %}On{% else %}Safe{% endif %}</span><small>{% if link_hunter_enabled %}Proof calls enabled{% else %}Feature flag off{% endif %}</small></article>
+      </section>
+
+      {% if dataforseo_enabled and not link_hunter_enabled %}
+      <section class="notice">
+        <strong>Provider credentials detected.</strong> Link Hunter calls are still deliberately disabled until the backup/test gate is cleared.
+      </section>
+      {% endif %}
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Domain</th><th>Tier / score</th><th>Best source</th><th>Traffic</th><th>Link evidence</th><th>Referrers</th><th>Availability</th></tr>
+          </thead>
+          <tbody>
+          {% for opportunity, domain, page, site, link, verification in web_evidence_rows %}
+            <tr>
+              <td>
+                <strong>{{ domain.name }}</strong>
+                {% if opportunity.niche %}<small>{{ opportunity.niche }}</small>{% endif %}
+                {% if domain.registrar_price_usd %}<small>${{ "%.2f"|format(domain.registrar_price_usd) }}</small>{% endif %}
+              </td>
+              <td>
+                <span class="pill {{ opportunity.tier }}">{{ opportunity.tier }}</span>
+                <small>score {{ "%.1f"|format(opportunity.score) }} · strength {{ "%.1f"|format(opportunity.link_strength) }}</small>
+              </td>
+              <td>
+                {% if page %}
+                  <a href="{{ page.url }}" target="_blank" rel="noopener">{{ (page.title or page.url)[:70] }}</a>
+                  <small>{{ site.hostname if site else page.url[:70] }}</small>
+                {% else %}
+                  <span class="empty">collecting evidence</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if opportunity.source_page_traffic_estimate %}
+                  <strong>{{ "{:,}".format(opportunity.source_page_traffic_estimate) }}</strong>
+                  <small>estimated monthly organic</small>
+                {% else %}
+                  <span class="empty">not yet measured</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if link %}
+                  <strong>{{ (link.anchor_text or '[no anchor text]')[:60] }}</strong>
+                  <small>{{ ((link.context_before or '') ~ ' ' ~ (link.context_after or ''))[:120] }}</small>
+                  <small>{% if link.dofollow %}dofollow{% else %}nofollow/other{% endif %} · provider rank {{ "%.1f"|format(link.provider_rank or 0) }}{% if link.spam_score is not none %} · spam {{ "%.1f"|format(link.spam_score) }}{% endif %}</small>
+                  <small>{% if verification and verification.link_present %}✓ fetched and link still present{% elif verification %}✗ fetched but link not found{% else %}provider evidence only{% endif %}</small>
+                {% else %}
+                  <span class="empty">no saved live link</span>
+                {% endif %}
+              </td>
+              <td>
+                <strong>{{ "{:,}".format(opportunity.referring_page_count) }} pages</strong>
+                <small>{{ "{:,}".format(opportunity.independent_site_count) }} independent sites</small>
+              </td>
+              <td>
+                <span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span>
+                <small>{{ domain.availability_source or 'not checked' }}</small>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7" class="empty">No web-wide proof results yet. This section is ready for the first controlled DataForSEO batch.</td></tr>
           {% endfor %}
           </tbody>
         </table>
@@ -90,7 +170,7 @@
 
     <section class="two-column">
       <article class="panel">
-        <div class="panel-heading"><div><h2>Latest crawler runs</h2><p>Every run resumes from the permanent database checkpoint.</p></div></div>
+        <div class="panel-heading"><div><h2>Latest crawler runs</h2><p>YouTube and Link Hunter jobs share the permanent operational ledger.</p></div></div>
         <div class="runs">
         {% for run in latest_runs %}
           <div class="run-row">

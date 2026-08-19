@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -40,6 +40,23 @@ class EmailPendingCandidate:
 
 
 @dataclass(frozen=True)
+class EmailWebOpportunity:
+    domain: str
+    tier: str
+    score: float
+    source_page_traffic: int
+    referring_pages: int
+    independent_sites: int
+    niche: str
+    verified_live_link: bool
+    availability: str
+    price_usd: float | None
+    source_site: str
+    source_title: str
+    source_url: str
+
+
+@dataclass(frozen=True)
 class EmailRunIssue:
     job: str
     occurred_at: str
@@ -65,6 +82,14 @@ class DailyDigest:
     qualified_candidates: list[EmailCandidate]
     pending_candidates: list[EmailPendingCandidate]
     issues: list[EmailRunIssue]
+    web_priority_count: int = 0
+    web_qualified_count: int = 0
+    web_watchlist_count: int = 0
+    web_pending_count: int = 0
+    web_domains_checked_24h: int = 0
+    web_links_verified_24h: int = 0
+    web_provider_cost_usd_24h: float = 0.0
+    web_opportunities: list[EmailWebOpportunity] = field(default_factory=list)
 
 
 def send_email(settings: Settings, subject: str, body_html: str) -> str | None:
@@ -158,6 +183,42 @@ def render_pending_candidate_table(candidates: list[EmailPendingCandidate]) -> s
     )
 
 
+def render_web_opportunity_table(opportunities: list[EmailWebOpportunity]) -> str:
+    if not opportunities:
+        return "<p>No web-wide opportunities have been ranked yet.</p>"
+    rows: list[str] = []
+    for item in opportunities:
+        price = f"${item.price_usd:,.2f}" if item.price_usd is not None else "—"
+        verified = "Yes" if item.verified_live_link else "No"
+        source_label = item.source_title or item.source_site or item.source_url or "Source page"
+        source = html.escape(source_label[:85])
+        if item.source_url:
+            source = f'<a href="{html.escape(item.source_url, quote=True)}">{source}</a>'
+        rows.append(
+            "<tr>"
+            f"<td><strong>{html.escape(item.domain)}</strong></td>"
+            f"<td>{html.escape(item.tier.title())}</td>"
+            f"<td>{item.score:.1f}</td>"
+            f"<td>{item.source_page_traffic:,}</td>"
+            f"<td>{item.independent_sites:,} / {item.referring_pages:,}</td>"
+            f"<td>{html.escape(item.niche or '—')}</td>"
+            f"<td>{verified}</td>"
+            f"<td>{html.escape(item.availability.replace('_', ' '))}</td>"
+            f"<td>{price}</td>"
+            f"<td>{source}</td>"
+            "</tr>"
+        )
+    return (
+        "<table cellpadding='7' cellspacing='0' border='1' "
+        "style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;"
+        "width:100%;border-color:#d7dce5'>"
+        "<thead><tr><th>Domain</th><th>Tier</th><th>Score</th><th>Source-page traffic</th>"
+        "<th>Sites / pages</th><th>Niche</th><th>Link verified</th><th>Availability</th>"
+        "<th>Price</th><th>Best source page</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def _stat_cards(items: list[tuple[str, int]]) -> str:
     cards = "".join(
         "<td style='padding:12px;border:1px solid #d7dce5;background:#f7f9fc'>"
@@ -243,10 +304,12 @@ def render_daily_digest(report: DailyDigest) -> str:
         else "No automatic dropped-domain feed is configured."
     )
     qualifying_total = report.priority_count + report.qualified_count
+    web_qualifying_total = report.web_priority_count + report.web_qualified_count
     return (
         "<div style='max-width:1100px;margin:auto;color:#172033;font-family:Arial,sans-serif'>"
-        "<h1 style='margin-bottom:5px'>Daily YouTube domain crawler report</h1>"
+        "<h1 style='margin-bottom:5px'>Daily Expandosaurus domain report</h1>"
         f"<p style='margin-top:0;color:{status_colour}'><strong>{status}</strong></p>"
+        "<h2>YouTube route</h2>"
         + _stat_cards(
             [
                 ("Priority", report.priority_count),
@@ -256,19 +319,34 @@ def render_daily_digest(report: DailyDigest) -> str:
             ]
         )
         + f"<p><strong>{qualifying_total}</strong> of the target "
-        f"<strong>{report.target}</strong> domains currently qualify.</p>"
-        "<h2>Work completed in the last 24 hours</h2>"
+        f"<strong>{report.target}</strong> YouTube-route domains currently qualify.</p>"
+        "<h2>Web Link Hunter</h2>"
+        + _stat_cards(
+            [
+                ("Web priority", report.web_priority_count),
+                ("Web qualified", report.web_qualified_count),
+                ("Web watchlist", report.web_watchlist_count),
+                ("Web pending", report.web_pending_count),
+            ]
+        )
+        + f"<p><strong>{web_qualifying_total}</strong> web-wide domains currently qualify. "
+        f"In the last 24 hours Link Hunter checked <strong>{report.web_domains_checked_24h:,}</strong> "
+        f"dropped domains, directly verified <strong>{report.web_links_verified_24h:,}</strong> "
+        f"live backlink{'s' if report.web_links_verified_24h != 1 else ''}, and recorded "
+        f"<strong>${report.web_provider_cost_usd_24h:.4f}</strong> in provider spend.</p>"
+        + render_web_opportunity_table(report.web_opportunities)
+        + "<h2>Work completed in the last 24 hours</h2>"
         + _metric_table(work_labels)
-        + "<h2>Current pending pipeline</h2>"
+        + "<h2>Current YouTube pending pipeline</h2>"
         + _metric_table(pending_labels)
-        + f"<p>Longest traffic observation: <strong>{report.longest_observation_days:.1f} "
-        "days</strong>. A candidate needs 27–35 days of measured traffic before it can be "
+        + f"<p>Longest YouTube traffic observation: <strong>{report.longest_observation_days:.1f} "
+        "days</strong>. A YouTube candidate needs 27–35 days of measured traffic before it can be "
         "called Qualified or Priority.</p>"
         + render_pending_candidate_table(report.pending_candidates)
         + "<h2>Availability position</h2>"
         + _metric_table(availability_labels)
         + f"<p>{html.escape(feed_note)}</p>"
-        "<h2>Qualified and priority domains</h2>"
+        "<h2>YouTube qualified and priority domains</h2>"
         + render_candidate_table(report.qualified_candidates)
         + "<h2>Cumulative ledger</h2>"
         + _stat_cards(
@@ -281,8 +359,10 @@ def render_daily_digest(report: DailyDigest) -> str:
         )
         + "<h2>Errors and warnings</h2>"
         + issues_html
-        + "<p style='font-size:12px;color:#596579;margin-top:24px'>Watchlist starts at "
-        "5,000 projected monthly views. Qualification requires ordinary registration "
-        "confirmation plus at least 20,000 views measured over a real 27–35 day window.</p>"
+        + "<p style='font-size:12px;color:#596579;margin-top:24px'>YouTube Watchlist starts at "
+        "5,000 projected monthly views. YouTube qualification requires ordinary registration "
+        "confirmation plus at least 20,000 views measured over a real 27–35 day window. "
+        "Web Link Hunter qualification separately requires an ordinary registration, a directly "
+        "verified live backlink, and the configured web evidence score.</p>"
         "</div>"
     )
