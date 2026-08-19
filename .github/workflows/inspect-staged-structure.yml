@@ -1,0 +1,109 @@
+name: Inspect Railway Staged Structure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/inspect-staged-structure.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      ENVIRONMENT_ID: 9f670e7a-1b3d-4ccc-b450-092a70403ee9
+      SERVICE_ID: 8aa9b741-7a20-4aef-8baf-c25ac82f6fce
+    steps:
+      - name: Inspect names and shape only
+        id: inspect
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          out = os.environ["GITHUB_OUTPUT"]
+          def put(k, v):
+              with open(out, "a", encoding="utf-8") as f:
+                  f.write(f"{k}={'true' if v else 'false'}\n")
+
+          results = {
+              "api": False,
+              "top": False,
+              "one_service": False,
+              "target_service": False,
+              "only_variables": False,
+              "login": False,
+              "password": False,
+              "pair": False,
+          }
+          try:
+              query = """
+              query EnvironmentStagedChanges($environmentId: String!) {
+                environmentStagedChanges(environmentId: $environmentId) { id status patch }
+              }
+              """
+              req = urllib.request.Request(
+                  "https://backboard.railway.com/graphql/v2",
+                  data=json.dumps({"query": query, "variables": {"environmentId": os.environ["ENVIRONMENT_ID"]}}).encode(),
+                  headers={
+                      "Project-Access-Token": os.environ.get("RAILWAY_TOKEN", ""),
+                      "Content-Type": "application/json",
+                  },
+                  method="POST",
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  payload = json.load(response)
+              if payload.get("errors"):
+                  raise RuntimeError("GraphQL error")
+              results["api"] = True
+              patch = (payload.get("data", {}).get("environmentStagedChanges") or {}).get("patch") or {}
+              nonempty_top = {k for k, v in patch.items() if v not in (None, {}, [], "")}
+              results["top"] = nonempty_top == {"services"}
+              services = patch.get("services") if isinstance(patch, dict) else {}
+              services = services if isinstance(services, dict) else {}
+              results["one_service"] = len(services) == 1
+              results["target_service"] = set(services) == {os.environ["SERVICE_ID"]}
+              service = services.get(os.environ["SERVICE_ID"]) or {}
+              nonempty_service = {k for k, v in service.items() if v not in (None, {}, [], "")} if isinstance(service, dict) else set()
+              results["only_variables"] = nonempty_service == {"variables"}
+              variables = service.get("variables") if isinstance(service, dict) else {}
+              variables = variables if isinstance(variables, dict) else {}
+              names = set(variables)
+              results["login"] = "DATAFORSEO_LOGIN" in names
+              results["password"] = "DATAFORSEO_PASSWORD" in names
+              results["pair"] = names == {"DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"}
+          except Exception:
+              pass
+          for key, value in results.items():
+              put(key, value)
+          PY
+
+      - name: Publish shape checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          publish() {
+            value="$1"; context="$2"
+            if [ "$value" = "true" ]; then state=success; else state=error; fi
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+              -d "{\"state\":\"$state\",\"context\":\"$context\"}"
+          }
+          publish "${{ steps.inspect.outputs.api }}" "stage/api"
+          publish "${{ steps.inspect.outputs.top }}" "stage/top-only-services"
+          publish "${{ steps.inspect.outputs.one_service }}" "stage/one-service"
+          publish "${{ steps.inspect.outputs.target_service }}" "stage/target-service"
+          publish "${{ steps.inspect.outputs.only_variables }}" "stage/only-variables"
+          publish "${{ steps.inspect.outputs.login }}" "stage/has-dataforseo-login"
+          publish "${{ steps.inspect.outputs.password }}" "stage/has-dataforseo-password"
+          publish "${{ steps.inspect.outputs.pair }}" "stage/exact-dataforseo-pair"
