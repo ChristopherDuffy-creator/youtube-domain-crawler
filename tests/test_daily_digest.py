@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -7,11 +8,21 @@ from app.config import Settings
 from app.database import Base
 from app.emailer import render_daily_digest
 from app.jobs import _build_daily_digest_report, process_video, refresh_candidates
-from app.models import Domain, RunLog, ViewSnapshot
+from app.models import (
+    Domain,
+    FetchVerification,
+    Opportunity,
+    ProviderQuery,
+    RunLog,
+    SourceLink,
+    SourcePage,
+    SourceSite,
+    ViewSnapshot,
+)
 from app.youtube import YouTubeVideo
 
 
-def test_daily_digest_reports_real_work_pending_candidates_and_errors() -> None:
+def test_daily_digest_reports_real_work_pending_candidates_errors_and_web_hits() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     now = datetime(2026, 8, 18, 8, 0, tzinfo=UTC)
@@ -49,8 +60,91 @@ def test_daily_digest_reports_real_work_pending_candidates_and_errors() -> None:
         assert domain is not None
         domain.availability_status = "likely_available"
         domain.availability_source = "rdap_dns"
+
+        web_domain = Domain(
+            name="web-example.com",
+            suffix="com",
+            availability_status="available",
+            availability_source="porkbun",
+            registrar_price_usd=12.0,
+            premium=False,
+        )
+        db.add(web_domain)
+        db.flush()
+        source_site = SourceSite(hostname="publisher.example", source_type="web")
+        db.add(source_site)
+        db.flush()
+        source_page = SourcePage(
+            site_id=source_site.id,
+            url="https://publisher.example/buyers-guide",
+            title="Independent buyer guide",
+            language="en",
+            http_status=200,
+            page_rank=72,
+            domain_rank=76,
+        )
+        db.add(source_page)
+        db.flush()
+        source_link = SourceLink(
+            source_page_id=source_page.id,
+            domain_id=web_domain.id,
+            target_url="https://web-example.com/offer",
+            anchor_text="buy the software",
+            context_before="best deal",
+            context_after="for small business",
+            dofollow=True,
+            provider_live=True,
+            provider_rank=80,
+            spam_score=0,
+        )
+        db.add(source_link)
+        db.flush()
         db.add_all(
             [
+                Opportunity(
+                    domain_id=web_domain.id,
+                    tier="qualified",
+                    score=73.5,
+                    best_source_page_id=source_page.id,
+                    source_page_traffic_estimate=10_000,
+                    referring_page_count=18,
+                    independent_site_count=7,
+                    link_strength=80,
+                    commercial_intent=0.75,
+                    verified_live_link=True,
+                    niche="software",
+                    updated_at=now - timedelta(minutes=45),
+                ),
+                FetchVerification(
+                    source_link_id=source_link.id,
+                    fetched_at=now - timedelta(minutes=40),
+                    http_status=200,
+                    final_url=source_page.url,
+                    link_present=True,
+                    content_hash="a" * 64,
+                ),
+                ProviderQuery(
+                    provider="dataforseo",
+                    endpoint="bulk_backlink_summary",
+                    target="web-example.com",
+                    provider_task_id="summary-task",
+                    status="complete",
+                    requested_at=now - timedelta(hours=1),
+                    completed_at=now - timedelta(minutes=59),
+                    cost_usd=0.02,
+                    row_count=18,
+                ),
+                ProviderQuery(
+                    provider="dataforseo",
+                    endpoint="backlinks",
+                    target="web-example.com",
+                    provider_task_id="links-task",
+                    status="complete",
+                    requested_at=now - timedelta(minutes=58),
+                    completed_at=now - timedelta(minutes=57),
+                    cost_usd=0.03,
+                    row_count=7,
+                ),
                 RunLog(
                     job="youtube_discovery",
                     started_at=now - timedelta(hours=2),
@@ -96,6 +190,23 @@ def test_daily_digest_reports_real_work_pending_candidates_and_errors() -> None:
     assert report.pending["registrar"] == 1
     assert report.pending_candidates[0].domain == "pending-example.com"
     assert report.issues[0].job == "availability_checks"
+
+    assert report.web_priority_count == 0
+    assert report.web_qualified_count == 1
+    assert report.web_watchlist_count == 0
+    assert report.web_pending_count == 0
+    assert report.web_domains_checked_24h == 1
+    assert report.web_links_verified_24h == 1
+    assert report.web_provider_cost_usd_24h == pytest.approx(0.05)
+    assert report.web_opportunities[0].domain == "web-example.com"
+    assert report.web_opportunities[0].source_page_traffic == 10_000
+    assert report.web_opportunities[0].source_site == "publisher.example"
+
+    assert "Web Link Hunter" in body
+    assert "Independent buyer guide" in body
+    assert "web-example.com" in body
+    assert "10,000" in body
+    assert "$0.0500" in body
     assert "Work completed in the last 24 hours" in body
     assert "Fresh dropped names loaded" in body
     assert "9,975" in body
