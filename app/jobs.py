@@ -49,6 +49,7 @@ from app.models import (
     utcnow,
 )
 from app.scoring import ScoreInputs, calculate_score, determine_tier
+from app.stackexchange_prefilter import run_stackexchange_prefilter as run_stackexchange_prefilter_batch
 from app.youtube import YouTubeClient, YouTubeVideo, exact_domain_in_description
 
 logger = logging.getLogger(__name__)
@@ -1078,6 +1079,40 @@ def run_commoncrawl_prefilter_job() -> None:
             logger.exception("Common Crawl prefilter failed")
 
 
+def run_stackexchange_prefilter_job() -> None:
+    """Cache free exact-link evidence from high-view Stack Exchange questions."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        run = _start_run(db, "stackexchange_prefilter")
+        counters: dict[str, Any] = {
+            "candidates": 0,
+            "queries": 0,
+            "questions_matched": 0,
+            "exact_links_saved": 0,
+            "new_links": 0,
+            "domains_with_links": 0,
+            "quota_remaining": None,
+            "backoff_events": 0,
+            "provider_cost_usd": 0.0,
+            "errors": 0,
+            "error_details": [],
+        }
+        try:
+            counters = run_stackexchange_prefilter_batch(
+                db,
+                batch_size=settings.stackexchange_prefilter_batch_size,
+                sites=tuple(settings.stackexchange_sites),
+                min_views=settings.stackexchange_min_views,
+            )
+            status = "complete" if not counters.get("errors") else "partial"
+            _finish_run(db, run, status, counters)
+        except Exception as exc:
+            db.rollback()
+            run = db.get(RunLog, run.id)
+            _finish_run(db, run, "failed", counters, str(exc))
+            logger.exception("Stack Exchange prefilter failed")
+
+
 JOB_FUNCTIONS: dict[str, Callable[[], None]] = {
     "discovery": run_discovery,
     "snapshots": run_view_snapshots,
@@ -1085,6 +1120,7 @@ JOB_FUNCTIONS: dict[str, Callable[[], None]] = {
     "dropped_feeds": run_dropped_feeds,
     "dropped_search": run_dropped_youtube_search,
     "commoncrawl_prefilter": run_commoncrawl_prefilter_job,
+    "stackexchange_prefilter": run_stackexchange_prefilter_job,
     "digest": run_daily_digest,
 }
 
@@ -1133,6 +1169,12 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         replace_existing=True,
     )
     scheduler.add_job(
+        run_stackexchange_prefilter_job,
+        DateTrigger(run_date=start + timedelta(minutes=9)),
+        id="initial_stackexchange_prefilter",
+        replace_existing=True,
+    )
+    scheduler.add_job(
         run_view_snapshots,
         CronTrigger(hour=2, minute=15, timezone="UTC"),
         id="view_snapshots",
@@ -1154,6 +1196,12 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         run_commoncrawl_prefilter_job,
         CronTrigger(hour="1,13", minute=17, timezone="UTC"),
         id="commoncrawl_prefilter",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_stackexchange_prefilter_job,
+        CronTrigger(hour="2,14", minute=27, timezone="UTC"),
+        id="stackexchange_prefilter",
         replace_existing=True,
     )
     scheduler.add_job(
