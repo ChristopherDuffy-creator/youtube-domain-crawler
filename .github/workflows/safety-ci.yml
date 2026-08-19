@@ -32,7 +32,5 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run tests
         run: pytest -q
-      - name: Show Ruff import fix
-        run: ruff check app/link_hunter_preview.py --select I001 --fix --diff
       - name: Run Ruff
         run: ruff check app tests
