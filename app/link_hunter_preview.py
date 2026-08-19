@@ -18,7 +18,6 @@ from app.models import (
     SourcePage,
 )
 
-
 _BLOCKED_AVAILABILITY = {"registered", "aftermarket", "premium"}
 _RECENT_FALLBACK_POOL = 1000
 
