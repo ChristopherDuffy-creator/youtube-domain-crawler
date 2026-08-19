@@ -3,8 +3,15 @@ from __future__ import annotations
 import json
 import os
 
-from app.commoncrawl_prefilter import run_commoncrawl_prefilter
-from app.database import SessionLocal
+# `railway run --service Postgres` injects the database service variables into
+# this GitHub runner. The normal DATABASE_URL points at Railway's private network,
+# which is unreachable from GitHub Actions, so prefer the public TCP URL before
+# importing app.database (where the SQLAlchemy engine is created).
+if os.getenv("DATABASE_PUBLIC_URL"):
+    os.environ["DATABASE_URL"] = os.environ["DATABASE_PUBLIC_URL"]
+
+from app.commoncrawl_prefilter import run_commoncrawl_prefilter  # noqa: E402
+from app.database import SessionLocal  # noqa: E402
 
 
 def main() -> None:

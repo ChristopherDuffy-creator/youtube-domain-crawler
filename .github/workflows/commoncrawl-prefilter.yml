@@ -27,6 +27,7 @@ jobs:
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       PROJECT_ID: 31fbe878-aa83-4b74-9820-e9f0d13b984c
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,15 +46,8 @@ jobs:
             --project "$PROJECT_ID" \
             --environment production \
             --service Postgres \
-            -- bash -lc '
-              if [ -z "${DATABASE_PUBLIC_URL:-}" ]; then
-                echo "DATABASE_PUBLIC_URL is unavailable"
-                exit 2
-              fi
-              export DATABASE_URL="$DATABASE_PUBLIC_URL"
-              export PYTHONPATH=.
-              python scripts/commoncrawl_prefilter.py
-            ' > /tmp/prefilter.out 2>/tmp/prefilter.err
+            python scripts/commoncrawl_prefilter.py \
+            > /tmp/prefilter.out 2>/tmp/prefilter.err
           code=$?
           if [ $code -eq 0 ]; then
             echo "state=success" >> "$GITHUB_OUTPUT"
