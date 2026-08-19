@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from app.database import Base
+from app.models import Domain
 
 
 PRODUCTION_CORE_COLUMNS = {
@@ -58,11 +61,12 @@ def _columns(table_name: str) -> set[str]:
 
 
 def test_link_hunter_does_not_mutate_production_core_schema() -> None:
+    assert Domain.__tablename__ == "domains"
     for table_name, expected_columns in PRODUCTION_CORE_COLUMNS.items():
         assert _columns(table_name) == expected_columns
 
 
 def test_link_hunter_schema_is_additive_and_separate() -> None:
     table_names = set(Base.metadata.tables)
-    assert WEB_LINK_HUNTER_TABLES <= table_names
+    assert table_names >= WEB_LINK_HUNTER_TABLES
     assert WEB_LINK_HUNTER_TABLES.isdisjoint(PRODUCTION_CORE_COLUMNS)
