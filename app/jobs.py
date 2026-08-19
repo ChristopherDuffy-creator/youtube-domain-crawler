@@ -15,6 +15,7 @@ from sqlalchemy import and_, case, distinct, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.availability import AvailabilityResult, check_domain
+from app.commoncrawl_prefilter import run_commoncrawl_prefilter as run_commoncrawl_prefilter_batch
 from app.config import EVERGREEN_QUERIES, MANUAL_CHECKPOINTS, Settings, get_settings
 from app.database import SessionLocal
 from app.domain_tools import extract_domain_names, extract_links
@@ -1052,12 +1053,38 @@ def run_daily_digest() -> None:
             logger.exception("Daily digest failed")
 
 
+def run_commoncrawl_prefilter_job() -> None:
+    """Cache free historical-domain signals inside Railway's private network."""
+    with SessionLocal() as db:
+        run = _start_run(db, "commoncrawl_prefilter")
+        counters: dict[str, Any] = {
+            "candidates": 0,
+            "checked": 0,
+            "with_capture": 0,
+            "without_capture": 0,
+            "index_requests": 0,
+            "provider_cost_usd": 0.0,
+            "errors": 0,
+            "error_details": [],
+        }
+        try:
+            counters = run_commoncrawl_prefilter_batch(db, batch_size=10, index_count=2)
+            status = "complete" if not counters.get("errors") else "partial"
+            _finish_run(db, run, status, counters)
+        except Exception as exc:
+            db.rollback()
+            run = db.get(RunLog, run.id)
+            _finish_run(db, run, "failed", counters, str(exc))
+            logger.exception("Common Crawl prefilter failed")
+
+
 JOB_FUNCTIONS: dict[str, Callable[[], None]] = {
     "discovery": run_discovery,
     "snapshots": run_view_snapshots,
     "availability": run_availability_checks,
     "dropped_feeds": run_dropped_feeds,
     "dropped_search": run_dropped_youtube_search,
+    "commoncrawl_prefilter": run_commoncrawl_prefilter_job,
     "digest": run_daily_digest,
 }
 
@@ -1100,6 +1127,12 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         replace_existing=True,
     )
     scheduler.add_job(
+        run_commoncrawl_prefilter_job,
+        DateTrigger(run_date=start + timedelta(minutes=6)),
+        id="initial_commoncrawl_prefilter",
+        replace_existing=True,
+    )
+    scheduler.add_job(
         run_view_snapshots,
         CronTrigger(hour=2, minute=15, timezone="UTC"),
         id="view_snapshots",
@@ -1115,6 +1148,12 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         run_dropped_youtube_search,
         CronTrigger(hour=4, minute=10, timezone="UTC"),
         id="dropped_youtube_search",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_commoncrawl_prefilter_job,
+        CronTrigger(hour="1,13", minute=17, timezone="UTC"),
+        id="commoncrawl_prefilter",
         replace_existing=True,
     )
     scheduler.add_job(
