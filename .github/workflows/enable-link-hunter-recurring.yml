@@ -1,0 +1,113 @@
+name: Enable Approved Link Hunter Recurring
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/enable-link-hunter-recurring.yml
+
+permissions:
+  contents: read
+  actions: write
+  statuses: write
+
+jobs:
+  approve:
+    if: ${{ startsWith(github.event.head_commit.message, 'Enable Link Hunter recurring max $0.36/day') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set recurring approval variable
+        id: approve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VARIABLE_NAME: EXPANDOSAURUS_LINK_HUNTER_AUTOMATION_APPROVED_2026
+          VARIABLE_VALUE: APPROVE_MAX_0.36_USD_PER_DAY
+        run: |
+          set +e
+          state=error
+          description="Recurring approval variable was not set"
+
+          code="$(curl -sS -o /tmp/current-variable.json -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables/${VARIABLE_NAME}")"
+
+          python - <<'PY' >/tmp/approval-variable.json
+          import json
+          import os
+          print(json.dumps({
+              "name": os.environ["VARIABLE_NAME"],
+              "value": os.environ["VARIABLE_VALUE"],
+          }))
+          PY
+
+          if [ "$code" = "200" ]; then
+            curl -fsS -X PATCH \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables/${VARIABLE_NAME}" \
+              --data-binary @/tmp/approval-variable.json >/dev/null
+            write_code=$?
+          elif [ "$code" = "404" ]; then
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables" \
+              --data-binary @/tmp/approval-variable.json >/dev/null
+            write_code=$?
+          else
+            write_code=1
+          fi
+
+          if [ $write_code -eq 0 ]; then
+            verify="$(curl -fsS \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables/${VARIABLE_NAME}" 2>/dev/null)"
+            VERIFY="$verify" EXPECTED="$VARIABLE_VALUE" python - <<'PY'
+          import json
+          import os
+          payload = json.loads(os.environ["VERIFY"])
+          assert payload.get("value") == os.environ["EXPECTED"]
+          PY
+            if [ $? -eq 0 ]; then
+              state=success
+              description="Twice-daily Link Hunter approved with $0.36/day hard maximum"
+            fi
+          fi
+
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          echo "description=$description" >> "$GITHUB_OUTPUT"
+          rm -f /tmp/current-variable.json /tmp/approval-variable.json
+          exit 0
+
+      - name: Publish recurring approval status
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ steps.approve.outputs.state }}
+          DESCRIPTION: ${{ steps.approve.outputs.description }}
+        run: |
+          python - <<'PY' >/tmp/status.json
+          import json
+          import os
+          print(json.dumps({
+              "state": os.environ.get("STATE") or "error",
+              "context": "link-hunter/recurring-approved",
+              "description": (os.environ.get("DESCRIPTION") or "Recurring approval did not complete")[:140],
+          }))
+          PY
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data-binary @/tmp/status.json >/dev/null
