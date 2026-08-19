@@ -98,6 +98,22 @@ jobs:
             exit 0
           fi
 
+          # Read the production proof preview before enabling anything. This endpoint
+          # uses cached/free evidence only and must report zero provider calls.
+          npx -y @railway/cli@latest run \
+            --project "$PROJECT_ID" \
+            --environment "$ENVIRONMENT_ID" \
+            --service "$SERVICE_ID" \
+            python -c 'import base64,json,os,sys,urllib.request; auth=base64.b64encode(("admin:"+os.environ["DASHBOARD_PASSWORD"]).encode()).decode(); req=urllib.request.Request(os.environ["PUBLIC_URL"]+"/admin/link-hunter/proof-preview",headers={"Authorization":"Basic "+auth}); payload=json.loads(urllib.request.urlopen(req,timeout=30).read().decode()); preview=payload.get("preview") or {}; cost=float(preview.get("estimated_max_cost_usd") or 0.0); ok=(payload.get("provider_calls_made")==0 and preview.get("paid_requests_made")==0 and preview.get("ready_for_controlled_proof") is True and int(preview.get("target_count") or 0)>0 and preview.get("within_cost_cap") is True and cost<=0.18 and preview.get("credentials_exposed") is False); print(json.dumps({"ready":bool(preview.get("ready_for_controlled_proof")),"target_count":int(preview.get("target_count") or 0),"estimated_max_cost_usd":cost,"activation_blockers":preview.get("activation_blockers") or [],"activation_warnings":preview.get("activation_warnings") or [],"provider_calls_made":payload.get("provider_calls_made")})); sys.exit(0 if ok else 3)' \
+            >/tmp/link-hunter-preflight.json 2>/tmp/link-hunter-preflight.err
+          preflight_code=$?
+          if [ $preflight_code -ne 0 ]; then
+            echo "description=Zero-cost proof preflight blocked activation; zero paid calls made" >> "$GITHUB_OUTPUT"
+            rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
+            exit 0
+          fi
+          rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
+
           # Force the approved proof shape and dollar ceiling in production.
           npx -y @railway/cli@latest variable set \
             LINK_HUNTER_ENABLED=true \
