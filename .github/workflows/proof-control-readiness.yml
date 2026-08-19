@@ -1,0 +1,63 @@
+name: Proof Control Readiness
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/proof-control-readiness.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      PROJECT_ID: 31fbe878-aa83-4b74-9820-e9f0d13b984c
+    steps:
+      - name: Verify admin-token injection without output
+        id: token
+        shell: bash
+        run: |
+          set +e
+          npx -y @railway/cli@latest run \
+            --project "$PROJECT_ID" \
+            --environment production \
+            --service youtube-domain-crawler \
+            python -c 'import os,sys; sys.exit(0 if os.getenv("ADMIN_TOKEN") else 2)' \
+            >/dev/null 2>&1
+          if [ $? -eq 0 ]; then
+            echo "state=success" >> "$GITHUB_OUTPUT"
+            echo "description=Railway can inject admin control token without exposing it" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=error" >> "$GITHUB_OUTPUT"
+            echo "description=Admin control token unavailable to Railway CLI" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Publish readiness without failing workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ steps.token.outputs.state }}
+          DESCRIPTION: ${{ steps.token.outputs.description }}
+        run: |
+          python - <<'PY' >/tmp/status.json
+          import json
+          import os
+          print(json.dumps({
+              "state": os.environ["STATE"],
+              "context": "link-hunter/proof-control",
+              "description": os.environ["DESCRIPTION"][:140],
+          }))
+          PY
+          curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data-binary @/tmp/status.json >/dev/null
