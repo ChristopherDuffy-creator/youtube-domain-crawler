@@ -1,0 +1,80 @@
+name: Stack Exchange Health Snapshot
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/stackexchange-health-snapshot.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read sanitized production summary
+        id: summary
+        shell: bash
+        run: |
+          set +e
+          body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health 2>/dev/null)"
+          BODY="$body" python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          try:
+              payload = json.loads(os.environ.get("BODY", ""))
+              summary = payload.get("stackexchange_prefilter")
+              if not isinstance(summary, dict):
+                  print("state=pending")
+                  print("context=stackexchange/snapshot-no-summary")
+                  raise SystemExit
+              status = str(summary.get("status") or "unknown").replace("/", "-")
+              queries = int(summary.get("queries") or 0)
+              matched = int(summary.get("questions_matched") or 0)
+              links = int(summary.get("exact_links_saved") or 0)
+              domains = int(summary.get("domains_with_links") or 0)
+              errors = int(summary.get("errors") or 0)
+              quota = summary.get("quota_remaining")
+              cost = float(summary.get("provider_cost_usd") or 0.0)
+              state = "success" if status in {"complete", "partial"} and cost == 0.0 else "error"
+              print(f"state={state}")
+              print(f"context=stackexchange/snapshot-{status}-q{queries}-m{matched}-l{links}-d{domains}-e{errors}-quota{quota}-usd{cost:.2f}")
+          except SystemExit:
+              pass
+          except Exception:
+              print("state=error")
+              print("context=stackexchange/snapshot-health-unreadable")
+          PY
+          exit 0
+
+      - name: Publish aggregate snapshot without failing workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ steps.summary.outputs.state }}
+          CONTEXT: ${{ steps.summary.outputs.context }}
+        run: |
+          case "$STATE" in
+            success) api_state=success ;;
+            *) api_state=error ;;
+          esac
+          python - "$api_state" "$CONTEXT" <<'PY' >/tmp/status.json
+          import json
+          import sys
+          print(json.dumps({
+              "state": sys.argv[1],
+              "context": sys.argv[2][:100],
+              "description": "Sanitized Stack Exchange free-run snapshot",
+          }))
+          PY
+          curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data-binary @/tmp/status.json >/dev/null
