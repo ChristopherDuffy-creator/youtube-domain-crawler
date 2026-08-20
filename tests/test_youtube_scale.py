@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import BigInteger, create_engine, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -339,5 +339,20 @@ def test_scale_tables_are_registered_without_mutating_existing_video_schema() ->
     assert YouTubeDomainSignal.__tablename__ in Base.metadata.tables
     assert "dropped_domain_matches" in Base.metadata.tables
     assert "next_refresh_at" in Base.metadata.tables["video_refresh_states"].columns
+
+
+def test_view_and_money_aggregates_use_64_bit_integers() -> None:
+    bigint_columns = (
+        ("videos", "lifetime_views"),
+        ("view_snapshots", "view_count"),
+        ("candidates", "monthly_views"),
+        ("video_refresh_states", "last_view_count"),
+        ("youtube_domain_signals", "lifetime_linked_video_views"),
+        ("youtube_domain_signals", "monthly_linked_video_exposure"),
+        ("youtube_domain_signals", "expected_clicks_monthly"),
+    )
+    for table_name, column_name in bigint_columns:
+        column = Base.metadata.tables[table_name].columns[column_name]
+        assert isinstance(column.type, BigInteger)
     assert "channel_id" in Base.metadata.tables["youtube_channels"].columns
     assert "next_refresh_at" not in Base.metadata.tables["videos"].columns
