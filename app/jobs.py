@@ -171,11 +171,10 @@ def seed_youtube_channels(
 def _initial_refresh_interval_hours(view_count: int) -> int:
     if view_count >= 1_000_000:
         return 6
-    if view_count >= 100_000:
-        return 24
-    if view_count >= 10_000:
-        return 72
-    return 168
+    # Every linked video needs a second daily observation before it can be
+    # ranked on current exposure. Do that first follow-up within one day, then
+    # let the adaptive refresh logic back slow videos off to 3, 7 or 30 days.
+    return 24
 
 
 def _ensure_video_refresh_state(
@@ -770,7 +769,14 @@ def _domains_due_for_check(db: Session, limit: int) -> list[Domain]:
             ),
             Domain.video_links.any(VideoDomain.active.is_(True)),
         )
-        .order_by(Domain.last_checked_at.asc(), Domain.first_seen_at.asc())
+        # PostgreSQL sorts NULL values last for ascending order. Without the
+        # explicit case, already-checked domains can monopolise this capped
+        # queue while newly indexed domains wait indefinitely.
+        .order_by(
+            case((Domain.last_checked_at.is_(None), 0), else_=1),
+            Domain.last_checked_at.asc(),
+            Domain.first_seen_at.asc(),
+        )
         .limit(limit)
     ).all()
 

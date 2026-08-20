@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.main import health
-from app.models import RunLog
+from app.models import Candidate, Domain, RunLog, Video, VideoDomain, YouTubeChannel
 
 
 def test_health_exposes_only_sanitized_commoncrawl_counts() -> None:
@@ -47,3 +47,78 @@ def test_health_exposes_only_sanitized_commoncrawl_counts() -> None:
         "finished_at": expected_finished_at,
     }
     assert "target-domain.example" not in str(payload)
+
+
+def test_health_exposes_sanitized_youtube_and_email_operations() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+
+    with Session(engine) as db:
+        domain = Domain(name="private-candidate.example")
+        video = Video(id="healthvideo1", active=True)
+        db.add_all([domain, video])
+        db.flush()
+        db.add_all(
+            [
+                VideoDomain(
+                    video_id=video.id,
+                    domain_id=domain.id,
+                    raw_url="https://private-candidate.example",
+                    normalized_url="https://private-candidate.example/",
+                    active=True,
+                ),
+                Candidate(
+                    domain_id=domain.id,
+                    tier="pending",
+                    best_video_id=video.id,
+                ),
+                YouTubeChannel(channel_id="private-channel", inventory_complete=True),
+                RunLog(
+                    job="youtube_channel_fanout",
+                    started_at=now,
+                    finished_at=now,
+                    status="partial",
+                    counters={
+                        "playlist_calls": 12,
+                        "videos_fetched": 420,
+                        "new_links": 15,
+                        "errors": 1,
+                        "error_details": ["private-candidate.example must stay private"],
+                    },
+                ),
+                RunLog(
+                    job="daily_digest",
+                    started_at=now,
+                    finished_at=now,
+                    status="complete",
+                    counters={"emailed": 0},
+                ),
+            ]
+        )
+        db.commit()
+
+        payload = health(db)
+
+    assert payload["email"]["configured"] is False
+    assert payload["email"]["latest_digest"]["emailed"] == 0
+    assert payload["youtube"]["totals"]["videos"] == 1
+    assert payload["youtube"]["totals"]["channels_complete"] == 1
+    assert payload["youtube"]["totals"]["never_checked_domains"] == 1
+    assert payload["youtube"]["tiers"]["pending"] == 1
+    assert payload["youtube"]["latest_runs"]["youtube_channel_fanout"] == {
+        "status": "partial",
+        "counters": {
+            "playlist_calls": 12,
+            "videos_discovered": 0,
+            "videos_fetched": 420,
+            "new_videos": 0,
+            "new_domains": 0,
+            "new_links": 15,
+            "channels_completed": 0,
+            "candidates_refreshed": 0,
+            "errors": 1,
+        },
+        "finished_at": now.replace(tzinfo=None).isoformat(),
+    }
+    assert "private-candidate.example" not in str(payload)
