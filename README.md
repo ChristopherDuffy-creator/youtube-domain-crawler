@@ -95,6 +95,10 @@ The approved controller has twelve evenly spaced UTC slots per day. Every slot c
 
 Only the approved scheduler owns recurring dispatch. The production batch workflow has no second cron route, preventing duplicate paid runs. Paid calls are disabled again after every slot.
 
+Before that paid funnel, a permanent free-screening ledger processes up to 50,000 new dropped names every two hours. It rejects already-live DNS names, obvious protected brands and high-risk names before DataForSEO is constructed, then feeds the strongest eligible names into the existing 100-domain paid batches. The batch size is configurable with `LINK_HUNTER_FREE_SCREEN_BATCH_SIZE` (default 50,000; hard maximum 1,000,000). This screening layer has zero provider cost and resumes from the database after restarts.
+
+Every paid bulk-summary result is retained in a permanent backlink index, including results that do not reach the five deep-proof slots. Existing evidence is backfilled locally after deployment. Deep proof records direct-link presence, semantic placement and clickability; up to 100 due links are rechecked free every six hours so observed survival time grows without another provider call. The resulting acquisition cockpit ranks opportunities by a conservative BUY score and displays predicted clicks, a monthly revenue range, evidence confidence, risk, suggested maximum purchase price and payback estimate. These are decision-support estimates only: the application never purchases or registers a domain.
+
 ### YouTube free-quota capacity
 
 Current official YouTube quota documentation was rechecked on 19 August 2026. `search.list` has a separate default bucket of 100 calls/day; `channels.list`, `playlistItems.list`, and `videos.list` cost 1 unit per call. Inventory and video requests are batched/pages of up to 50.
@@ -115,6 +119,9 @@ The dashboard shows:
 - separate Web Link Hunter and YouTube views, with Web Link Hunter as the default;
 - clickable All, Priority, Qualified, Watchlist and Pending totals that filter the result table;
 - a visit-aware New filter, persistent Shortlist/Bought/Ignore decisions and an action queue;
+- free-screening, permanent-backlink-index and acquisition-money-case totals;
+- conservative predicted clicks, revenue range, risk, confidence, maximum purchase price and payback estimates;
+- direct-link clickability, semantic placement and observed survival time;
 - a live status strip for daily spend, remaining budget, next paid run and latest successful jobs, with all dashboard timestamps shown in Prague time;
 - unobtrusive, collapsed Web crawler technical details below the result table;
 - a signed seven-day dashboard session with an explicit logout button;

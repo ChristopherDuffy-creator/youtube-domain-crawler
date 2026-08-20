@@ -52,3 +52,8 @@ def test_dashboard_exposes_status_strip_and_action_workflow() -> None:
     assert "Shortlist" in template
     assert "Bought" in template
     assert "Ignore" in template
+    assert "Free-screened drops" in template
+    assert "Permanent backlink summaries" in template
+    assert "Acquisition money cases" in template
+    assert "predicted outbound clicks" in template
+    assert "The system never buys automatically" in template

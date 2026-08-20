@@ -54,6 +54,10 @@ WEB_LINK_HUNTER_TABLES = {
     "provider_daily_budgets",
     "fetch_verifications",
     "opportunities",
+    "web_screenings",
+    "backlink_summaries",
+    "link_observations",
+    "opportunity_economics",
 }
 
 
@@ -77,6 +81,9 @@ def test_link_hunter_is_safe_by_default() -> None:
     assert settings.link_hunter_backlinks_per_domain == 25
     assert settings.link_hunter_proof_max_cost_usd == 0.18
     assert settings.link_hunter_daily_max_cost_usd == 2.16
+    assert settings.link_hunter_free_screen_batch_size == 50_000
+    assert settings.link_hunter_verification_cache_hours == 24
+    assert settings.link_hunter_link_refresh_batch_size == 100
 
 
 def test_dataforseo_client_requires_credentials() -> None:

@@ -378,3 +378,101 @@ class Opportunity(Base):
     verified_live_link: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     niche: Mapped[str] = mapped_column(String(64), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WebScreening(Base):
+    """Permanent zero-cost screening result for an ingested dropped name."""
+
+    __tablename__ = "web_screenings"
+    __table_args__ = (
+        UniqueConstraint("dropped_domain_id", name="uq_web_screening_drop"),
+        Index("ix_web_screenings_status_quality", "status", "quality_score"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dropped_domain_id: Mapped[int] = mapped_column(
+        ForeignKey("dropped_domains.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    domain_name: Mapped[str] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="eligible", index=True)
+    quality_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    risk_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    monetization_hint: Mapped[str] = mapped_column(String(64), default="content_restore")
+    signals: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    screened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BacklinkSummary(Base):
+    """Reusable aggregate evidence for every paid bulk-summary target."""
+
+    __tablename__ = "backlink_summaries"
+    __table_args__ = (
+        UniqueConstraint("domain_id", "provider", name="uq_backlink_summary_provider"),
+        Index("ix_backlink_summaries_rank_pages", "rank", "referring_pages"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    domain_id: Mapped[int] = mapped_column(
+        ForeignKey("domains.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), default="dataforseo", index=True)
+    backlinks: Mapped[int] = mapped_column(Integer, default=0)
+    referring_pages: Mapped[int] = mapped_column(Integer, default=0)
+    referring_domains: Mapped[int] = mapped_column(Integer, default=0)
+    referring_main_domains: Mapped[int] = mapped_column(Integer, default=0)
+    rank: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    raw_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_refreshed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class LinkObservation(Base):
+    """Append-only direct observations used to measure link survival."""
+
+    __tablename__ = "link_observations"
+    __table_args__ = (
+        Index("ix_link_observations_link_time", "source_link_id", "observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_link_id: Mapped[int] = mapped_column(
+        ForeignKey("source_links.id", ondelete="CASCADE"), index=True
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    final_url: Mapped[str] = mapped_column(Text, default="")
+    link_present: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    clickable: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    clickability_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    semantic_location: Mapped[str] = mapped_column(String(32), default="unknown")
+    anchor_text: Mapped[str] = mapped_column(Text, default="")
+    nofollow: Mapped[bool] = mapped_column(Boolean, default=False)
+    survival_days: Mapped[float] = mapped_column(Float, default=0.0)
+    content_hash: Mapped[str] = mapped_column(String(64), default="")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class OpportunityEconomics(Base):
+    """Conservative acquisition and monetisation case; never an auto-buy instruction."""
+
+    __tablename__ = "opportunity_economics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    domain_id: Mapped[int] = mapped_column(
+        ForeignKey("domains.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    buy_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    expected_clicks_monthly: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_revenue_low_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    monthly_revenue_high_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    max_purchase_price_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    estimated_payback_months: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    risk_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    monetization_route: Mapped[str] = mapped_column(String(64), default="content_restore")
+    rationale: Mapped[list[str]] = mapped_column(JSON, default=list)
+    safety_flags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

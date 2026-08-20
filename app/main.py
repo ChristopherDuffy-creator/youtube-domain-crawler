@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.backup import build_logical_snapshot
@@ -28,12 +28,15 @@ from app.jobs import JOB_FUNCTIONS, build_scheduler, ensure_seed_data, ingest_dr
 from app.link_hunter import run_provider_proof_job
 from app.link_hunter_preview import build_provider_proof_preview
 from app.models import (
+    BacklinkSummary,
     Candidate,
     DashboardDecision,
     Domain,
     DroppedDomain,
     FetchVerification,
+    LinkObservation,
     Opportunity,
+    OpportunityEconomics,
     RunLog,
     SourceLink,
     SourcePage,
@@ -41,6 +44,7 @@ from app.models import (
     Video,
     VideoDomain,
     VideoRefreshState,
+    WebScreening,
     YouTubeChannel,
 )
 from app.provider_budget import provider_daily_budget_snapshot
@@ -77,7 +81,11 @@ WebEvidenceRow = tuple[
     SourceSite | None,
     SourceLink | None,
     FetchVerification | None,
+    OpportunityEconomics | None,
+    LinkObservation | None,
 ]
+
+_HIDDEN_WEB_AVAILABILITY = {"registered", "aftermarket", "premium", "reserved"}
 
 
 def _dashboard_time(value: datetime | None) -> datetime | None:
@@ -321,9 +329,15 @@ def _load_web_evidence_rows(
     new_since: datetime | None = None,
 ) -> list[WebEvidenceRow]:
     statement = (
-        select(Opportunity, Domain, SourcePage)
+        select(Opportunity, Domain, SourcePage, OpportunityEconomics)
         .join(Domain, Domain.id == Opportunity.domain_id)
         .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
+        .outerjoin(OpportunityEconomics, OpportunityEconomics.domain_id == Domain.id)
+        .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+        .where(
+            Domain.availability_status.notin_(_HIDDEN_WEB_AVAILABILITY),
+            or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+        )
     )
     if tier == "new" and new_since is not None:
         statement = statement.where(Opportunity.updated_at >= new_since)
@@ -343,10 +357,11 @@ def _load_web_evidence_rows(
         statement = statement.limit(limit)
 
     rows: list[WebEvidenceRow] = []
-    for opportunity, domain, page in db.execute(statement).all():
+    for opportunity, domain, page, economics in db.execute(statement).all():
         site = db.get(SourceSite, page.site_id) if page is not None else None
         link = None
         verification = None
+        observation = None
         if page is not None:
             link = db.scalar(
                 select(SourceLink)
@@ -362,7 +377,15 @@ def _load_web_evidence_rows(
                 verification = db.scalar(
                     select(FetchVerification).where(FetchVerification.source_link_id == link.id)
                 )
-        rows.append((opportunity, domain, page, site, link, verification))
+                observation = db.scalar(
+                    select(LinkObservation)
+                    .where(LinkObservation.source_link_id == link.id)
+                    .order_by(LinkObservation.observed_at.desc())
+                    .limit(1)
+                )
+        rows.append(
+            (opportunity, domain, page, site, link, verification, economics, observation)
+        )
     return rows
 
 
@@ -372,6 +395,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
     stackexchange_summary: dict[str, object] | None = None
     hackernews_summary: dict[str, object] | None = None
     youtube_summary: dict[str, object] | None = None
+    web_intelligence_summary: dict[str, object] | None = None
     email_summary: dict[str, object] = {
         "configured": settings.email_enabled,
         "latest_digest": None,
@@ -379,6 +403,48 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
     try:
         db.scalar(select(func.count()).select_from(RunLog))
         database = "ok"
+
+        latest_screening = db.scalar(
+            select(RunLog)
+            .where(RunLog.job == "web_free_screening")
+            .order_by(RunLog.started_at.desc())
+            .limit(1)
+        )
+        screening_counters = (
+            latest_screening.counters
+            if latest_screening is not None and isinstance(latest_screening.counters, dict)
+            else {}
+        )
+        web_intelligence_summary = {
+            "screened": int(db.scalar(select(func.count()).select_from(WebScreening)) or 0),
+            "blocked_free": int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(WebScreening)
+                    .where(WebScreening.status == "blocked")
+                )
+                or 0
+            ),
+            "permanent_summaries": int(
+                db.scalar(select(func.count()).select_from(BacklinkSummary)) or 0
+            ),
+            "link_observations": int(
+                db.scalar(select(func.count()).select_from(LinkObservation)) or 0
+            ),
+            "money_cases": int(
+                db.scalar(select(func.count()).select_from(OpportunityEconomics)) or 0
+            ),
+            "latest_screening": {
+                "status": latest_screening.status,
+                "screened": int(screening_counters.get("screened") or 0),
+                "blocked": int(screening_counters.get("blocked") or 0),
+                "provider_cost_usd": float(
+                    screening_counters.get("provider_cost_usd") or 0.0
+                ),
+            }
+            if latest_screening is not None
+            else None,
+        }
 
         youtube_job_keys = {
             "youtube_discovery": (
@@ -598,6 +664,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         "link_hunter_enabled": settings.link_hunter_enabled,
         "dataforseo_configured": settings.dataforseo_enabled,
         "youtube": youtube_summary,
+        "web_intelligence": web_intelligence_summary,
         "commoncrawl_prefilter": commoncrawl_summary,
         "stackexchange_prefilter": stackexchange_summary,
         "hackernews_prefilter": hackernews_summary,
@@ -715,7 +782,14 @@ def dashboard(
     web_tier_counts = {
         tier_name: int(count)
         for tier_name, count in db.execute(
-            select(Opportunity.tier, func.count()).group_by(Opportunity.tier)
+            select(Opportunity.tier, func.count())
+            .join(Domain, Domain.id == Opportunity.domain_id)
+            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .where(
+                Domain.availability_status.notin_(_HIDDEN_WEB_AVAILABILITY),
+                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+            )
+            .group_by(Opportunity.tier)
         ).all()
     }
     youtube_new_count = (
@@ -730,7 +804,13 @@ def dashboard(
         db.scalar(
             select(func.count())
             .select_from(Opportunity)
-            .where(Opportunity.updated_at >= new_since)
+            .join(Domain, Domain.id == Opportunity.domain_id)
+            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .where(
+                Opportunity.updated_at >= new_since,
+                Domain.availability_status.notin_(_HIDDEN_WEB_AVAILABILITY),
+                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+            )
         )
         or 0
     )
@@ -773,6 +853,17 @@ def dashboard(
         db.scalar(select(func.count()).select_from(SourceLink).where(SourceLink.provider_live.is_(True)))
         or 0
     )
+    web_screened = db.scalar(select(func.count()).select_from(WebScreening)) or 0
+    web_screened_blocked = (
+        db.scalar(
+            select(func.count())
+            .select_from(WebScreening)
+            .where(WebScreening.status == "blocked")
+        )
+        or 0
+    )
+    web_summary_indexed = db.scalar(select(func.count()).select_from(BacklinkSummary)) or 0
+    web_money_cases = db.scalar(select(func.count()).select_from(OpportunityEconomics)) or 0
 
     displayed_rows = candidate_rows if view == "youtube" else web_evidence_rows
     displayed_domain_ids = [row[1].id for row in displayed_rows]
@@ -837,6 +928,10 @@ def dashboard(
             "web_source_sites": web_source_sites,
             "web_source_pages": web_source_pages,
             "web_source_links": web_source_links,
+            "web_screened": web_screened,
+            "web_screened_blocked": web_screened_blocked,
+            "web_summary_indexed": web_summary_indexed,
+            "web_money_cases": web_money_cases,
             "target": settings.target_qualified_domains,
             "progress": progress,
             "registrar_enabled": settings.registrar_enabled,
@@ -956,9 +1051,21 @@ def export_link_hunter(
             "provider_spam_score",
             "fetch_http_status",
             "fetch_final_url",
+            "clickability_score",
+            "semantic_location",
+            "link_survival_days",
+            "expected_clicks_monthly",
+            "monthly_revenue_low_usd",
+            "monthly_revenue_high_usd",
+            "recommended_max_purchase_usd",
+            "estimated_payback_months",
+            "monetization_route",
+            "economics_confidence",
+            "risk_score",
+            "safety_flags",
         ]
     )
-    for opportunity, domain, page, site, link, verification in rows:
+    for opportunity, domain, page, site, link, verification, economics, observation in rows:
         writer.writerow(
             [
                 domain.name,
@@ -983,6 +1090,18 @@ def export_link_hunter(
                 link.spam_score if link else "",
                 verification.http_status if verification else "",
                 verification.final_url if verification else "",
+                observation.clickability_score if observation else "",
+                observation.semantic_location if observation else "",
+                observation.survival_days if observation else "",
+                economics.expected_clicks_monthly if economics else "",
+                economics.monthly_revenue_low_usd if economics else "",
+                economics.monthly_revenue_high_usd if economics else "",
+                economics.max_purchase_price_usd if economics else "",
+                economics.estimated_payback_months if economics else "",
+                economics.monetization_route if economics else "",
+                economics.confidence if economics else "",
+                economics.risk_score if economics else "",
+                " | ".join(economics.safety_flags or []) if economics else "",
             ]
         )
     return Response(

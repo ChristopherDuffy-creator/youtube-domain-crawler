@@ -4,6 +4,9 @@ import hashlib
 import ipaddress
 import math
 import socket
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -12,7 +15,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.availability import AvailabilityResult, check_domain
+from app.availability import AvailabilityResult, check_dns, check_domain
 from app.config import Settings, get_settings
 from app.database import SessionLocal
 from app.dataforseo import DataForSEOClient, DataForSEOError
@@ -21,8 +24,10 @@ from app.link_hunter_preview import (
     select_provider_summary_targets_with_ranking,
 )
 from app.models import (
+    BacklinkSummary,
     Domain,
     FetchVerification,
+    LinkObservation,
     Opportunity,
     ProviderQuery,
     RunLog,
@@ -30,6 +35,7 @@ from app.models import (
     SourceMetricSnapshot,
     SourcePage,
     SourceSite,
+    WebScreening,
     utcnow,
 )
 from app.provider_budget import (
@@ -37,22 +43,105 @@ from app.provider_budget import (
     provider_daily_budget_snapshot,
     reserve_provider_daily_budget,
 )
+from app.web_intelligence import project_opportunity_economics, save_opportunity_economics
 
 MAX_VERIFY_BYTES = 2_000_000
 MAX_VERIFY_REDIRECTS = 5
+
+
+@dataclass(frozen=True)
+class _AnchorEvidence:
+    href: str
+    text: str
+    semantic_location: str
+    nofollow: bool
+    hidden: bool
 
 
 class _HrefParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.hrefs: list[str] = []
+        self.anchors: list[_AnchorEvidence] = []
+        self._location_stack: list[str] = []
+        self._anchor: dict[str, Any] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() != "a":
+        lowered = tag.lower()
+        if lowered in {"article", "aside", "footer", "header", "main", "nav"}:
+            self._location_stack.append(lowered)
+        if lowered != "a":
             return
-        for key, value in attrs:
-            if key.lower() == "href" and value:
-                self.hrefs.append(value)
+        attributes = {key.lower(): value or "" for key, value in attrs}
+        value = attributes.get("href", "")
+        if not value:
+            return
+        self.hrefs.append(value)
+        rel = attributes.get("rel", "").lower().split()
+        style = attributes.get("style", "").lower().replace(" ", "")
+        hidden = (
+            "display:none" in style
+            or "visibility:hidden" in style
+            or attributes.get("aria-hidden", "").lower() == "true"
+            or "hidden" in attributes
+        )
+        self._anchor = {
+            "href": value,
+            "text": [],
+            "semantic_location": self._location_stack[-1] if self._location_stack else "body",
+            "nofollow": "nofollow" in rel,
+            "hidden": hidden,
+        }
+
+    def handle_data(self, data: str) -> None:
+        if self._anchor is not None:
+            self._anchor["text"].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.lower()
+        if lowered == "a" and self._anchor is not None:
+            self.anchors.append(
+                _AnchorEvidence(
+                    href=str(self._anchor["href"]),
+                    text=" ".join(self._anchor["text"]).strip(),
+                    semantic_location=str(self._anchor["semantic_location"]),
+                    nofollow=bool(self._anchor["nofollow"]),
+                    hidden=bool(self._anchor["hidden"]),
+                )
+            )
+            self._anchor = None
+        if (
+            lowered in {"article", "aside", "footer", "header", "main", "nav"}
+            and self._location_stack
+            and self._location_stack[-1] == lowered
+        ):
+            self._location_stack.pop()
+
+
+def _anchor_clickability(anchor: _AnchorEvidence) -> float:
+    if anchor.hidden:
+        return 0.0
+    score = 45.0
+    if anchor.text and not anchor.text.lower().startswith(("http://", "https://", "www.")):
+        score += 12.0
+    lowered = anchor.text.lower()
+    if any(
+        term in lowered
+        for term in ("buy", "book", "download", "get", "join", "order", "shop", "sign up", "visit")
+    ):
+        score += 20.0
+    score += {
+        "article": 18.0,
+        "main": 15.0,
+        "body": 8.0,
+        "aside": 0.0,
+        "nav": -8.0,
+        "header": -10.0,
+        "footer": -18.0,
+    }.get(anchor.semantic_location, 0.0)
+    if anchor.nofollow:
+        score -= 3.0
+    return round(max(0.0, min(100.0, score)), 1)
 
 
 def _normalize_host(value: str) -> str:
@@ -286,6 +375,33 @@ def _get_or_create_domain(db: Session, name: str) -> Domain:
     return domain
 
 
+def _dns_prefilter_targets(
+    db: Session,
+    targets: list[str],
+) -> tuple[list[str], int]:
+    """Reject live names for free before any paid bulk-summary request."""
+    if not targets:
+        return [], 0
+    with ThreadPoolExecutor(max_workers=min(16, len(targets))) as pool:
+        dns_results = dict(zip(targets, pool.map(check_dns, targets), strict=True))
+    survivors: list[str] = []
+    blocked = 0
+    for target in targets:
+        dns_status = dns_results[target]
+        domain = _get_or_create_domain(db, target)
+        domain.dns_status = dns_status
+        if dns_status == "resolves":
+            domain.availability_status = "registered"
+            domain.availability_source = "dns"
+            domain.rdap_status = "skipped"
+            domain.last_checked_at = utcnow()
+            blocked += 1
+        else:
+            survivors.append(target)
+    db.commit()
+    return survivors, blocked
+
+
 def _get_or_create_site(db: Session, hostname: str) -> SourceSite:
     site = db.scalar(select(SourceSite).where(SourceSite.hostname == hostname))
     if site is None:
@@ -447,6 +563,9 @@ def _score_opportunity(
     saved_links: list[SourceLink],
     traffic: int,
     verified: bool,
+    *,
+    db: Session | None = None,
+    clickability_score: float = 0.0,
 ) -> None:
     independent_sites = max(0, opportunity.independent_site_count)
     referring_pages = max(0, opportunity.referring_page_count)
@@ -468,7 +587,7 @@ def _score_opportunity(
     opportunity.source_page_traffic_estimate = traffic
     opportunity.verified_live_link = verified
     opportunity.niche = _guess_niche(saved_links)
-    opportunity.score = round(
+    evidence_score = round(
         max(
             0.0,
             traffic_points
@@ -482,6 +601,29 @@ def _score_opportunity(
         ),
         1,
     )
+    screening_risk = 0.0
+    if db is not None:
+        screening_risk = float(
+            db.scalar(
+                select(WebScreening.risk_score)
+                .where(WebScreening.domain_name == domain.name)
+                .limit(1)
+            )
+            or 0.0
+        )
+    projection = project_opportunity_economics(
+        opportunity,
+        domain,
+        saved_links,
+        traffic=traffic,
+        verified=verified,
+        evidence_score=evidence_score,
+        clickability_score=clickability_score,
+        screening_risk=screening_risk,
+    )
+    opportunity.score = projection.buy_score
+    if db is not None:
+        save_opportunity_economics(db, domain, projection)
 
     ordinary_available = domain.availability_status == "available" and not domain.premium
     if ordinary_available and verified and opportunity.score >= 80:
@@ -520,11 +662,71 @@ def _save_opportunity(
     return opportunity
 
 
+def _save_backlink_summary(
+    db: Session,
+    domain: Domain,
+    summary: dict[str, Any],
+) -> BacklinkSummary:
+    record = db.scalar(
+        select(BacklinkSummary).where(
+            BacklinkSummary.domain_id == domain.id,
+            BacklinkSummary.provider == "dataforseo",
+        )
+    )
+    if record is None:
+        record = BacklinkSummary(domain_id=domain.id, provider="dataforseo")
+        db.add(record)
+    record.backlinks = max(0, int(summary.get("backlinks") or 0))
+    record.referring_pages = max(0, int(summary.get("referring_pages") or 0))
+    record.referring_domains = max(0, int(summary.get("referring_domains") or 0))
+    record.referring_main_domains = max(
+        0,
+        int(summary.get("referring_main_domains") or record.referring_domains),
+    )
+    record.rank = max(0.0, float(summary.get("rank") or 0.0))
+    record.raw_summary = summary
+    record.last_refreshed_at = utcnow()
+    return record
+
+
+def _save_summary_opportunity(
+    db: Session,
+    domain: Domain,
+    summary: dict[str, Any],
+    combined_score: float,
+) -> Opportunity | None:
+    record = _save_backlink_summary(db, domain, summary)
+    if record.referring_pages <= 0:
+        return None
+    opportunity = db.scalar(select(Opportunity).where(Opportunity.domain_id == domain.id))
+    if opportunity is None:
+        opportunity = Opportunity(domain_id=domain.id)
+        db.add(opportunity)
+    opportunity.referring_page_count = max(
+        int(opportunity.referring_page_count or 0),
+        record.referring_pages,
+    )
+    opportunity.independent_site_count = max(
+        int(opportunity.independent_site_count or 0),
+        record.referring_main_domains or record.referring_domains,
+    )
+    opportunity.link_strength = max(float(opportunity.link_strength or 0.0), record.rank)
+    if not opportunity.verified_live_link:
+        opportunity.score = round(
+            min(64.0, max(float(opportunity.score or 0.0), combined_score)),
+            1,
+        )
+        opportunity.tier = "watchlist" if opportunity.score >= 45 else "pending"
+    opportunity.updated_at = utcnow()
+    return opportunity
+
+
 def _verify_source_link(
     db: Session,
     link: SourceLink,
     target_domain: str,
     timeout_seconds: float,
+    cache_hours: int = 24,
 ) -> bool:
     page = db.get(SourcePage, link.source_page_id)
     if page is None:
@@ -536,7 +738,33 @@ def _verify_source_link(
         verification = FetchVerification(source_link_id=link.id)
         db.add(verification)
 
-    verification.fetched_at = utcnow()
+    fetched_at = verification.fetched_at
+    if fetched_at is not None and fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=UTC)
+    if (
+        fetched_at is not None
+        and fetched_at >= datetime.now(UTC) - timedelta(hours=cache_hours)
+        and verification.error is None
+    ):
+        latest = db.scalar(
+            select(LinkObservation)
+            .where(LinkObservation.source_link_id == link.id)
+            .order_by(LinkObservation.observed_at.desc())
+            .limit(1)
+        )
+        return bool(
+            verification.link_present
+            and (latest is None or latest.clickable)
+        )
+
+    observed_at = utcnow()
+    verification.fetched_at = observed_at
+    observation = LinkObservation(
+        source_link_id=link.id,
+        observed_at=observed_at,
+        final_url=page.url,
+    )
+    db.add(observation)
     try:
         status_code, final_url, content, text = _fetch_public_page(page.url, timeout_seconds)
         verification.http_status = status_code
@@ -544,22 +772,110 @@ def _verify_source_link(
         verification.content_hash = hashlib.sha256(content).hexdigest()
         parser = _HrefParser()
         parser.feed(text)
-        verification.link_present = any(
-            _href_matches_provider_target(
-                urljoin(final_url, href),
+        matches = [
+            anchor
+            for anchor in parser.anchors
+            if _href_matches_provider_target(
+                urljoin(final_url, anchor.href),
                 link.target_url,
                 target_domain,
             )
-            for href in parser.hrefs
-        )
+        ]
+        best_anchor = max(matches, key=_anchor_clickability) if matches else None
+        verification.link_present = bool(matches and 200 <= status_code < 400)
         verification.error = None
+        observation.http_status = status_code
+        observation.final_url = final_url
+        observation.link_present = verification.link_present
+        observation.clickability_score = (
+            _anchor_clickability(best_anchor) if best_anchor is not None else 0.0
+        )
+        observation.clickable = bool(
+            verification.link_present and observation.clickability_score > 0
+        )
+        observation.semantic_location = (
+            best_anchor.semantic_location if best_anchor is not None else "missing"
+        )
+        observation.anchor_text = best_anchor.text if best_anchor is not None else ""
+        observation.nofollow = best_anchor.nofollow if best_anchor is not None else False
+        first_seen = link.first_seen_at
+        if first_seen.tzinfo is None:
+            first_seen = first_seen.replace(tzinfo=UTC)
+        observation.survival_days = round(
+            max(0.0, (observed_at - first_seen).total_seconds() / 86400),
+            2,
+        )
+        observation.content_hash = verification.content_hash
     except Exception as exc:
         verification.http_status = None
         verification.final_url = page.url
         verification.link_present = False
         verification.error = str(exc)[:2000]
+        observation.error = verification.error
     db.commit()
-    return verification.link_present
+    return bool(observation.link_present and observation.clickable)
+
+
+def refresh_web_link_observations(
+    db: Session,
+    settings: Settings,
+    batch_size: int,
+) -> dict[str, int]:
+    """Recheck due deep-proof links for free and extend their survival history."""
+    cutoff = datetime.now(UTC) - timedelta(hours=settings.link_hunter_verification_cache_hours)
+    rows = db.execute(
+        select(Opportunity, Domain, SourceLink, FetchVerification)
+        .join(Domain, Domain.id == Opportunity.domain_id)
+        .join(
+            SourceLink,
+            (SourceLink.domain_id == Domain.id)
+            & (SourceLink.source_page_id == Opportunity.best_source_page_id),
+        )
+        .outerjoin(FetchVerification, FetchVerification.source_link_id == SourceLink.id)
+        .where(
+            (FetchVerification.id.is_(None))
+            | (FetchVerification.fetched_at < cutoff)
+        )
+        .order_by(FetchVerification.fetched_at.asc(), Opportunity.score.desc())
+        .limit(batch_size)
+    ).all()
+    counters = {"due": len(rows), "refreshed": 0, "verified": 0, "missing": 0, "errors": 0}
+    for opportunity, domain, best_link, _ in rows:
+        try:
+            verified = _verify_source_link(
+                db,
+                best_link,
+                domain.name,
+                settings.link_hunter_verify_timeout_seconds,
+                settings.link_hunter_verification_cache_hours,
+            )
+            observation = db.scalar(
+                select(LinkObservation)
+                .where(LinkObservation.source_link_id == best_link.id)
+                .order_by(LinkObservation.observed_at.desc())
+                .limit(1)
+            )
+            links = db.scalars(
+                select(SourceLink).where(SourceLink.domain_id == domain.id)
+            ).all()
+            _score_opportunity(
+                opportunity,
+                domain,
+                list(links),
+                max(0, int(opportunity.source_page_traffic_estimate or 0)),
+                verified,
+                db=db,
+                clickability_score=(
+                    float(observation.clickability_score) if observation is not None else 0.0
+                ),
+            )
+            db.commit()
+            counters["refreshed"] += 1
+            counters["verified" if verified else "missing"] += 1
+        except Exception:
+            db.rollback()
+            counters["errors"] += 1
+    return counters
 
 
 def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
@@ -583,6 +899,8 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
     counters: dict[str, Any] = {
         "targets": len(targets),
         "summary_targets": len(targets),
+        "free_dns_screened": 0,
+        "free_dns_blocked": 0,
         "summary_screened": 0,
         "summary_domains_with_live_backlinks": 0,
         "deep_proof_target_count": 0,
@@ -602,6 +920,15 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
         "errors": 0,
         "error_details": [],
     }
+    if not targets:
+        return counters
+
+    original_target_count = len(targets)
+    targets, dns_blocked = _dns_prefilter_targets(db, targets)
+    counters["free_dns_screened"] = original_target_count
+    counters["free_dns_blocked"] = dns_blocked
+    counters["summary_targets"] = len(targets)
+    counters["registered_or_unavailable"] = dns_blocked
     if not targets:
         return counters
 
@@ -654,6 +981,18 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
         for target in deep_targets
     }
 
+    # Keep the aggregate result for every screened name, not only the five
+    # names selected for detailed proof. This is the permanent reusable index.
+    for target in targets:
+        domain = _get_or_create_domain(db, target)
+        _save_summary_opportunity(
+            db,
+            domain,
+            normalized_summaries.get(target, {}),
+            combined_scores.get(target, 0.0),
+        )
+    db.commit()
+
     for target in deep_targets:
         if counters["provider_cost_usd"] >= settings.link_hunter_proof_max_cost_usd:
             counters["cost_cap_hit"] = True
@@ -691,7 +1030,14 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
             counters["availability_checks"] += 1
             if availability.status == "registered":
                 counters["registered_or_unavailable"] += 1
-                _score_opportunity(opportunity, domain, saved_links, traffic=0, verified=False)
+                _score_opportunity(
+                    opportunity,
+                    domain,
+                    saved_links,
+                    traffic=0,
+                    verified=False,
+                    db=db,
+                )
                 db.commit()
                 continue
 
@@ -755,7 +1101,7 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
 
     for domain, opportunity, links in domain_batches:
         if not links:
-            _score_opportunity(opportunity, domain, links, 0, False)
+            _score_opportunity(opportunity, domain, links, 0, False, db=db)
             db.commit()
             continue
 
@@ -776,10 +1122,28 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
             best_link,
             domain.name,
             settings.link_hunter_verify_timeout_seconds,
+            settings.link_hunter_verification_cache_hours,
         )
         if verified:
             counters["source_links_verified"] += 1
-        _score_opportunity(opportunity, domain, links, best_traffic, verified)
+        latest_observation = db.scalar(
+            select(LinkObservation)
+            .where(LinkObservation.source_link_id == best_link.id)
+            .order_by(LinkObservation.observed_at.desc())
+            .limit(1)
+        )
+        clickability_score = float(
+            latest_observation.clickability_score if latest_observation is not None else 0.0
+        )
+        _score_opportunity(
+            opportunity,
+            domain,
+            links,
+            best_traffic,
+            verified,
+            db=db,
+            clickability_score=clickability_score,
+        )
 
         if (
             verified
@@ -790,7 +1154,15 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
             exact_availability = check_domain(domain.name, settings, exact_registrar_check=True)
             _apply_availability(domain, exact_availability)
             counters["registrar_checks"] += 1
-            _score_opportunity(opportunity, domain, links, best_traffic, verified)
+            _score_opportunity(
+                opportunity,
+                domain,
+                links,
+                best_traffic,
+                verified,
+                db=db,
+                clickability_score=clickability_score,
+            )
         db.commit()
 
     counters["provider_cost_usd"] = round(float(counters["provider_cost_usd"]), 6)
