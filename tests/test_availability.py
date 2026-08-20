@@ -1,7 +1,14 @@
 from dataclasses import dataclass
 from typing import Any
 
-from app.availability import AvailabilityResult, check_domain, check_porkbun, classify_rdap_dns
+from app.availability import (
+    RDAP_MAX_ATTEMPTS,
+    AvailabilityResult,
+    check_domain,
+    check_porkbun,
+    check_rdap,
+    classify_rdap_dns,
+)
 from app.config import Settings
 
 
@@ -117,3 +124,38 @@ def test_exact_registrar_is_only_used_after_likely_available_and_traffic_gate(mo
     exact = check_domain("candidate-example.com", config, exact_registrar_check=True)
     assert exact.status == "available"
     assert calls == ["candidate-example.com"]
+
+
+def test_rdap_retries_transient_rate_limit(monkeypatch) -> None:
+    responses = [
+        FakeResponse({}, status_code=429),
+        FakeResponse({}, status_code=503),
+        FakeResponse({}, status_code=404),
+    ]
+    sleeps: list[int] = []
+    monkeypatch.setattr("app.availability._paced_rdap_get", lambda domain: responses.pop(0))
+    monkeypatch.setattr("app.availability.time.sleep", sleeps.append)
+
+    status, error = check_rdap("retry-example.com")
+
+    assert status == "not_found"
+    assert error is None
+    assert sleeps == [1, 2]
+
+
+def test_rdap_reports_persistent_rate_limit_after_bounded_retries(monkeypatch) -> None:
+    attempts = 0
+
+    def rate_limited(domain: str) -> FakeResponse:
+        nonlocal attempts
+        attempts += 1
+        return FakeResponse({}, status_code=429)
+
+    monkeypatch.setattr("app.availability._paced_rdap_get", rate_limited)
+    monkeypatch.setattr("app.availability.time.sleep", lambda seconds: None)
+
+    status, error = check_rdap("limited-example.com")
+
+    assert attempts == RDAP_MAX_ATTEMPTS
+    assert status == "rate_limited"
+    assert error == "RDAP rate limited"

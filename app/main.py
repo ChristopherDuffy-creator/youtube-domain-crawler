@@ -410,6 +410,9 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 "available",
                 "likely_available",
                 "registered",
+                "rdap_rate_limited",
+                "rdap_errors",
+                "dns_unknown",
                 "errors",
             ),
             "dropped_youtube_search": (

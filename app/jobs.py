@@ -802,6 +802,9 @@ def run_availability_checks() -> None:
             "available": 0,
             "likely_available": 0,
             "registered": 0,
+            "rdap_rate_limited": 0,
+            "rdap_errors": 0,
+            "dns_unknown": 0,
             "errors": 0,
             "error_details": [],
         }
@@ -842,6 +845,12 @@ def run_availability_checks() -> None:
                     counters["checked"] += 1
                     if result.status in counters:
                         counters[result.status] += 1
+                    if result.rdap_status == "rate_limited":
+                        counters["rdap_rate_limited"] += 1
+                    elif result.rdap_status == "error":
+                        counters["rdap_errors"] += 1
+                    if result.dns_status == "unknown":
+                        counters["dns_unknown"] += 1
                     if result.error:
                         counters["errors"] += 1
                         if len(counters["error_details"]) < 20:
@@ -851,7 +860,8 @@ def run_availability_checks() -> None:
             db.commit()
             refresh_candidates(db, {domain.id for domain in domains})
             send_new_candidate_alerts(db)
-            _finish_run(db, run, "complete", counters)
+            status = "partial" if counters["errors"] else "complete"
+            _finish_run(db, run, status, counters)
         except Exception as exc:
             db.rollback()
             run = db.get(RunLog, run.id)

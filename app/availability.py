@@ -13,6 +13,10 @@ from app.config import Settings
 
 RDAP_ROOT = "https://rdap.org/domain"
 PORKBUN_ROOT = "https://api.porkbun.com/api/json/v3"
+RDAP_MIN_INTERVAL_SECONDS = 0.25
+RDAP_MAX_ATTEMPTS = 3
+_rdap_lock = threading.Lock()
+_last_rdap_call = 0.0
 _porkbun_lock = threading.Lock()
 _last_porkbun_call = 0.0
 
@@ -59,23 +63,48 @@ def check_dns(domain: str) -> str:
     return "resolves" if found else "unknown"
 
 
-def check_rdap(domain: str) -> tuple[str, str | None]:
-    try:
-        response = httpx.get(
+def _paced_rdap_get(domain: str) -> httpx.Response:
+    global _last_rdap_call
+    with _rdap_lock:
+        wait_for = RDAP_MIN_INTERVAL_SECONDS - (time.monotonic() - _last_rdap_call)
+        if wait_for > 0:
+            time.sleep(wait_for)
+        _last_rdap_call = time.monotonic()
+    return httpx.get(
             f"{RDAP_ROOT}/{domain}",
             headers={"Accept": "application/rdap+json", "User-Agent": "YouTubeDomainCrawler/0.1"},
             follow_redirects=True,
             timeout=15.0,
         )
-    except httpx.HTTPError as exc:
-        return "error", str(exc)
-    if response.status_code == 200:
-        return "registered", None
-    if response.status_code == 404:
-        return "not_found", None
-    if response.status_code == 429:
-        return "rate_limited", "RDAP rate limited"
-    return "error", f"RDAP returned HTTP {response.status_code}"
+
+
+def check_rdap(domain: str) -> tuple[str, str | None]:
+    last_status: int | None = None
+    last_error = "RDAP request failed"
+    for attempt in range(RDAP_MAX_ATTEMPTS):
+        try:
+            response = _paced_rdap_get(domain)
+        except httpx.HTTPError as exc:
+            last_status = None
+            last_error = str(exc)
+        else:
+            last_status = response.status_code
+            if response.status_code == 200:
+                return "registered", None
+            if response.status_code == 404:
+                return "not_found", None
+            if response.status_code not in {429, 500, 502, 503, 504}:
+                return "error", f"RDAP returned HTTP {response.status_code}"
+            last_error = (
+                "RDAP rate limited"
+                if response.status_code == 429
+                else f"RDAP returned HTTP {response.status_code}"
+            )
+        if attempt + 1 < RDAP_MAX_ATTEMPTS:
+            time.sleep(2**attempt)
+    if last_status == 429:
+        return "rate_limited", last_error
+    return "error", last_error
 
 
 def _porkbun_payload(response: httpx.Response) -> dict[str, Any]:
