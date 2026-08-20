@@ -129,6 +129,7 @@ textarea, input[type=file], input[type=text], input[type=password] { width: 100%
 .login-error { margin-top: 18px; padding: 11px 13px; border: 1px solid rgba(255,107,122,.55); border-radius: 8px; background: rgba(255,107,122,.1); color: #ffb2ba; }
 .login-help { display: block; margin-top: 16px; color: var(--muted); text-align: center; }
 .empty { color: var(--muted); text-align: center; padding: 30px; }
+.risk-flags { color: #ff9ca6; }
 
 @media (max-width: 1050px) {
   .status-strip { grid-template-columns: repeat(3, 1fr); }

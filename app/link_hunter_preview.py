@@ -16,11 +16,13 @@ from app.models import (
     ProviderQuery,
     SourceLink,
     SourcePage,
+    WebScreening,
 )
 from app.provider_budget import provider_daily_budget_snapshot
 
 _BLOCKED_AVAILABILITY = {"registered", "aftermarket", "premium"}
 _RECENT_FALLBACK_POOL = 10_000
+_SCREENED_PRIORITY_POOL = 50_000
 
 
 def _dataforseo_checked_targets(db: Session) -> set[str]:
@@ -104,6 +106,28 @@ def _availability_signals(db: Session) -> dict[str, str]:
     return {name: str(status or "unknown") for name, status in rows}
 
 
+def _screening_signals(db: Session) -> dict[str, dict[str, int | float | str]]:
+    rows = db.execute(
+        select(
+            WebScreening.domain_name,
+            WebScreening.status,
+            WebScreening.quality_score,
+            WebScreening.risk_score,
+        )
+        .where(WebScreening.status != "blocked")
+        .order_by(WebScreening.quality_score.desc(), WebScreening.id.asc())
+        .limit(_SCREENED_PRIORITY_POOL)
+    ).all()
+    return {
+        name: {
+            "status": str(status),
+            "quality_score": float(quality_score or 0.0),
+            "risk_score": float(risk_score or 0.0),
+        }
+        for name, status, quality_score, risk_score in rows
+    }
+
+
 def _free_rank_context(db: Session) -> dict[str, Any]:
     return {
         "commoncrawl": _commoncrawl_signals(db),
@@ -112,6 +136,7 @@ def _free_rank_context(db: Session) -> dict[str, Any]:
         "verified_links": _free_verified_link_signals(db),
         "youtube": _youtube_signals(db),
         "availability": _availability_signals(db),
+        "screening": _screening_signals(db),
     }
 
 
@@ -125,6 +150,8 @@ def _free_preproof_score(
     youtube_video_count: int,
     youtube_link_count: int,
     availability_status: str,
+    screening_quality: float = 0.0,
+    screening_risk: float = 0.0,
 ) -> float:
     """Score a proof target using only evidence already collected without DataForSEO spend."""
     exact_points = min(22.0, 8.0 * math.log2(1 + max(0, exact_links)))
@@ -145,13 +172,17 @@ def _free_preproof_score(
         "unknown": 0.0,
         "conflicting": -2.0,
     }.get(availability_status, 0.0)
+    screening_points = min(10.0, max(0.0, screening_quality) * 0.1)
+    screening_penalty = min(10.0, max(0.0, screening_risk) * 0.1)
     return round(
         exact_points
         + site_points
         + verified_points
         + commoncrawl_points
         + youtube_points
-        + availability_points,
+        + availability_points
+        + screening_points
+        - screening_penalty,
         2,
     )
 
@@ -159,19 +190,21 @@ def _free_preproof_score(
 def _rank_free_candidates(
     candidates: list[DroppedDomain],
     context: dict[str, Any],
-) -> tuple[list[DroppedDomain], dict[str, float], dict[str, dict[str, int | str]]]:
+) -> tuple[list[DroppedDomain], dict[str, float], dict[str, dict[str, int | float | str]]]:
     commoncrawl: dict[str, int] = context["commoncrawl"]
     exact_links: dict[str, int] = context["exact_links"]
     independent_sites: dict[str, int] = context["independent_sites"]
     verified_links: dict[str, int] = context["verified_links"]
     youtube: dict[str, dict[str, int]] = context["youtube"]
     availability: dict[str, str] = context["availability"]
+    screening: dict[str, dict[str, int | float | str]] = context["screening"]
     original_position = {drop.name: position for position, drop in enumerate(candidates)}
 
     scores: dict[str, float] = {}
-    signals: dict[str, dict[str, int | str]] = {}
+    signals: dict[str, dict[str, int | float | str]] = {}
     for drop in candidates:
         yt = youtube.get(drop.name, {})
+        free_screen = screening.get(drop.name, {})
         row = {
             "exact_links": exact_links.get(drop.name, 0),
             "independent_sites": independent_sites.get(drop.name, 0),
@@ -181,6 +214,9 @@ def _rank_free_candidates(
             "youtube_video_count": int(yt.get("video_count", 0)),
             "youtube_link_count": int(yt.get("link_count", 0)),
             "availability": availability.get(drop.name, "unknown"),
+            "screening_status": str(free_screen.get("status", "unscreened")),
+            "screening_quality": float(free_screen.get("quality_score", 0.0)),
+            "screening_risk": float(free_screen.get("risk_score", 0.0)),
         }
         signals[drop.name] = row
         scores[drop.name] = _free_preproof_score(
@@ -192,6 +228,8 @@ def _rank_free_candidates(
             youtube_video_count=int(row["youtube_video_count"]),
             youtube_link_count=int(row["youtube_link_count"]),
             availability_status=str(row["availability"]),
+            screening_quality=float(row["screening_quality"]),
+            screening_risk=float(row["screening_risk"]),
         )
 
     ordered = sorted(
@@ -203,6 +241,8 @@ def _rank_free_candidates(
             -int(signals[drop.name]["exact_links"]),
             -int(signals[drop.name]["commoncrawl_hits"]),
             -int(signals[drop.name]["youtube_monthly_views"]),
+            -float(signals[drop.name]["screening_quality"]),
+            float(signals[drop.name]["screening_risk"]),
             original_position[drop.name],
         ),
     )
@@ -224,6 +264,7 @@ def _priority_candidate_names(context: dict[str, Any]) -> set[str]:
         for name, values in context["youtube"].items()
         if int(values.get("monthly_views", 0)) > 0
     )
+    names.update(context["screening"].keys())
     return names
 
 
@@ -232,7 +273,7 @@ def _select_provider_summary_targets_with_ranking(
 ) -> tuple[
     list[str],
     dict[str, float],
-    dict[str, dict[str, int | str]],
+    dict[str, dict[str, int | float | str]],
     int,
     dict[str, Any],
 ]:
@@ -260,10 +301,20 @@ def _select_provider_summary_targets_with_ranking(
     pooled = list(candidate_map.values())
     unchecked = [drop for drop in pooled if drop.name not in already_checked]
 
+    locally_blocked = set(
+        db.scalars(
+            select(WebScreening.domain_name).where(
+                WebScreening.status == "blocked",
+                WebScreening.domain_name.in_([drop.name for drop in unchecked]),
+            )
+        ).all()
+    ) if unchecked else set()
+
     blocked_names = {
         drop.name
         for drop in unchecked
         if availability.get(drop.name, "unknown") in _BLOCKED_AVAILABILITY
+        or drop.name in locally_blocked
     }
     candidates = [drop for drop in unchecked if drop.name not in blocked_names]
     ordered, scores, signals = _rank_free_candidates(candidates, context)
@@ -282,7 +333,7 @@ def select_provider_summary_targets_with_ranking(
 ) -> tuple[
     list[str],
     dict[str, float],
-    dict[str, dict[str, int | str]],
+    dict[str, dict[str, int | float | str]],
     int,
     dict[str, Any],
 ]:
@@ -389,7 +440,7 @@ def _proof_readiness(
     }
 
 
-def _has_meaningful_free_signal(signal: dict[str, int | str]) -> bool:
+def _has_meaningful_free_signal(signal: dict[str, int | float | str]) -> bool:
     return any(
         int(signal.get(key, 0) or 0) > 0
         for key in (

@@ -54,6 +54,12 @@ class EmailWebOpportunity:
     source_site: str
     source_title: str
     source_url: str
+    expected_clicks_monthly: int = 0
+    monthly_revenue_low_usd: float = 0.0
+    monthly_revenue_high_usd: float = 0.0
+    max_purchase_price_usd: float = 0.0
+    monetization_route: str = ""
+    economics_confidence: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -199,6 +205,10 @@ def render_web_opportunity_table(opportunities: list[EmailWebOpportunity]) -> st
             f"<td><strong>{html.escape(item.domain)}</strong></td>"
             f"<td>{html.escape(item.tier.title())}</td>"
             f"<td>{item.score:.1f}</td>"
+            f"<td>{item.expected_clicks_monthly:,}<br><small>modelled clicks</small></td>"
+            f"<td>${item.monthly_revenue_low_usd:,.0f}–${item.monthly_revenue_high_usd:,.0f}"
+            f"<br><small>ceiling ${item.max_purchase_price_usd:,.0f} · "
+            f"{html.escape(item.monetization_route.replace('_', ' ') or 'awaiting proof')}</small></td>"
             f"<td>{item.source_page_traffic:,}</td>"
             f"<td>{item.independent_sites:,} / {item.referring_pages:,}</td>"
             f"<td>{html.escape(item.niche or '—')}</td>"
@@ -212,7 +222,8 @@ def render_web_opportunity_table(opportunities: list[EmailWebOpportunity]) -> st
         "<table cellpadding='7' cellspacing='0' border='1' "
         "style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;"
         "width:100%;border-color:#d7dce5'>"
-        "<thead><tr><th>Domain</th><th>Tier</th><th>Score</th><th>Source-page traffic</th>"
+        "<thead><tr><th>Domain</th><th>Tier</th><th>Buy score</th><th>Predicted clicks</th>"
+        "<th>Money case</th><th>Source-page traffic</th>"
         "<th>Sites / pages</th><th>Niche</th><th>Link verified</th><th>Availability</th>"
         "<th>Price</th><th>Best source page</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
@@ -260,6 +271,8 @@ def render_daily_digest(report: DailyDigest) -> str:
         ("Fresh dropped names loaded", report.work.get("drops_loaded", 0)),
         ("Dropped names searched on YouTube", report.work.get("drops_searched", 0)),
         ("Exact dropped-domain matches", report.work.get("dropped_matches", 0)),
+        ("Web names screened locally at zero provider cost", report.work.get("web_free_screened", 0)),
+        ("Web names eliminated before paid calls", report.work.get("web_free_blocked", 0)),
     ]
     pending_labels = [
         ("All pending exact-link domains", report.pending.get("total", 0)),

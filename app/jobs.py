@@ -32,6 +32,7 @@ from app.emailer import (
     send_email,
 )
 from app.hackernews_prefilter import run_hackernews_prefilter as run_hackernews_prefilter_batch
+from app.link_hunter import refresh_web_link_observations
 from app.metrics import ViewMetric, calculate_monthly_views
 from app.models import (
     AppCheckpoint,
@@ -40,6 +41,7 @@ from app.models import (
     DroppedDomain,
     FetchVerification,
     Opportunity,
+    OpportunityEconomics,
     ProviderQuery,
     RunLog,
     SearchState,
@@ -49,11 +51,13 @@ from app.models import (
     VideoDomain,
     VideoRefreshState,
     ViewSnapshot,
+    WebScreening,
     YouTubeChannel,
     utcnow,
 )
 from app.scoring import ScoreInputs, calculate_score, determine_tier
 from app.stackexchange_prefilter import run_stackexchange_prefilter as run_stackexchange_prefilter_batch
+from app.web_intelligence import backfill_existing_web_intelligence, screen_dropped_domains
 from app.youtube import YouTubeClient, YouTubeVideo, exact_domain_in_description
 
 logger = logging.getLogger(__name__)
@@ -79,6 +83,71 @@ def _finish_run(
     run.counters = counters
     run.error = error[:2000] if error else None
     db.commit()
+
+
+def run_web_free_screening_job() -> None:
+    """Advance the permanent, zero-provider-cost dropped-domain screening ledger."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        run = _start_run(db, "web_free_screening")
+        counters: dict[str, Any] = {
+            "screened": 0,
+            "eligible": 0,
+            "review": 0,
+            "blocked": 0,
+            "summaries_backfilled": 0,
+            "money_cases_backfilled": 0,
+            "provider_cost_usd": 0.0,
+            "errors": 0,
+            "error_details": [],
+        }
+        try:
+            counters.update(
+                screen_dropped_domains(db, settings.link_hunter_free_screen_batch_size)
+            )
+            counters.update(backfill_existing_web_intelligence(db))
+            _finish_run(db, run, "complete", counters)
+        except Exception as exc:
+            db.rollback()
+            run = db.get(RunLog, run.id)
+            counters["errors"] = 1
+            counters["error_details"] = [str(exc)[:500]]
+            if run is not None:
+                _finish_run(db, run, "failed", counters, str(exc))
+            logger.exception("Web free screening failed")
+
+
+def run_web_link_refresh_job() -> None:
+    """Extend link-survival observations without any paid provider requests."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        run = _start_run(db, "web_link_refresh")
+        counters: dict[str, Any] = {
+            "due": 0,
+            "refreshed": 0,
+            "verified": 0,
+            "missing": 0,
+            "provider_cost_usd": 0.0,
+            "errors": 0,
+            "error_details": [],
+        }
+        try:
+            counters.update(
+                refresh_web_link_observations(
+                    db,
+                    settings,
+                    settings.link_hunter_link_refresh_batch_size,
+                )
+            )
+            _finish_run(db, run, "complete", counters)
+        except Exception as exc:
+            db.rollback()
+            run = db.get(RunLog, run.id)
+            counters["errors"] = 1
+            counters["error_details"] = [str(exc)[:500]]
+            if run is not None:
+                _finish_run(db, run, "failed", counters, str(exc))
+            logger.exception("Web link refresh failed")
 
 
 def ensure_seed_data(db: Session) -> None:
@@ -1299,11 +1368,19 @@ def _build_daily_digest_report(
         db.execute(select(Opportunity.tier, func.count()).group_by(Opportunity.tier)).all()
     )
     web_rows = db.execute(
-        select(Opportunity, Domain, SourcePage, SourceSite)
+        select(Opportunity, Domain, SourcePage, SourceSite, OpportunityEconomics)
         .join(Domain, Domain.id == Opportunity.domain_id)
         .outerjoin(SourcePage, SourcePage.id == Opportunity.best_source_page_id)
         .outerjoin(SourceSite, SourceSite.id == SourcePage.site_id)
-        .where(Opportunity.tier.in_(["priority", "qualified", "watchlist", "pending"]))
+        .outerjoin(OpportunityEconomics, OpportunityEconomics.domain_id == Domain.id)
+        .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+        .where(
+            Opportunity.tier.in_(["priority", "qualified", "watchlist", "pending"]),
+            Domain.availability_status.notin_(
+                ["registered", "aftermarket", "premium", "reserved"]
+            ),
+            or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+        )
         .order_by(
             case(
                 (Opportunity.tier == "priority", 0),
@@ -1331,8 +1408,24 @@ def _build_daily_digest_report(
             source_site=site.hostname if site is not None else "",
             source_title=page.title if page is not None else "",
             source_url=page.url if page is not None else "",
+            expected_clicks_monthly=(
+                economics.expected_clicks_monthly if economics is not None else 0
+            ),
+            monthly_revenue_low_usd=(
+                economics.monthly_revenue_low_usd if economics is not None else 0.0
+            ),
+            monthly_revenue_high_usd=(
+                economics.monthly_revenue_high_usd if economics is not None else 0.0
+            ),
+            max_purchase_price_usd=(
+                economics.max_purchase_price_usd if economics is not None else 0.0
+            ),
+            monetization_route=(
+                economics.monetization_route if economics is not None else ""
+            ),
+            economics_confidence=(economics.confidence if economics is not None else 0.0),
         )
-        for opportunity, domain, page, site in web_rows
+        for opportunity, domain, page, site, economics in web_rows
     ]
     web_domains_checked_24h = (
         db.scalar(
@@ -1403,6 +1496,12 @@ def _build_daily_digest_report(
         ),
         "dropped_matches": _counter_total(
             recent_runs, "exact_matches", "dropped_youtube_search"
+        ),
+        "web_free_screened": _counter_total(
+            recent_runs, "screened", "web_free_screening"
+        ),
+        "web_free_blocked": _counter_total(
+            recent_runs, "blocked", "web_free_screening"
         ),
     }
 
@@ -1622,6 +1721,8 @@ JOB_FUNCTIONS: dict[str, Callable[[], None]] = {
     "commoncrawl_prefilter": run_commoncrawl_prefilter_job,
     "stackexchange_prefilter": run_stackexchange_prefilter_job,
     "hackernews_prefilter": run_hackernews_prefilter_job,
+    "web_free_screening": run_web_free_screening_job,
+    "web_link_refresh": run_web_link_refresh_job,
     "digest": run_daily_digest,
 }
 
@@ -1665,6 +1766,18 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         run_dropped_feeds,
         DateTrigger(run_date=start + timedelta(minutes=2)),
         id="initial_dropped_feeds",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_web_free_screening_job,
+        IntervalTrigger(hours=2, start_date=start + timedelta(minutes=2, seconds=30)),
+        id="web_free_screening",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_web_link_refresh_job,
+        IntervalTrigger(hours=6, start_date=start + timedelta(minutes=7)),
+        id="web_link_refresh",
         replace_existing=True,
     )
     scheduler.add_job(

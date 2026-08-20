@@ -143,7 +143,7 @@
         <div>
           <p class="eyebrow">WEB-WIDE</p>
           <h2>Expandosaurus Link Hunter</h2>
-          <p>Separate web-wide opportunity ledger: dropped domains → live backlinks → source-page traffic → direct link verification → registration.</p>
+          <p>Permanent web intelligence: free screening → cached backlink evidence → direct link survival → predicted clicks/revenue → human purchase decision. The system never buys automatically.</p>
         </div>
       </div>
 
@@ -157,6 +157,10 @@
         <article><span>{{ "{:,}".format(web_source_sites) }}</span><small>Independent source sites</small></article>
         <article><span>{{ "{:,}".format(web_source_pages) }}</span><small>Source pages</small></article>
         <article><span>{{ "{:,}".format(web_source_links) }}</span><small>Provider-live links</small></article>
+        <article><span>{{ "{:,}".format(web_screened) }}</span><small>Free-screened drops</small></article>
+        <article><span>{{ "{:,}".format(web_screened_blocked) }}</span><small>Eliminated before paid calls</small></article>
+        <article><span>{{ "{:,}".format(web_summary_indexed) }}</span><small>Permanent backlink summaries</small></article>
+        <article><span>{{ "{:,}".format(web_money_cases) }}</span><small>Acquisition money cases</small></article>
         <article><span>{% if dataforseo_enabled %}Ready{% else %}Missing{% endif %}</span><small>DataForSEO credentials</small></article>
         <article><span>{% if link_hunter_enabled %}On{% else %}Safe{% endif %}</span><small>{% if link_hunter_enabled %}Proof calls enabled{% else %}Paid calls disabled{% endif %}</small></article>
       </section>
@@ -170,10 +174,10 @@
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Domain</th><th>Tier / score</th><th>Best source</th><th>Traffic</th><th>Link evidence</th><th>Referrers</th><th>Availability</th><th>Action</th></tr>
+            <tr><th>Domain</th><th>Tier / buy score</th><th>Money case</th><th>Best source</th><th>Traffic</th><th>Link survival / clickability</th><th>Referrers</th><th>Availability</th><th>Action</th></tr>
           </thead>
           <tbody>
-          {% for opportunity, domain, page, site, link, verification in web_evidence_rows %}
+          {% for opportunity, domain, page, site, link, verification, economics, observation in web_evidence_rows %}
             <tr{% if decision_by_domain.get(domain.id) == 'ignored' %} class="decision-ignored"{% endif %}>
               <td>
                 <strong>{{ domain.name }}</strong>
@@ -182,7 +186,18 @@
               </td>
               <td>
                 <span class="pill {{ opportunity.tier }}">{{ opportunity.tier }}</span>
-                <small>score {{ "%.1f"|format(opportunity.score) }} · strength {{ "%.1f"|format(opportunity.link_strength) }}</small>
+                <small>buy score {{ "%.1f"|format(opportunity.score) }} · evidence strength {{ "%.1f"|format(opportunity.link_strength) }}</small>
+              </td>
+              <td>
+                {% if economics %}
+                  <strong>${{ "%.0f"|format(economics.monthly_revenue_low_usd) }}–${{ "%.0f"|format(economics.monthly_revenue_high_usd) }}/mo</strong>
+                  <small>{{ "{:,}".format(economics.expected_clicks_monthly) }} predicted outbound clicks</small>
+                  <small>suggested ceiling ${{ "%.0f"|format(economics.max_purchase_price_usd) }} · {{ economics.monetization_route.replace('_', ' ') }}</small>
+                  <small>{{ "%.0f"|format(economics.confidence * 100) }}% confidence · risk {{ "%.0f"|format(economics.risk_score) }}/100{% if economics.estimated_payback_months %} · {{ "%.1f"|format(economics.estimated_payback_months) }}mo payback{% endif %}</small>
+                  {% if economics.safety_flags %}<small class="risk-flags">{{ economics.safety_flags|join(' · ') }}</small>{% endif %}
+                {% else %}
+                  <span class="empty">awaiting deep proof</span>
+                {% endif %}
               </td>
               <td>
                 {% if page %}
@@ -206,6 +221,9 @@
                   <small>{{ ((link.context_before or '') ~ ' ' ~ (link.context_after or ''))[:120] }}</small>
                   <small>{% if link.dofollow %}dofollow{% else %}nofollow/other{% endif %} · provider rank {{ "%.1f"|format(link.provider_rank or 0) }}{% if link.spam_score is not none %} · spam {{ "%.1f"|format(link.spam_score) }}{% endif %}</small>
                   <small>{% if verification and verification.link_present %}✓ fetched and link still present{% elif verification %}✗ fetched but link not found{% else %}provider evidence only{% endif %}</small>
+                  {% if observation %}
+                    <small>clickability {{ "%.0f"|format(observation.clickability_score) }}/100 · {{ observation.semantic_location }} · survived {{ "%.1f"|format(observation.survival_days) }}d</small>
+                  {% endif %}
                 {% else %}
                   <span class="empty">no saved live link</span>
                 {% endif %}
@@ -233,7 +251,7 @@
               </td>
             </tr>
           {% else %}
-            <tr><td colspan="8" class="empty">No {{ 'new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'web-wide proof') }} results yet.</td></tr>
+            <tr><td colspan="9" class="empty">No {{ 'new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'web-wide proof') }} results yet.</td></tr>
           {% endfor %}
           </tbody>
         </table>

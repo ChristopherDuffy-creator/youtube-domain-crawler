@@ -9,9 +9,11 @@ from app.config import Settings
 from app.dataforseo import DataForSEOResponse
 from app.database import Base
 from app.models import (
+    BacklinkSummary,
     Domain,
     DroppedDomain,
     Opportunity,
+    OpportunityEconomics,
     ProviderQuery,
     SourceMetricSnapshot,
 )
@@ -129,6 +131,7 @@ def test_provider_proof_builds_ranked_web_opportunity(monkeypatch) -> None:
 
     monkeypatch.setattr(link_hunter, "DataForSEOClient", FakeDataForSEOClient)
     monkeypatch.setattr(link_hunter, "check_domain", fake_check_domain)
+    monkeypatch.setattr(link_hunter, "check_dns", lambda _: "nxdomain")
     monkeypatch.setattr(link_hunter, "_verify_source_link", lambda *args, **kwargs: True)
 
     with Session(engine) as db:
@@ -139,6 +142,8 @@ def test_provider_proof_builds_ranked_web_opportunity(monkeypatch) -> None:
 
         assert counters["targets"] == 1
         assert counters["summary_screened"] == 1
+        assert counters["free_dns_screened"] == 1
+        assert counters["free_dns_blocked"] == 0
         assert counters["deep_proof_target_count"] == 1
         assert counters["deep_proof_targets"] == ["example.com"]
         assert counters["summary_calls"] == 1
@@ -159,8 +164,8 @@ def test_provider_proof_builds_ranked_web_opportunity(monkeypatch) -> None:
 
         opportunity = db.scalar(select(Opportunity).where(Opportunity.domain_id == domain.id))
         assert opportunity is not None
-        assert opportunity.tier == "qualified"
-        assert 65 <= opportunity.score < 80
+        assert opportunity.tier == "priority"
+        assert opportunity.score >= 80
         assert opportunity.verified_live_link is True
         assert opportunity.source_page_traffic_estimate == 10_000
         assert opportunity.referring_page_count == 12
@@ -170,6 +175,14 @@ def test_provider_proof_builds_ranked_web_opportunity(monkeypatch) -> None:
         snapshot = db.scalar(select(SourceMetricSnapshot))
         assert snapshot is not None
         assert snapshot.organic_traffic_estimate == 10_000
+
+        summary = db.scalar(select(BacklinkSummary))
+        economics = db.scalar(select(OpportunityEconomics))
+        assert summary is not None and summary.referring_pages == 12
+        assert economics is not None
+        assert economics.expected_clicks_monthly > 0
+        assert economics.monthly_revenue_high_usd > economics.monthly_revenue_low_usd
+        assert economics.monetization_route == "affiliate_landing"
 
         provider_queries = db.scalars(select(ProviderQuery)).all()
         assert len(provider_queries) == 3
@@ -242,6 +255,7 @@ def test_summary_screen_reranks_100_and_allows_only_five_deep_calls(monkeypatch)
 
     monkeypatch.setattr(link_hunter, "DataForSEOClient", FunnelClient)
     monkeypatch.setattr(link_hunter, "check_domain", registered_domain)
+    monkeypatch.setattr(link_hunter, "check_dns", lambda _: "nxdomain")
 
     with Session(engine) as db:
         db.add_all(
@@ -275,3 +289,36 @@ def test_summary_screen_reranks_100_and_allows_only_five_deep_calls(monkeypatch)
         ).all()
         assert len(summary_queries) == 100
         assert len(deep_queries) == 5
+        assert len(db.scalars(select(BacklinkSummary)).all()) == 100
+        assert len(db.scalars(select(Opportunity)).all()) == 100
+
+
+def test_free_dns_screen_omits_live_business_before_any_paid_call(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        dataforseo_login="login",
+        dataforseo_password="password",
+        link_hunter_enabled=True,
+        link_hunter_summary_batch_size=1,
+    )
+
+    class UnexpectedPaidClient:
+        def __init__(self, _: Settings):
+            raise AssertionError("DataForSEO must not be constructed for a DNS-resolving name")
+
+    monkeypatch.setattr(link_hunter, "DataForSEOClient", UnexpectedPaidClient)
+    monkeypatch.setattr(link_hunter, "check_dns", lambda _: "resolves")
+
+    with Session(engine) as db:
+        db.add(DroppedDomain(name="squarespace.com", source="test"))
+        db.commit()
+
+        counters = link_hunter.run_provider_proof(db, settings)
+
+        assert counters["free_dns_screened"] == 1
+        assert counters["free_dns_blocked"] == 1
+        assert counters["summary_calls"] == 0
+        assert counters["provider_cost_usd"] == 0
+        domain = db.scalar(select(Domain).where(Domain.name == "squarespace.com"))
+        assert domain is not None and domain.availability_status == "registered"
