@@ -371,9 +371,153 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
     commoncrawl_summary: dict[str, object] | None = None
     stackexchange_summary: dict[str, object] | None = None
     hackernews_summary: dict[str, object] | None = None
+    youtube_summary: dict[str, object] | None = None
+    email_summary: dict[str, object] = {
+        "configured": settings.email_enabled,
+        "latest_digest": None,
+    }
     try:
         db.scalar(select(func.count()).select_from(RunLog))
         database = "ok"
+
+        youtube_job_keys = {
+            "youtube_discovery": (
+                "search_calls",
+                "videos_returned",
+                "new_videos",
+                "new_domains",
+                "new_links",
+            ),
+            "youtube_channel_fanout": (
+                "playlist_calls",
+                "videos_discovered",
+                "videos_fetched",
+                "new_videos",
+                "new_domains",
+                "new_links",
+                "channels_completed",
+                "candidates_refreshed",
+                "errors",
+            ),
+            "view_snapshots": (
+                "videos_due",
+                "videos_updated",
+                "snapshots",
+                "candidates_refreshed",
+            ),
+            "availability_checks": (
+                "checked",
+                "available",
+                "likely_available",
+                "registered",
+                "errors",
+            ),
+            "dropped_youtube_search": (
+                "drops_checked",
+                "videos_returned",
+                "exact_matches",
+                "new_videos",
+                "new_domains",
+                "new_links",
+            ),
+        }
+        latest_youtube_runs: dict[str, object] = {}
+        for job, counter_keys in youtube_job_keys.items():
+            latest = db.scalar(
+                select(RunLog)
+                .where(RunLog.job == job)
+                .order_by(RunLog.started_at.desc())
+                .limit(1)
+            )
+            if latest is None:
+                latest_youtube_runs[job] = None
+                continue
+            raw_counters = latest.counters if isinstance(latest.counters, dict) else {}
+            latest_youtube_runs[job] = {
+                "status": latest.status,
+                "counters": {
+                    key: int(raw_counters.get(key) or 0) for key in counter_keys
+                },
+                "finished_at": (
+                    latest.finished_at.isoformat()
+                    if latest.finished_at is not None
+                    else None
+                ),
+            }
+
+        tier_counts = {
+            tier: int(count)
+            for tier, count in db.execute(
+                select(Candidate.tier, func.count()).group_by(Candidate.tier)
+            ).all()
+        }
+        now = datetime.now(UTC)
+        youtube_summary = {
+            "totals": {
+                "videos": int(db.scalar(select(func.count()).select_from(Video)) or 0),
+                "domains": int(db.scalar(select(func.count()).select_from(Domain)) or 0),
+                "exact_links": int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(VideoDomain)
+                        .where(VideoDomain.active.is_(True))
+                    )
+                    or 0
+                ),
+                "channels": int(
+                    db.scalar(select(func.count()).select_from(YouTubeChannel)) or 0
+                ),
+                "channels_complete": int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(YouTubeChannel)
+                        .where(YouTubeChannel.inventory_complete.is_(True))
+                    )
+                    or 0
+                ),
+                "linked_videos_due_refresh": int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(VideoRefreshState)
+                        .where(VideoRefreshState.next_refresh_at <= now)
+                    )
+                    or 0
+                ),
+                "never_checked_domains": int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(Domain)
+                        .where(
+                            Domain.last_checked_at.is_(None),
+                            Domain.video_links.any(VideoDomain.active.is_(True)),
+                        )
+                    )
+                    or 0
+                ),
+            },
+            "tiers": tier_counts,
+            "latest_runs": latest_youtube_runs,
+        }
+
+        latest_digest = db.scalar(
+            select(RunLog)
+            .where(RunLog.job == "daily_digest")
+            .order_by(RunLog.started_at.desc())
+            .limit(1)
+        )
+        if latest_digest is not None:
+            digest_counters = (
+                latest_digest.counters if isinstance(latest_digest.counters, dict) else {}
+            )
+            email_summary["latest_digest"] = {
+                "status": latest_digest.status,
+                "emailed": int(digest_counters.get("emailed") or 0),
+                "finished_at": (
+                    latest_digest.finished_at.isoformat()
+                    if latest_digest.finished_at is not None
+                    else None
+                ),
+            }
         last_commoncrawl = db.scalar(
             select(RunLog)
             .where(RunLog.job == "commoncrawl_prefilter")
@@ -447,8 +591,10 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         "status": "ok" if database == "ok" else "degraded",
         "database": database,
         "scheduler": bool(scheduler and scheduler.running),
+        "email": email_summary,
         "link_hunter_enabled": settings.link_hunter_enabled,
         "dataforseo_configured": settings.dataforseo_enabled,
+        "youtube": youtube_summary,
         "commoncrawl_prefilter": commoncrawl_summary,
         "stackexchange_prefilter": stackexchange_summary,
         "hackernews_prefilter": hackernews_summary,

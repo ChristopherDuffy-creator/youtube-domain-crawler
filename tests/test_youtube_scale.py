@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.database import Base
 from app.jobs import (
+    _domains_due_for_check,
     _dropped_domains_due_for_youtube_search,
+    _initial_refresh_interval_hours,
     build_scheduler,
     ingest_dropped_text,
     process_video,
@@ -17,7 +19,14 @@ from app.jobs import (
     run_view_snapshot_batch,
     seed_youtube_channels,
 )
-from app.models import Domain, DroppedDomain, Video, VideoRefreshState, YouTubeChannel
+from app.models import (
+    Domain,
+    DroppedDomain,
+    Video,
+    VideoDomain,
+    VideoRefreshState,
+    YouTubeChannel,
+)
 from app.youtube import (
     ChannelDetails,
     PlaylistPage,
@@ -235,6 +244,47 @@ def test_adaptive_refresh_requests_only_due_linked_videos() -> None:
         assert state.last_view_count == 252_500
         untouched = db.get(VideoRefreshState, "latervideo01")
         assert untouched is not None and untouched.last_view_count == 250_000
+
+
+def test_every_linked_video_gets_first_follow_up_within_one_day() -> None:
+    assert _initial_refresh_interval_hours(9_999) == 24
+    assert _initial_refresh_interval_hours(99_999) == 24
+    assert _initial_refresh_interval_hours(999_999) == 24
+    assert _initial_refresh_interval_hours(1_000_000) == 6
+
+
+def test_never_checked_domains_are_first_in_capped_availability_queue() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+
+    with Session(engine) as db:
+        old_checked = Domain(
+            name="old-checked.example",
+            last_checked_at=now - timedelta(days=8),
+            availability_status="registered",
+        )
+        never_checked = Domain(name="never-checked.example")
+        db.add_all([old_checked, never_checked])
+        db.flush()
+        for index, domain in enumerate((old_checked, never_checked), start=1):
+            video = Video(id=f"queuevideo{index:02d}", active=True)
+            db.add(video)
+            db.flush()
+            db.add(
+                VideoDomain(
+                    video_id=video.id,
+                    domain_id=domain.id,
+                    raw_url=f"https://{domain.name}",
+                    normalized_url=f"https://{domain.name}/",
+                    active=True,
+                )
+            )
+        db.commit()
+
+        due = _domains_due_for_check(db, 1)
+
+        assert [domain.name for domain in due] == ["never-checked.example"]
 
 
 def test_removed_links_are_included_in_targeted_candidate_refresh() -> None:
