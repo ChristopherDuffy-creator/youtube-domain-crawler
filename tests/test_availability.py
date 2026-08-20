@@ -16,8 +16,25 @@ def test_rdap_dns_classification_is_conservative() -> None:
     assert classify_rdap_dns("registered", "resolves") == "registered"
     assert classify_rdap_dns("registered", "nxdomain") == "registered"
     assert classify_rdap_dns("not_found", "nxdomain") == "likely_available"
-    assert classify_rdap_dns("not_found", "resolves") == "conflicting"
+    assert classify_rdap_dns("not_found", "resolves") == "registered"
+    assert classify_rdap_dns("rate_limited", "resolves") == "registered"
     assert classify_rdap_dns("error", "nxdomain") == "unknown"
+
+
+def test_resolving_domain_is_rejected_without_spending_rdap_capacity(monkeypatch) -> None:
+    monkeypatch.setattr("app.availability.check_dns", lambda domain: "resolves")
+
+    def unexpected_rdap(domain: str) -> tuple[str, str | None]:
+        raise AssertionError("RDAP should not be called for a resolving domain")
+
+    monkeypatch.setattr("app.availability.check_rdap", unexpected_rdap)
+
+    result = check_domain("squarespace.com", Settings())
+
+    assert result.status == "registered"
+    assert result.source == "dns"
+    assert result.dns_status == "resolves"
+    assert result.rdap_status == "skipped"
 
 
 @dataclass
