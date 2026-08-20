@@ -496,9 +496,12 @@ def run_discovery() -> None:
                     state.pages_scanned = 0
                 db.commit()
 
+            counters["failure_stage"] = "candidate_refresh"
             refresh_candidates(db, affected_domain_ids)
+            counters["failure_stage"] = "local_dropped_match"
             refresh_local_dropped_matches(db, domain_ids=affected_domain_ids)
             counters["quota"] = youtube_quota_snapshot(db, settings)
+            counters["failure_stage"] = None
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
             db.rollback()
@@ -635,9 +638,10 @@ def run_channel_fanout_batch(
     db: Session,
     settings: Settings,
     client: YouTubeClient,
+    counters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Turn search-seeded channels into a resumable, permanent outbound-link index."""
-    counters: dict[str, Any] = {
+    defaults: dict[str, Any] = {
         "channel_calls": 0,
         "channels_resolved": 0,
         "channel_resolution_errors": 0,
@@ -658,6 +662,10 @@ def run_channel_fanout_batch(
         "errors": 0,
         "error_details": [],
     }
+    if counters is None:
+        counters = defaults
+    else:
+        counters.update(defaults)
     try:
         resolution = _resolve_channel_upload_playlists(db, settings, client)
         counters.update(resolution)
@@ -783,9 +791,12 @@ def run_channel_fanout_batch(
     counters["quota_units_estimate"] = (
         counters["channel_calls"] + counters["playlist_calls"] + counters["video_detail_calls"]
     )
+    counters["failure_stage"] = "candidate_refresh"
     counters["candidates_refreshed"] = refresh_candidates(db, affected_domain_ids)
+    counters["failure_stage"] = "local_dropped_match"
     counters.update(refresh_local_dropped_matches(db, domain_ids=affected_domain_ids))
     counters["quota"] = youtube_quota_snapshot(db, settings)
+    counters["failure_stage"] = None
     return counters
 
 
@@ -797,10 +808,12 @@ def run_channel_fanout() -> None:
         run = _start_run(db, "youtube_channel_fanout")
         counters: dict[str, Any] = {}
         try:
+            counters = {}
             counters = run_channel_fanout_batch(
                 db,
                 settings,
                 YouTubeClient(settings.youtube_api_key),
+                counters,
             )
             status = "complete" if not counters.get("errors") else "partial"
             _finish_run(db, run, status, counters)
@@ -931,8 +944,10 @@ def run_view_snapshot_batch(
             )
         ).all()
     )
+    counters["failure_stage"] = "candidate_refresh"
     counters["candidates_refreshed"] = refresh_candidates(db, affected_domain_ids)
     counters["quota"] = youtube_quota_snapshot(db, settings)
+    counters["failure_stage"] = None
     return counters
 
 
@@ -1357,9 +1372,12 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
                     counters["exact_matches"] += 1
                 dropped.youtube_searched_at = utcnow()
                 db.commit()
+            counters["failure_stage"] = "candidate_refresh"
             refresh_candidates(db, affected_domain_ids)
+            counters["failure_stage"] = "local_dropped_match"
             refresh_local_dropped_matches(db, domain_ids=affected_domain_ids)
             counters["quota"] = youtube_quota_snapshot(db, settings)
+            counters["failure_stage"] = None
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
             db.rollback()
