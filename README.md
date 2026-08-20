@@ -24,7 +24,7 @@ The crawler automatically downloads WhoisFreaks' public daily feed of 10,000 rec
 
 ### Traffic verification
 
-YouTube supplies a cumulative view count, not “views in the last month.” The crawler therefore takes its own snapshots. Only videos with useful outbound links enter the refresh queue: fast-growing/high-exposure videos refresh frequently, slower videos back off, and repeatedly stagnant videos can fall to a 30-day interval. Early numbers are clearly marked **projected**. A candidate cannot become Qualified or Priority until the crawler has a genuine 27–35 day measurement window.
+YouTube supplies a cumulative view count, not “views in the last month.” The crawler therefore takes its own snapshots. Only videos with useful outbound links enter the refresh queue: fast-growing/high-exposure videos refresh frequently, slower videos back off, and repeatedly stagnant videos can fall to a 30-day interval. Early numbers are clearly marked **projected**. At 15 days the dashboard exposes a separate **measured** decision checkpoint, but never mislabels it as verified; a candidate cannot become Qualified or Priority until the crawler has a genuine 27–35 day measurement window.
 
 ### Registration verification
 
@@ -101,23 +101,38 @@ Every paid bulk-summary result is retained in a permanent backlink index, includ
 
 ### YouTube free-quota capacity
 
-Current official YouTube quota documentation was rechecked on 19 August 2026. `search.list` has a separate default bucket of 100 calls/day; `channels.list`, `playlistItems.list`, and `videos.list` cost 1 unit per call. Inventory and video requests are batched/pages of up to 50.
+Current official YouTube quota documentation was rechecked on 20 August 2026. `search.list` has a separate default bucket of 100 calls/day; `channels.list`, `playlistItems.list`, and `videos.list` cost 1 unit per call in the 10,000-unit general bucket. The June 2026 `videos.batchGetStats` method has its own 10,000-unit bucket. Every inventory, metadata and statistics request carries up to 50 IDs.
 
-The default schedule retains about 48 search seeds/day and runs 12 upload-playlist pages every 30 minutes. That creates a theoretical ceiling of about 28,800 newly discovered video IDs/day before deduplication, while using roughly 1,200 daily units for playlist plus video-detail calls. Adaptive statistics refresh is capped at 2,500 due linked videos per six-hour run (50 batched calls). These are safe starting limits, not a promise that every channel contains 28,800 new public videos.
+The application now enforces conservative Pacific-day ledgers in PostgreSQL before making each request: at most 96 searches, 9,000 general units, 8,000 fan-out units and 9,000 granular statistics units. This preserves 4 search calls, 1,000 general units and 1,000 statistics units as safety headroom even if jobs overlap or restart.
+
+The default schedule can scan up to 100 upload-playlist pages every 30 minutes, with dynamic bursts of 12 pages for hot channels, four for warm channels and one for cold/dormant channels. At the 8,000-unit fan-out ceiling, the theoretical maximum is roughly 4,000 full playlist/detail page pairs or 200,000 newly discovered video IDs per day before deduplication. Adaptive statistics refresh can cover up to 50,000 due linked videos per six-hour run and is protected by its separate bucket, whose hard theoretical ceiling is 450,000 video-stat refreshes/day. Real output depends on channel inventory, public-video availability, deduplication and yield; these are ceilings, not promises.
+
+Five permanent YouTube intelligence upgrades sit behind that capacity:
+
+- database-enforced quota allocation with a safety reserve;
+- search-as-seed channel fan-out with resumable pagination and yield-based hot/warm/cold allocation;
+- a permanent exact outbound-domain index plus acquisition-facing exposure, click, revenue, purchase-ceiling and monetization signals;
+- instant dropped-domain joins in either arrival order, retained as permanent match proof;
+- adaptive view refresh using the separate granular statistics bucket, with honest 15-day measured and 30-day verified confidence states.
 
 Scale controls:
 
-- `YOUTUBE_CHANNEL_PAGES_PER_RUN` (default 12)
-- `YOUTUBE_CHANNEL_PAGE_BURST` (default 3 per channel/run)
+- `YOUTUBE_CHANNEL_PAGES_PER_RUN` (default 100)
+- `YOUTUBE_CHANNEL_PAGE_BURST` (maximum default burst 12 per hot channel/run)
 - `YOUTUBE_CHANNEL_FANOUT_INTERVAL_MINUTES` (default 30)
 - `YOUTUBE_CHANNEL_RECRAWL_HOURS` (default 24)
-- `YOUTUBE_VIEW_REFRESH_BATCH_SIZE` (default 2,500)
+- `YOUTUBE_VIEW_REFRESH_BATCH_SIZE` (default 50,000)
 - `YOUTUBE_VIEW_REFRESH_INTERVAL_HOURS` (default 6)
+- `YOUTUBE_SEARCH_DAILY_LIMIT` (default 96)
+- `YOUTUBE_DATA_DAILY_LIMIT` (default 9,000)
+- `YOUTUBE_FANOUT_DAILY_DATA_LIMIT` (default 8,000)
+- `YOUTUBE_STATS_DAILY_LIMIT` (default 9,000)
 
 The dashboard shows:
 
 - separate Web Link Hunter and YouTube views, with Web Link Hunter as the default;
 - clickable All, Priority, Qualified, Watchlist and Pending totals that filter the result table;
+- a clickable 15-day measured checkpoint that remains distinct from 30-day verification;
 - a visit-aware New filter, persistent Shortlist/Bought/Ignore decisions and an action queue;
 - free-screening, permanent-backlink-index and acquisition-money-case totals;
 - conservative predicted clicks, revenue range, risk, confidence, maximum purchase price and payback estimates;
@@ -128,6 +143,8 @@ The dashboard shows:
 - progress toward 100 very good domains;
 - qualified, priority, watchlist and pending candidates;
 - verified versus projected 30-day views;
+- linked-video exposure, modelled outbound clicks, revenue range, suggested purchase ceiling and monetization route;
+- hot/warm channel counts, permanent YouTube money cases, instant local dropped matches and remaining quota in every bucket;
 - exact registration status and price;
 - candidate score, best linked video, lifetime views and repeat-link counts;
 - cumulative new and manual-test counts;
@@ -175,4 +192,4 @@ Open `http://127.0.0.1:8000` and use username `admin`.
 
 The software automates the search and removes false positives, but it cannot guarantee that 100 exceptional domains exist or remain unregistered. Availability can change at any moment, so the crawler rechecks promising names and the registration page should always be checked again immediately before buying.
 
-Official references: [YouTube API quota](https://developers.google.com/youtube/v3/determine_quota_cost), [YouTube videos.list](https://developers.google.com/youtube/v3/docs/videos/list), [Porkbun API](https://porkbun.com/api/json/v3/documentation), and [Resend Python email guide](https://resend.com/docs/send-with-python).
+Official references: [YouTube API quota](https://developers.google.com/youtube/v3/determine_quota_cost), [YouTube videos.list](https://developers.google.com/youtube/v3/docs/videos/list), [YouTube videos.batchGetStats](https://developers.google.com/youtube/v3/docs/videos/batchGetStats), [Porkbun API](https://porkbun.com/api/json/v3/documentation), and [Resend Python email guide](https://resend.com/docs/send-with-python).

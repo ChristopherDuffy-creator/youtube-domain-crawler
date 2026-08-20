@@ -24,6 +24,13 @@ class EmailCandidate:
     video_title: str
     video_id: str
     price_usd: float | None
+    traffic_confidence: str = "collecting"
+    expected_clicks_monthly: int = 0
+    monthly_revenue_low_usd: float = 0.0
+    monthly_revenue_high_usd: float = 0.0
+    max_purchase_price_usd: float = 0.0
+    buy_score: float = 0.0
+    monetization_route: str = ""
 
 
 @dataclass(frozen=True)
@@ -140,7 +147,13 @@ def render_candidate_table(candidates: list[EmailCandidate]) -> str:
             f"<td><strong>{html.escape(item.domain)}</strong></td>"
             f"<td>{html.escape(item.tier.title())}</td>"
             f"<td>{item.monthly_views:,}</td>"
-            f"<td>{item.score:.1f}</td>"
+            f"<td>{item.buy_score or item.score:.1f}</td>"
+            f"<td>{item.expected_clicks_monthly:,}<br><small>modelled outbound clicks</small></td>"
+            f"<td>${item.monthly_revenue_low_usd:,.0f}–"
+            f"${item.monthly_revenue_high_usd:,.0f}<br><small>ceiling "
+            f"${item.max_purchase_price_usd:,.0f} · "
+            f"{html.escape(item.monetization_route.replace('_', ' ') or 'calculating')} · "
+            f"{html.escape(item.traffic_confidence.replace('_', ' '))}</small></td>"
             f"<td>{price}</td>"
             f'<td><a href="https://www.youtube.com/watch?v={html.escape(item.video_id)}">'
             f"{html.escape(item.video_title[:90])}</a></td>"
@@ -149,8 +162,9 @@ def render_candidate_table(candidates: list[EmailCandidate]) -> str:
     return (
         "<table cellpadding='8' cellspacing='0' border='1' "
         "style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px'>"
-        "<thead><tr><th>Domain</th><th>Tier</th><th>30-day views</th>"
-        "<th>Score</th><th>Price</th><th>Best linked video</th></tr></thead>"
+        "<thead><tr><th>Domain</th><th>Tier</th><th>Linked-video exposure</th>"
+        "<th>Buy score</th><th>Predicted clicks</th><th>Money case</th>"
+        "<th>Price</th><th>Best linked video</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 
@@ -266,6 +280,10 @@ def render_daily_digest(report: DailyDigest) -> str:
         ("New videos saved", report.work.get("new_videos", 0)),
         ("New external domains saved", report.work.get("new_domains", 0)),
         ("New exact description links", report.work.get("new_links", 0)),
+        ("Channel inventory pages scanned", report.work.get("playlist_calls", 0)),
+        ("Videos fetched through channel fan-out", report.work.get("fanout_videos_fetched", 0)),
+        ("Permanent YouTube money cases refreshed", report.work.get("youtube_signals", 0)),
+        ("Dropped names matched instantly to the local index", report.work.get("local_matches", 0)),
         ("Video view snapshots updated", report.work.get("videos_updated", 0)),
         ("Availability checks completed", report.work.get("availability_checked", 0)),
         ("Fresh dropped names loaded", report.work.get("drops_loaded", 0)),
@@ -278,6 +296,7 @@ def render_daily_digest(report: DailyDigest) -> str:
         ("All pending exact-link domains", report.pending.get("total", 0)),
         ("Collecting the first 24-hour baseline", report.pending.get("initial", 0)),
         ("Early traffic projection available", report.pending.get("projected", 0)),
+        ("15-day measured decision signal ready", report.pending.get("measured_15d", 0)),
         ("Waiting for full 27-day verification", report.pending.get("verification", 0)),
         ("Waiting for exact registrar confirmation", report.pending.get("registrar", 0)),
     ]

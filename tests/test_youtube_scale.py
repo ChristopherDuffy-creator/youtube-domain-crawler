@@ -26,6 +26,9 @@ from app.models import (
     VideoDomain,
     VideoRefreshState,
     YouTubeChannel,
+    YouTubeChannelIntelligence,
+    YouTubeDomainSignal,
+    YouTubeQuotaLedger,
 )
 from app.youtube import (
     ChannelDetails,
@@ -69,6 +72,12 @@ def test_youtube_client_uses_quota_efficient_batched_inventory_endpoints(monkeyp
                 "items": [{"contentDetails": {"videoId": "video-1"}}],
                 "nextPageToken": "next-page",
             }
+        if path == "videos:batchGetStats":
+            return {
+                "items": [
+                    {"id": "video-1", "statistics": {"viewCount": "4321"}}
+                ]
+            }
         if params["part"] == "statistics,status":
             return {
                 "items": [
@@ -86,11 +95,13 @@ def test_youtube_client_uses_quota_efficient_batched_inventory_endpoints(monkeyp
     channels = client.fetch_channels(["channel-1"])
     page = client.fetch_uploads_page("uploads-1", page_token="page-1")
     statistics = client.fetch_video_statistics(["video-1"])
+    batch_statistics = client.fetch_video_statistics_batch(["video-1"])
     client.fetch_videos([f"video-{index}" for index in range(51)])
 
     assert channels == [ChannelDetails("channel-1", "Channel One", "uploads-1")]
     assert page == PlaylistPage(["video-1"], "next-page")
     assert statistics == [VideoStatistics("video-1", 1234)]
+    assert batch_statistics == [VideoStatistics("video-1", 4321)]
     channel_call = next(params for path, params in calls if path == "channels")
     playlist_call = next(params for path, params in calls if path == "playlistItems")
     detail_calls = [
@@ -107,6 +118,8 @@ def test_youtube_client_uses_quota_efficient_batched_inventory_endpoints(monkeyp
     assert len(detail_calls) == 2
     assert all("maxResults" not in params for params in detail_calls)
     assert all(len(params["id"].split(",")) <= 50 for params in detail_calls)
+    batch_call = next(params for path, params in calls if path == "videos:batchGetStats")
+    assert batch_call == {"part": "id,statistics", "id": "video-1"}
 
 
 class FakeFanoutClient:
@@ -313,6 +326,7 @@ def test_scheduler_runs_channel_fanout_and_adaptive_refresh() -> None:
 
     assert "youtube_channel_fanout" in jobs
     assert "view_snapshots" in jobs
+    assert "youtube_intelligence" in jobs
     assert jobs["youtube_channel_fanout"].trigger.interval == timedelta(minutes=30)
     assert jobs["view_snapshots"].trigger.interval == timedelta(hours=6)
 
@@ -320,6 +334,10 @@ def test_scheduler_runs_channel_fanout_and_adaptive_refresh() -> None:
 def test_scale_tables_are_registered_without_mutating_existing_video_schema() -> None:
     assert "youtube_channels" in Base.metadata.tables
     assert "video_refresh_states" in Base.metadata.tables
+    assert YouTubeQuotaLedger.__tablename__ in Base.metadata.tables
+    assert YouTubeChannelIntelligence.__tablename__ in Base.metadata.tables
+    assert YouTubeDomainSignal.__tablename__ in Base.metadata.tables
+    assert "dropped_domain_matches" in Base.metadata.tables
     assert "next_refresh_at" in Base.metadata.tables["video_refresh_states"].columns
     assert "channel_id" in Base.metadata.tables["youtube_channels"].columns
     assert "next_refresh_at" not in Base.metadata.tables["videos"].columns

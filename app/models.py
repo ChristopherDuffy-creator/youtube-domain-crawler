@@ -185,6 +185,70 @@ class VideoRefreshState(Base):
     consecutive_low_growth: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class YouTubeQuotaLedger(Base):
+    """Database-enforced daily quota guard shared by every YouTube job."""
+
+    __tablename__ = "youtube_quota_ledgers"
+
+    quota_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    search_calls: Mapped[int] = mapped_column(Integer, default=0)
+    data_units: Mapped[int] = mapped_column(Integer, default=0)
+    fanout_data_units: Mapped[int] = mapped_column(Integer, default=0)
+    stats_units: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class YouTubeChannelIntelligence(Base):
+    """Adaptive crawl allocation kept beside the permanent channel ledger."""
+
+    __tablename__ = "youtube_channel_intelligence"
+    __table_args__ = (
+        Index("ix_youtube_channel_intel_queue", "tier", "next_crawl_at", "ema_yield"),
+    )
+
+    channel_id: Mapped[str] = mapped_column(
+        ForeignKey("youtube_channels.channel_id", ondelete="CASCADE"), primary_key=True
+    )
+    tier: Mapped[str] = mapped_column(String(16), default="unrated", index=True)
+    ema_yield: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    marginal_yield: Mapped[float] = mapped_column(Float, default=0.0)
+    expected_links_per_page: Mapped[float] = mapped_column(Float, default=0.0)
+    consecutive_empty_pages: Mapped[int] = mapped_column(Integer, default=0)
+    pages_without_new_video: Mapped[int] = mapped_column(Integer, default=0)
+    recommended_burst: Mapped[int] = mapped_column(Integer, default=1)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_crawl_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class YouTubeDomainSignal(Base):
+    """Permanent acquisition-facing aggregate of exact YouTube link evidence."""
+
+    __tablename__ = "youtube_domain_signals"
+
+    domain_id: Mapped[int] = mapped_column(
+        ForeignKey("domains.id", ondelete="CASCADE"), primary_key=True
+    )
+    active_video_count: Mapped[int] = mapped_column(Integer, default=0)
+    active_link_count: Mapped[int] = mapped_column(Integer, default=0)
+    channel_count: Mapped[int] = mapped_column(Integer, default=0)
+    lifetime_linked_video_views: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_linked_video_exposure: Mapped[int] = mapped_column(Integer, default=0)
+    observation_days: Mapped[float] = mapped_column(Float, default=0.0)
+    traffic_confidence: Mapped[str] = mapped_column(String(24), default="collecting", index=True)
+    measured_15d: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    verified_30d: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    cta_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    clickable_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    expected_clicks_monthly: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_revenue_low_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    monthly_revenue_high_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    max_purchase_price_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    buy_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    monetization_route: Mapped[str] = mapped_column(String(64), default="content_restore")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class DroppedDomain(Base):
     __tablename__ = "dropped_domains"
 
@@ -196,6 +260,28 @@ class DroppedDomain(Base):
         DateTime(timezone=True), nullable=True
     )
     matched_existing_index: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class DroppedDomainMatch(Base):
+    """Permanent proof that a dropped name matched the local YouTube index."""
+
+    __tablename__ = "dropped_domain_matches"
+    __table_args__ = (
+        UniqueConstraint("dropped_domain_id", "domain_id", name="uq_dropped_domain_match"),
+        Index("ix_dropped_domain_matches_refreshed", "refreshed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dropped_domain_id: Mapped[int] = mapped_column(
+        ForeignKey("dropped_domains.id", ondelete="CASCADE"), index=True
+    )
+    domain_id: Mapped[int] = mapped_column(
+        ForeignKey("domains.id", ondelete="CASCADE"), index=True
+    )
+    active_video_count: Mapped[int] = mapped_column(Integer, default=0)
+    active_link_count: Mapped[int] = mapped_column(Integer, default=0)
+    matched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class RunLog(Base):

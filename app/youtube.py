@@ -224,6 +224,30 @@ class YouTubeClient:
                 )
         return statistics
 
+    def fetch_video_statistics_batch(
+        self, video_ids: Iterable[str]
+    ) -> list[VideoStatistics]:
+        """Use the 2026 granular stats bucket, in official 50-ID batches."""
+        statistics: list[VideoStatistics] = []
+        unique_ids = list(dict.fromkeys(video_ids))
+        for chunk in _chunks(unique_ids, 50):
+            payload = self._get(
+                "videos:batchGetStats",
+                {
+                    "part": "id,statistics",
+                    "id": ",".join(chunk),
+                },
+            )
+            for item in payload.get("items", []):
+                if item.get("id"):
+                    statistics.append(
+                        VideoStatistics(
+                            id=str(item["id"]),
+                            view_count=int(item.get("statistics", {}).get("viewCount", 0)),
+                        )
+                    )
+        return statistics
+
 
 def exact_domain_in_description(domain: str, description: str) -> bool:
     """Boundary-aware exact-domain check used by the dropped-domain route."""
