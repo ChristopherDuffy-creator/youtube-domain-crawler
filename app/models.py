@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -34,7 +35,7 @@ class Video(Base):
     channel_title: Mapped[str] = mapped_column(Text, default="")
     description: Mapped[str] = mapped_column(Text, default="")
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    lifetime_views: Mapped[int] = mapped_column(Integer, default=0)
+    lifetime_views: Mapped[int] = mapped_column(BigInteger, default=0)
     discovery_query: Mapped[str] = mapped_column(Text, default="")
     discovery_route: Mapped[str] = mapped_column(String(32), default="youtube_first")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -111,7 +112,7 @@ class ViewSnapshot(Base):
     video_id: Mapped[str] = mapped_column(ForeignKey("videos.id", ondelete="CASCADE"), index=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     capture_date: Mapped[date] = mapped_column(Date, default=lambda: utcnow().date())
-    view_count: Mapped[int] = mapped_column(Integer)
+    view_count: Mapped[int] = mapped_column(BigInteger)
 
     video: Mapped[Video] = relationship(back_populates="snapshots")
 
@@ -124,7 +125,7 @@ class Candidate(Base):
         ForeignKey("domains.id", ondelete="CASCADE"), unique=True, index=True
     )
     tier: Mapped[str] = mapped_column(String(32), default="pending", index=True)
-    monthly_views: Mapped[int] = mapped_column(Integer, default=0)
+    monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
     verified_30d: Mapped[bool] = mapped_column(Boolean, default=False)
     observation_days: Mapped[float] = mapped_column(Float, default=0.0)
     score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
@@ -181,7 +182,7 @@ class VideoRefreshState(Base):
     )
     refresh_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
     priority_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
-    last_view_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_view_count: Mapped[int] = mapped_column(BigInteger, default=0)
     consecutive_low_growth: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -232,15 +233,15 @@ class YouTubeDomainSignal(Base):
     active_video_count: Mapped[int] = mapped_column(Integer, default=0)
     active_link_count: Mapped[int] = mapped_column(Integer, default=0)
     channel_count: Mapped[int] = mapped_column(Integer, default=0)
-    lifetime_linked_video_views: Mapped[int] = mapped_column(Integer, default=0)
-    monthly_linked_video_exposure: Mapped[int] = mapped_column(Integer, default=0)
+    lifetime_linked_video_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    monthly_linked_video_exposure: Mapped[int] = mapped_column(BigInteger, default=0)
     observation_days: Mapped[float] = mapped_column(Float, default=0.0)
     traffic_confidence: Mapped[str] = mapped_column(String(24), default="collecting", index=True)
     measured_15d: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     verified_30d: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     cta_rate: Mapped[float] = mapped_column(Float, default=0.0)
     clickable_rate: Mapped[float] = mapped_column(Float, default=0.0)
-    expected_clicks_monthly: Mapped[int] = mapped_column(Integer, default=0)
+    expected_clicks_monthly: Mapped[int] = mapped_column(BigInteger, default=0)
     monthly_revenue_low_usd: Mapped[float] = mapped_column(Float, default=0.0)
     monthly_revenue_high_usd: Mapped[float] = mapped_column(Float, default=0.0)
     max_purchase_price_usd: Mapped[float] = mapped_column(Float, default=0.0)
