@@ -12,7 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.availability import AvailabilityResult, check_domain
@@ -53,12 +53,24 @@ from app.models import (
     ViewSnapshot,
     WebScreening,
     YouTubeChannel,
+    YouTubeChannelIntelligence,
+    YouTubeDomainSignal,
     utcnow,
 )
 from app.scoring import ScoreInputs, calculate_score, determine_tier
 from app.stackexchange_prefilter import run_stackexchange_prefilter as run_stackexchange_prefilter_batch
 from app.web_intelligence import backfill_existing_web_intelligence, screen_dropped_domains
 from app.youtube import YouTubeClient, YouTubeVideo, exact_domain_in_description
+from app.youtube_intelligence import (
+    backfill_youtube_intelligence,
+    consume_youtube_quota,
+    ensure_channel_intelligence,
+    record_channel_failure,
+    refresh_local_dropped_matches,
+    refresh_youtube_domain_signals,
+    update_channel_intelligence,
+    youtube_quota_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +246,9 @@ def seed_youtube_channels(
             channel.last_seeded_at = now
             if count_as_search_seed:
                 channel.seed_count += 1
+    db.flush()
+    for channel in existing.values():
+        ensure_channel_intelligence(db, channel)
     return created
 
 
@@ -368,9 +383,14 @@ def seed_manual_checkpoint() -> None:
             "videos_requested": len(MANUAL_CHECKPOINTS),
             "videos_found": 0,
             "new_domains": 0,
+            "quota_exhausted": 0,
         }
         try:
             client = YouTubeClient(settings.youtube_api_key)
+            if not consume_youtube_quota(db, settings, data_units=1):
+                counters["quota_exhausted"] = 1
+                _finish_run(db, run, "complete", counters)
+                return
             videos = client.fetch_videos(MANUAL_CHECKPOINTS.keys())
             seed_youtube_channels(db, videos, count_as_search_seed=False)
             counters["videos_found"] = len(videos)
@@ -422,6 +442,7 @@ def run_discovery() -> None:
             "new_videos": 0,
             "new_domains": 0,
             "new_links": 0,
+            "quota_exhausted": 0,
         }
         try:
             client = YouTubeClient(settings.youtube_api_key)
@@ -433,6 +454,14 @@ def run_discovery() -> None:
                 state = _next_search_state(db)
                 if state is None:
                     break
+                if not consume_youtube_quota(
+                    db,
+                    settings,
+                    search_calls=1,
+                    data_units=1,
+                ):
+                    counters["quota_exhausted"] = 1
+                    break
                 page = client.search_videos(
                     state.query,
                     published_before=published_before,
@@ -440,6 +469,14 @@ def run_discovery() -> None:
                 )
                 counters["search_calls"] += 1
                 counters["videos_returned"] += len(page.video_ids)
+                detail_calls = (len(page.video_ids) + 49) // 50
+                if detail_calls and not consume_youtube_quota(
+                    db,
+                    settings,
+                    data_units=detail_calls,
+                ):
+                    counters["quota_exhausted"] = 1
+                    break
                 videos = client.fetch_videos(page.video_ids)
                 seed_youtube_channels(db, videos, count_as_search_seed=True)
                 for video in videos:
@@ -460,6 +497,8 @@ def run_discovery() -> None:
                 db.commit()
 
             refresh_candidates(db, affected_domain_ids)
+            refresh_local_dropped_matches(db, domain_ids=affected_domain_ids)
+            counters["quota"] = youtube_quota_snapshot(db, settings)
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
             db.rollback()
@@ -470,6 +509,7 @@ def run_discovery() -> None:
 
 def _resolve_channel_upload_playlists(
     db: Session,
+    settings: Settings,
     client: YouTubeClient,
     *,
     limit: int = 50,
@@ -488,7 +528,19 @@ def _resolve_channel_upload_playlists(
         .limit(min(limit, 50))
     ).all()
     if not channels:
-        return {"channel_calls": 0, "channels_resolved": 0, "channel_resolution_errors": 0}
+        return {
+            "channel_calls": 0,
+            "channels_resolved": 0,
+            "channel_resolution_errors": 0,
+            "quota_exhausted": 0,
+        }
+    if not consume_youtube_quota(db, settings, data_units=1, fanout=True):
+        return {
+            "channel_calls": 0,
+            "channels_resolved": 0,
+            "channel_resolution_errors": 0,
+            "quota_exhausted": 1,
+        }
 
     details = {item.id: item for item in client.fetch_channels([row.channel_id for row in channels])}
     now = utcnow()
@@ -510,6 +562,7 @@ def _resolve_channel_upload_playlists(
         "channel_calls": 1,
         "channels_resolved": resolved,
         "channel_resolution_errors": errors,
+        "quota_exhausted": 0,
     }
 
 
@@ -519,14 +572,29 @@ def _next_channel_to_crawl(
     excluded_channel_ids: set[str],
 ) -> YouTubeChannel | None:
     recrawl_before = utcnow() - timedelta(hours=settings.youtube_channel_recrawl_hours)
-    statement = select(YouTubeChannel).where(
-        YouTubeChannel.uploads_playlist_id != "",
-        or_(
-            YouTubeChannel.inventory_complete.is_(False),
-            YouTubeChannel.next_page_token.is_not(None),
-            YouTubeChannel.last_crawled_at.is_(None),
-            YouTubeChannel.last_crawled_at <= recrawl_before,
-        ),
+    statement = (
+        select(YouTubeChannel)
+        .outerjoin(
+            YouTubeChannelIntelligence,
+            YouTubeChannelIntelligence.channel_id == YouTubeChannel.channel_id,
+        )
+        .where(
+            YouTubeChannel.uploads_playlist_id != "",
+            or_(
+                YouTubeChannel.inventory_complete.is_(False),
+                YouTubeChannel.next_page_token.is_not(None),
+                YouTubeChannel.last_crawled_at.is_(None),
+                and_(
+                    YouTubeChannelIntelligence.channel_id.is_(None),
+                    YouTubeChannel.last_crawled_at <= recrawl_before,
+                ),
+                YouTubeChannelIntelligence.next_crawl_at <= utcnow(),
+            ),
+            or_(
+                YouTubeChannelIntelligence.channel_id.is_(None),
+                YouTubeChannelIntelligence.next_crawl_at <= utcnow(),
+            ),
+        )
     )
     if excluded_channel_ids:
         statement = statement.where(YouTubeChannel.channel_id.not_in(excluded_channel_ids))
@@ -534,6 +602,14 @@ def _next_channel_to_crawl(
         statement.order_by(
             case((YouTubeChannel.next_page_token.is_not(None), 0), else_=1),
             case((YouTubeChannel.inventory_complete.is_(False), 0), else_=1),
+            case(
+                (YouTubeChannelIntelligence.tier == "hot", 0),
+                (YouTubeChannelIntelligence.tier == "warm", 1),
+                (YouTubeChannelIntelligence.tier == "unrated", 2),
+                (YouTubeChannelIntelligence.tier == "cold", 3),
+                else_=4,
+            ),
+            YouTubeChannelIntelligence.ema_yield.desc().nullslast(),
             YouTubeChannel.yield_score.desc(),
             YouTubeChannel.seed_count.desc(),
             YouTubeChannel.last_crawled_at.asc(),
@@ -574,12 +650,16 @@ def run_channel_fanout_batch(
         "new_links": 0,
         "channels_completed": 0,
         "refresh_stops_on_known_video": 0,
+        "hot_pages": 0,
+        "warm_pages": 0,
+        "cold_or_unrated_pages": 0,
+        "quota_exhausted": 0,
         "quota_units_estimate": 0,
         "errors": 0,
         "error_details": [],
     }
     try:
-        resolution = _resolve_channel_upload_playlists(db, client)
+        resolution = _resolve_channel_upload_playlists(db, settings, client)
         counters.update(resolution)
     except Exception as exc:
         db.rollback()
@@ -594,6 +674,11 @@ def run_channel_fanout_batch(
         if channel is None:
             break
         try:
+            intelligence = ensure_channel_intelligence(db, channel)
+            tier_before = intelligence.tier
+            if not consume_youtube_quota(db, settings, data_units=1, fanout=True):
+                counters["quota_exhausted"] = 1
+                break
             page = client.fetch_uploads_page(
                 channel.uploads_playlist_id,
                 page_token=channel.next_page_token,
@@ -616,8 +701,17 @@ def run_channel_fanout_batch(
                 counters["refresh_stops_on_known_video"] += 1
 
             new_ids = [video_id for video_id in candidate_ids if video_id not in known_ids]
+            detail_calls = (len(new_ids) + 49) // 50
+            if detail_calls and not consume_youtube_quota(
+                db,
+                settings,
+                data_units=detail_calls,
+                fanout=True,
+            ):
+                counters["quota_exhausted"] = 1
+                break
             videos = client.fetch_videos(new_ids) if new_ids else []
-            counters["video_detail_calls"] += (len(new_ids) + 49) // 50
+            counters["video_detail_calls"] += detail_calls
             counters["videos_fetched"] += len(videos)
             seed_youtube_channels(db, videos, count_as_search_seed=False)
 
@@ -644,17 +738,34 @@ def run_channel_fanout_batch(
             channel.last_crawled_at = utcnow()
             channel.last_error = None
 
-            if stopped_on_known or not page.next_page_token:
+            completed = stopped_on_known or not page.next_page_token
+            if completed:
                 channel.next_page_token = None
                 channel.inventory_complete = True
                 counters["channels_completed"] += 1
             else:
                 channel.next_page_token = page.next_page_token
             _update_channel_yield(channel)
+            intelligence = update_channel_intelligence(
+                db,
+                channel,
+                videos_seen=len(page.video_ids),
+                new_videos=len(videos),
+                linked_videos=linked_videos,
+                external_links=external_links,
+                completed=completed,
+            )
+            if tier_before == "hot":
+                counters["hot_pages"] += 1
+            elif tier_before == "warm":
+                counters["warm_pages"] += 1
+            else:
+                counters["cold_or_unrated_pages"] += 1
             db.commit()
 
             pages_by_channel[channel.channel_id] = pages_by_channel.get(channel.channel_id, 0) + 1
-            if pages_by_channel[channel.channel_id] >= settings.youtube_channel_page_burst:
+            burst = min(settings.youtube_channel_page_burst, intelligence.recommended_burst)
+            if pages_by_channel[channel.channel_id] >= burst:
                 exhausted_for_run.add(channel.channel_id)
         except Exception as exc:
             db.rollback()
@@ -662,6 +773,7 @@ def run_channel_fanout_batch(
             if current is not None:
                 current.last_crawled_at = utcnow()
                 current.last_error = str(exc)[:2000]
+                record_channel_failure(db, current)
                 db.commit()
             exhausted_for_run.add(channel.channel_id)
             counters["errors"] += 1
@@ -672,6 +784,8 @@ def run_channel_fanout_batch(
         counters["channel_calls"] + counters["playlist_calls"] + counters["video_detail_calls"]
     )
     counters["candidates_refreshed"] = refresh_candidates(db, affected_domain_ids)
+    counters.update(refresh_local_dropped_matches(db, domain_ids=affected_domain_ids))
+    counters["quota"] = youtube_quota_snapshot(db, settings)
     return counters
 
 
@@ -724,8 +838,18 @@ def run_view_snapshot_batch(
     db: Session,
     settings: Settings,
     client: YouTubeClient,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     now = utcnow()
+    quota_before = youtube_quota_snapshot(db, settings)
+    batch_stats = getattr(client, "fetch_video_statistics_batch", None)
+    use_granular_stats = callable(batch_stats)
+    remaining_units = int(
+        quota_before["stats_remaining" if use_granular_stats else "data_remaining"]
+    )
+    allowed_ids = min(
+        settings.youtube_view_refresh_batch_size,
+        remaining_units * 50,
+    )
     ids = db.scalars(
         select(VideoRefreshState.video_id)
         .join(Video, Video.id == VideoRefreshState.video_id)
@@ -737,8 +861,18 @@ def run_view_snapshot_batch(
             VideoRefreshState.priority_score.desc(),
             VideoRefreshState.next_refresh_at.asc(),
         )
-        .limit(settings.youtube_view_refresh_batch_size)
+        .limit(allowed_ids)
     ).all()
+    required_calls = (len(ids) + 49) // 50
+    quota_granted = not required_calls or consume_youtube_quota(
+        db,
+        settings,
+        stats_units=required_calls if use_granular_stats else 0,
+        data_units=0 if use_granular_stats else required_calls,
+    )
+    if not quota_granted:
+        ids = []
+        required_calls = 0
     counters = {
         "videos_due": len(ids),
         "videos_requested": len(ids),
@@ -746,12 +880,17 @@ def run_view_snapshot_batch(
         "videos_inactive": 0,
         "snapshots": 0,
         "statistics_calls": 0,
+        "statistics_endpoint": (
+            "videos.batchGetStats" if use_granular_stats else "videos.list"
+        ),
         "quota_units_estimate": 0,
+        "quota_exhausted": int(allowed_ids == 0 or not quota_granted),
     }
 
     for start in range(0, len(ids), 500):
         batch = ids[start : start + 500]
-        returned = {item.id: item for item in client.fetch_video_statistics(batch)}
+        items = batch_stats(batch) if use_granular_stats else client.fetch_video_statistics(batch)
+        returned = {item.id: item for item in items}
         counters["statistics_calls"] += (len(batch) + 49) // 50
         captured_at = utcnow()
         for video_id in batch:
@@ -793,6 +932,7 @@ def run_view_snapshot_batch(
         ).all()
     )
     counters["candidates_refreshed"] = refresh_candidates(db, affected_domain_ids)
+    counters["quota"] = youtube_quota_snapshot(db, settings)
     return counters
 
 
@@ -953,6 +1093,30 @@ def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
     settings = get_settings()
     if domain_ids is not None and not domain_ids:
         return 0
+    active_domain_ids = (
+        select(VideoDomain.domain_id)
+        .join(Video, Video.id == VideoDomain.video_id)
+        .where(VideoDomain.active.is_(True), Video.active.is_(True))
+    )
+    stale_candidates = update(Candidate).where(
+        Candidate.domain_id.not_in(active_domain_ids),
+        Candidate.tier != "rejected",
+    )
+    if domain_ids is not None:
+        stale_candidates = stale_candidates.where(Candidate.domain_id.in_(domain_ids))
+    db.execute(
+        stale_candidates.values(
+            tier="rejected",
+            monthly_views=0,
+            verified_30d=False,
+            observation_days=0.0,
+            score=0.0,
+            video_count=0,
+            link_count=0,
+            best_video_id=None,
+            updated_at=utcnow(),
+        )
+    )
     statement = select(Domain).where(Domain.video_links.any(VideoDomain.active.is_(True)))
     if domain_ids is not None:
         statement = statement.where(Domain.id.in_(domain_ids))
@@ -1028,6 +1192,7 @@ def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
         candidate.updated_at = utcnow()
         updated += 1
     db.commit()
+    refresh_youtube_domain_signals(db, settings, domain_ids)
     return updated
 
 
@@ -1055,22 +1220,9 @@ def ingest_dropped_text(db: Session, text: str, source: str) -> dict[str, int]:
         dropped_by_name[name] = dropped
         counters["new"] += 1
 
-    matched_domains: dict[str, Domain] = {}
-    for start in range(0, len(domains), 500):
-        batch = domains[start : start + 500]
-        linked = db.scalars(
-            select(Domain).where(
-                Domain.name.in_(batch),
-                Domain.video_links.any(VideoDomain.active.is_(True)),
-            )
-        ).all()
-        matched_domains.update({item.name: item for item in linked})
-
-    for name, linked_domain in matched_domains.items():
-        dropped_by_name[name].matched_existing_index = True
-        linked_domain.last_checked_at = None
-        counters["matched_index"] += 1
     db.commit()
+    matches = refresh_local_dropped_matches(db, names=domains, limit=max(1, len(domains)))
+    counters["matched_index"] = matches["matched"]
     return counters
 
 
@@ -1156,6 +1308,7 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
             "new_videos": 0,
             "new_domains": 0,
             "new_links": 0,
+            "quota_exhausted": 0,
         }
         try:
             affected_domain_ids: set[int] = set()
@@ -1165,10 +1318,26 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
                 days=365 * settings.published_before_years
             )
             for dropped in candidates:
+                if not consume_youtube_quota(
+                    db,
+                    settings,
+                    search_calls=1,
+                    data_units=1,
+                ):
+                    counters["quota_exhausted"] = 1
+                    break
                 page = client.search_videos(dropped.name, published_before, max_results=50)
                 counters["search_calls"] += 1
                 counters["drops_checked"] += 1
                 counters["videos_returned"] += len(page.video_ids)
+                detail_calls = (len(page.video_ids) + 49) // 50
+                if detail_calls and not consume_youtube_quota(
+                    db,
+                    settings,
+                    data_units=detail_calls,
+                ):
+                    counters["quota_exhausted"] = 1
+                    break
                 matched_videos = [
                     video
                     for video in client.fetch_videos(page.video_ids)
@@ -1189,12 +1358,38 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
                 dropped.youtube_searched_at = utcnow()
                 db.commit()
             refresh_candidates(db, affected_domain_ids)
+            refresh_local_dropped_matches(db, domain_ids=affected_domain_ids)
+            counters["quota"] = youtube_quota_snapshot(db, settings)
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
             db.rollback()
             run = db.get(RunLog, run.id)
             _finish_run(db, run, "failed", counters, str(exc))
             logger.exception("Dropped-domain YouTube search failed")
+
+
+def run_youtube_intelligence_maintenance() -> None:
+    """Advance all permanent YouTube intelligence ledgers without provider calls."""
+    settings = get_settings()
+    with SessionLocal() as db:
+        run = _start_run(db, "youtube_intelligence")
+        counters: dict[str, Any] = {
+            "channels_backfilled": 0,
+            "domain_signals_backfilled": 0,
+            "matched": 0,
+            "new_matches": 0,
+            "refreshed_matches": 0,
+            "provider_cost_usd": 0.0,
+        }
+        try:
+            counters.update(backfill_youtube_intelligence(db, settings))
+            counters["quota"] = youtube_quota_snapshot(db, settings)
+            _finish_run(db, run, "complete", counters)
+        except Exception as exc:
+            db.rollback()
+            run = db.get(RunLog, run.id)
+            _finish_run(db, run, "failed", counters, str(exc))
+            logger.exception("YouTube intelligence maintenance failed")
 
 
 def _email_candidates(
@@ -1204,7 +1399,14 @@ def _email_candidates(
         select(Candidate, Domain, Video)
         .join(Domain, Domain.id == Candidate.domain_id)
         .join(Video, Video.id == Candidate.best_video_id)
-        .where(Candidate.tier.in_(["priority", "qualified"]))
+        .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+        .where(
+            Candidate.tier.in_(["priority", "qualified"]),
+            Domain.availability_status.notin_(
+                ["registered", "aftermarket", "premium", "reserved"]
+            ),
+            or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+        )
         .order_by(
             case((Candidate.tier == "priority", 0), else_=1),
             Candidate.score.desc(),
@@ -1216,9 +1418,25 @@ def _email_candidates(
     return rows
 
 
-def _to_email_candidates(rows: list[tuple[Candidate, Domain, Video]]) -> list[EmailCandidate]:
-    return [
-        EmailCandidate(
+def _to_email_candidates(
+    db: Session,
+    rows: list[tuple[Candidate, Domain, Video]],
+) -> list[EmailCandidate]:
+    domain_ids = [domain.id for _, domain, _ in rows]
+    signals = (
+        db.scalars(
+            select(YouTubeDomainSignal).where(
+                YouTubeDomainSignal.domain_id.in_(domain_ids)
+            )
+        ).all()
+        if domain_ids
+        else []
+    )
+    by_domain = {signal.domain_id: signal for signal in signals}
+    items: list[EmailCandidate] = []
+    for candidate, domain, video in rows:
+        signal = by_domain.get(domain.id)
+        items.append(EmailCandidate(
             domain=domain.name,
             tier=candidate.tier,
             monthly_views=candidate.monthly_views,
@@ -1226,9 +1444,15 @@ def _to_email_candidates(rows: list[tuple[Candidate, Domain, Video]]) -> list[Em
             video_title=video.title,
             video_id=video.id,
             price_usd=domain.registrar_price_usd,
-        )
-        for candidate, domain, video in rows
-    ]
+            traffic_confidence=(signal.traffic_confidence if signal else "collecting"),
+            expected_clicks_monthly=(signal.expected_clicks_monthly if signal else 0),
+            monthly_revenue_low_usd=(signal.monthly_revenue_low_usd if signal else 0.0),
+            monthly_revenue_high_usd=(signal.monthly_revenue_high_usd if signal else 0.0),
+            max_purchase_price_usd=(signal.max_purchase_price_usd if signal else 0.0),
+            buy_score=(signal.buy_score if signal else candidate.score),
+            monetization_route=(signal.monetization_route if signal else ""),
+        ))
+    return items
 
 
 def send_new_candidate_alerts(db: Session) -> int:
@@ -1238,7 +1462,7 @@ def send_new_candidate_alerts(db: Session) -> int:
     rows = _email_candidates(db, only_unnotified=True)
     if not rows:
         return 0
-    items = _to_email_candidates(rows)
+    items = _to_email_candidates(db, rows)
     subject = f"Domain crawler: {len(items)} new qualified hit{'s' if len(items) != 1 else ''}"
     body = (
         "<h2>New YouTube expired-domain hit</h2>"
@@ -1275,7 +1499,9 @@ def _pending_reason(candidate: Candidate, domain: Domain, settings: Settings) ->
     ):
         return "Exact registrar confirmation"
     if not candidate.verified_30d and candidate.monthly_views >= settings.watchlist_monthly_views:
-        return "A full 27-day traffic window"
+        if candidate.observation_days >= settings.youtube_measured_window_days:
+            return "Full 30-day verification (15-day measured signal is ready)"
+        return f"The {settings.youtube_measured_window_days}-day measured checkpoint"
     if candidate.monthly_views < settings.watchlist_monthly_views:
         return f"Traffic to reach {settings.watchlist_monthly_views:,}/month"
     return "Final traffic and availability verification"
@@ -1314,13 +1540,26 @@ def _build_daily_digest_report(
     pipeline_rows = db.execute(
         select(Candidate, Domain)
         .join(Domain, Domain.id == Candidate.domain_id)
-        .where(Candidate.tier.in_(["pending", "watchlist"]))
+        .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+        .where(
+            Candidate.tier.in_(["pending", "watchlist"]),
+            Domain.availability_status.notin_(
+                ["registered", "aftermarket", "premium", "reserved"]
+            ),
+            or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+        )
     ).all()
     pending_summary = {
         "total": len(pipeline_rows),
         "initial": sum(1 for candidate, _ in pipeline_rows if candidate.observation_days < 1),
         "projected": sum(
             1 for candidate, _ in pipeline_rows if 1 <= candidate.observation_days < 27
+        ),
+        "measured_15d": sum(
+            1
+            for candidate, _ in pipeline_rows
+            if candidate.observation_days >= settings.youtube_measured_window_days
+            and not candidate.verified_30d
         ),
         "verification": sum(
             1
@@ -1340,7 +1579,14 @@ def _build_daily_digest_report(
         select(Candidate, Domain, Video)
         .join(Domain, Domain.id == Candidate.domain_id)
         .join(Video, Video.id == Candidate.best_video_id)
-        .where(Candidate.tier.in_(["watchlist", "pending"]))
+        .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+        .where(
+            Candidate.tier.in_(["watchlist", "pending"]),
+            Domain.availability_status.notin_(
+                ["registered", "aftermarket", "premium", "reserved"]
+            ),
+            or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+        )
         .order_by(
             case((Candidate.tier == "watchlist", 0), else_=1),
             Candidate.monthly_views.desc(),
@@ -1487,6 +1733,16 @@ def _build_daily_digest_report(
         "new_videos": _counter_total(recent_runs, "new_videos"),
         "new_domains": _counter_total(recent_runs, "new_domains"),
         "new_links": _counter_total(recent_runs, "new_links"),
+        "playlist_calls": _counter_total(
+            recent_runs, "playlist_calls", "youtube_channel_fanout"
+        ),
+        "fanout_videos_fetched": _counter_total(
+            recent_runs, "videos_fetched", "youtube_channel_fanout"
+        ),
+        "youtube_signals": _counter_total(
+            recent_runs, "domain_signals_backfilled", "youtube_intelligence"
+        ),
+        "local_matches": _counter_total(recent_runs, "new_matches"),
         "videos_updated": _counter_total(recent_runs, "videos_updated"),
         "availability_checked": _counter_total(recent_runs, "checked", "availability_checks"),
         "availability_errors": _counter_total(recent_runs, "errors", "availability_checks"),
@@ -1553,7 +1809,7 @@ def _build_daily_digest_report(
         work=work,
         pending=pending_summary,
         availability=availability_summary,
-        qualified_candidates=_to_email_candidates(qualified_rows[:25]),
+        qualified_candidates=_to_email_candidates(db, qualified_rows[:25]),
         pending_candidates=pending_candidates,
         issues=issues,
         web_priority_count=int(web_tier_counts.get("priority", 0)),
@@ -1718,6 +1974,7 @@ JOB_FUNCTIONS: dict[str, Callable[[], None]] = {
     "availability": run_availability_checks,
     "dropped_feeds": run_dropped_feeds,
     "dropped_search": run_dropped_youtube_search,
+    "youtube_intelligence": run_youtube_intelligence_maintenance,
     "commoncrawl_prefilter": run_commoncrawl_prefilter_job,
     "stackexchange_prefilter": run_stackexchange_prefilter_job,
     "hackernews_prefilter": run_hackernews_prefilter_job,
@@ -1778,6 +2035,12 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         run_web_link_refresh_job,
         IntervalTrigger(hours=6, start_date=start + timedelta(minutes=7)),
         id="web_link_refresh",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_youtube_intelligence_maintenance,
+        IntervalTrigger(hours=2, start_date=start + timedelta(minutes=8)),
+        id="youtube_intelligence",
         replace_existing=True,
     )
     scheduler.add_job(

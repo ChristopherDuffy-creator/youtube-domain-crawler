@@ -125,11 +125,18 @@ class Settings(BaseSettings):
     published_before_years: int = Field(default=3, ge=1, le=15)
     youtube_channel_fanout_enabled: bool = True
     youtube_channel_fanout_interval_minutes: int = Field(default=30, ge=15, le=360)
-    youtube_channel_pages_per_run: int = Field(default=12, ge=1, le=200)
-    youtube_channel_page_burst: int = Field(default=3, ge=1, le=20)
+    youtube_channel_pages_per_run: int = Field(default=100, ge=1, le=200)
+    youtube_channel_page_burst: int = Field(default=12, ge=1, le=20)
     youtube_channel_recrawl_hours: int = Field(default=24, ge=1, le=720)
     youtube_view_refresh_interval_hours: int = Field(default=6, ge=1, le=168)
-    youtube_view_refresh_batch_size: int = Field(default=2_500, ge=50, le=10_000)
+    youtube_view_refresh_batch_size: int = Field(default=50_000, ge=50, le=500_000)
+    youtube_search_daily_limit: int = Field(default=96, ge=1, le=100)
+    youtube_data_daily_limit: int = Field(default=9_000, ge=100, le=10_000)
+    youtube_fanout_daily_data_limit: int = Field(default=8_000, ge=100, le=9_500)
+    youtube_stats_daily_limit: int = Field(default=9_000, ge=100, le=10_000)
+    youtube_local_match_batch_size: int = Field(default=100_000, ge=100, le=1_000_000)
+    youtube_intelligence_backfill_batch_size: int = Field(default=5_000, ge=100, le=50_000)
+    youtube_measured_window_days: int = Field(default=15, ge=7, le=26)
     availability_batch_size: int = Field(default=500, ge=1, le=500)
     scheduler_enabled: bool = True
 

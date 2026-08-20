@@ -75,6 +75,7 @@
     <section class="stats-grid">
       <a class="stat-card{% if result_tier == 'all' %} active{% endif %}" href="/?view=youtube"><span>{{ "{:,}".format(youtube_results) }}</span><small>All YouTube results</small></a>
       <a class="stat-card new{% if result_tier == 'new' %} active{% endif %}" href="/?view=youtube&amp;tier=new"><span>{{ "{:,}".format(youtube_new_count) }}</span><small>New since your last visit</small></a>
+      <a class="stat-card qualified{% if result_tier == 'measured' %} active{% endif %}" href="/?view=youtube&amp;tier=measured"><span>{{ "{:,}".format(youtube_measured_count) }}</span><small>15-day measured — click to view</small></a>
       <a class="stat-card priority{% if result_tier == 'priority' %} active{% endif %}" href="/?view=youtube&amp;tier=priority"><span>{{ "{:,}".format(youtube_tier_counts.get('priority', 0)) }}</span><small>Priority — click to view</small></a>
       <a class="stat-card qualified{% if result_tier == 'qualified' %} active{% endif %}" href="/?view=youtube&amp;tier=qualified"><span>{{ "{:,}".format(youtube_tier_counts.get('qualified', 0)) }}</span><small>Qualified — click to view</small></a>
       <a class="stat-card watchlist{% if result_tier == 'watchlist' %} active{% endif %}" href="/?view=youtube&amp;tier=watchlist"><span>{{ "{:,}".format(youtube_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — click to view</small></a>
@@ -84,7 +85,13 @@
       <article><span>{{ "{:,}".format(cumulative_dropped) }}</span><small>Dropped names checked/loaded</small></article>
       <article><span>{{ "{:,}".format(exact_links) }}</span><small>YouTube exact links indexed</small></article>
       <article><span>{{ "{:,}".format(youtube_channels) }}</span><small>Seeded channels ({{ "{:,}".format(youtube_channels_complete) }} inventories complete)</small></article>
+      <article><span>{{ "{:,}".format(youtube_hot_channels) }} / {{ "{:,}".format(youtube_warm_channels) }}</span><small>Hot / warm channels getting adaptive priority</small></article>
+      <article><span>{{ "{:,}".format(youtube_domain_signals) }}</span><small>Permanent YouTube money cases</small></article>
+      <article><span>{{ "{:,}".format(youtube_local_matches) }}</span><small>Dropped names matched locally</small></article>
       <article><span>{{ "{:,}".format(adaptive_refresh_due) }}</span><small>Linked videos due adaptive refresh</small></article>
+      <article><span>{{ "{:,}".format(youtube_quota.search_remaining) }}</span><small>YouTube searches remaining today (PT)</small></article>
+      <article><span>{{ "{:,}".format(youtube_quota.data_remaining) }}</span><small>YouTube data units remaining today (PT)</small></article>
+      <article><span>{{ "{:,}".format(youtube_quota.stats_remaining) }}</span><small>Granular video-stat units remaining today (PT)</small></article>
     </section>
 
     <section class="panel">
@@ -92,26 +99,27 @@
         <div>
           <p class="eyebrow">YOUTUBE</p>
           <h2>YouTube opportunities</h2>
-          <p>Priority {{ "{:,}".format(priority_threshold) }}+ · Qualified {{ "{:,}".format(qualified_threshold) }}+ · Watchlist {{ "{:,}".format(watch_threshold) }}+</p>
+          <p>Priority {{ "{:,}".format(priority_threshold) }}+ · Qualified {{ "{:,}".format(qualified_threshold) }}+ · Watchlist {{ "{:,}".format(watch_threshold) }}+ · 15-day measured is an early decision signal, not 30-day verification.</p>
           {% if result_tier != 'all' %}<p class="filter-summary">Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> only · <a href="/?view=youtube">Show all results</a></p>{% endif %}
         </div>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Domain</th><th>Tier</th><th>30-day views</th><th>Availability</th><th>Score</th><th>Linked video</th><th>Links</th><th>Action</th></tr>
+            <tr><th>Domain</th><th>Tier / buy score</th><th>Linked-video exposure</th><th>Money case</th><th>Availability</th><th>Linked video</th><th>Links</th><th>Action</th></tr>
           </thead>
           <tbody>
           {% for candidate, domain, video in candidate_rows %}
+            {% set signal = youtube_signal_by_domain.get(domain.id) %}
             <tr{% if decision_by_domain.get(domain.id) == 'ignored' %} class="decision-ignored"{% endif %}>
               <td><strong>{{ domain.name }}</strong>{% if domain.registrar_price_usd %}<small>${{ "%.2f"|format(domain.registrar_price_usd) }}</small>{% endif %}</td>
-              <td><span class="pill {{ candidate.tier }}">{{ candidate.tier }}</span></td>
+              <td><span class="pill {{ candidate.tier }}">{{ candidate.tier }}</span><small>buy score {{ "%.1f"|format(signal.buy_score if signal else candidate.score) }}</small></td>
               <td>
-                <strong>{{ "{:,}".format(candidate.monthly_views) }}</strong>
-                <small>{% if candidate.verified_30d %}verified {{ "%.1f"|format(candidate.observation_days) }}d{% elif candidate.observation_days >= 1 %}projected from {{ "%.1f"|format(candidate.observation_days) }}d{% else %}collecting snapshots{% endif %}</small>
+                <strong>{{ "{:,}".format(signal.monthly_linked_video_exposure if signal else candidate.monthly_views) }}</strong>
+                <small>{% if signal and signal.traffic_confidence == 'measured_15d' %}measured 15-day signal · not 30-day verified{% elif candidate.verified_30d %}verified {{ "%.1f"|format(candidate.observation_days) }}d{% elif candidate.observation_days >= 1 %}projected from {{ "%.1f"|format(candidate.observation_days) }}d{% else %}collecting snapshots{% endif %}</small>
               </td>
+              <td>{% if signal %}<strong>{{ "{:,}".format(signal.expected_clicks_monthly) }} expected clicks/mo</strong><small>${{ "%.0f"|format(signal.monthly_revenue_low_usd) }}–${{ "%.0f"|format(signal.monthly_revenue_high_usd) }} modelled revenue · ceiling ${{ "%.0f"|format(signal.max_purchase_price_usd) }} · {{ signal.monetization_route.replace('_', ' ') }}</small>{% else %}<span>Calculating</span><small>local intelligence maintenance pending</small>{% endif %}</td>
               <td><span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span><small>{{ domain.availability_source or 'not checked' }}</small></td>
-              <td><strong>{{ "%.1f"|format(candidate.score) }}</strong></td>
               <td><a href="https://www.youtube.com/watch?v={{ video.id }}" target="_blank" rel="noopener">{{ video.title[:75] }}</a><small>{{ "{:,}".format(video.lifetime_views) }} lifetime views</small></td>
               <td>{{ candidate.link_count }}<small>{{ candidate.video_count }} video{% if candidate.video_count != 1 %}s{% endif %}</small></td>
               <td>

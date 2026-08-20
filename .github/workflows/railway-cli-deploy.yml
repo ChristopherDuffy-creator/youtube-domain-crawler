@@ -3,7 +3,7 @@ name: Railway CLI Deploy
 # Direct source upload fallback for Railway GitHub snapshot failures.
 # This workflow verifies the live production health endpoint after deployment
 # and publishes a commit status that can be inspected without Railway UI access.
-# Web intelligence engine deployment trigger.
+# YouTube intelligence engine deployment trigger.
 on:
   push:
     branches:
@@ -47,7 +47,7 @@ jobs:
         run: |
           for attempt in $(seq 1 30); do
             body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
-            if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("database") == "ok"; assert p.get("link_hunter_enabled") is False; assert isinstance(p.get("youtube"), dict); assert isinstance(p.get("email"), dict)' 2>/dev/null; then
+            if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("database") == "ok"; assert p.get("link_hunter_enabled") is False; y=p.get("youtube") or {}; assert "domain_signals" in (y.get("totals") or {}); assert "stats_remaining" in (y.get("quota") or {}); assert isinstance(p.get("email"), dict)' 2>/dev/null; then
               echo "$body"
               exit 0
             fi

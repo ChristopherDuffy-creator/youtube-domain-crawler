@@ -33,6 +33,7 @@ from app.models import (
     DashboardDecision,
     Domain,
     DroppedDomain,
+    DroppedDomainMatch,
     FetchVerification,
     LinkObservation,
     Opportunity,
@@ -46,8 +47,11 @@ from app.models import (
     VideoRefreshState,
     WebScreening,
     YouTubeChannel,
+    YouTubeChannelIntelligence,
+    YouTubeDomainSignal,
 )
 from app.provider_budget import provider_daily_budget_snapshot
+from app.youtube_intelligence import youtube_quota_snapshot
 
 settings = get_settings()
 logging.basicConfig(
@@ -70,7 +74,9 @@ DASHBOARD_LAST_ACTIVITY_COOKIE = "expandosaurus_last_activity"
 DASHBOARD_VISIT_GAP_SECONDS = 2 * 60 * 60
 DASHBOARD_VISIT_COOKIE_SECONDS = 365 * 24 * 60 * 60
 DASHBOARD_TIMEZONE = ZoneInfo("Europe/Prague")
-ResultTier = Literal["all", "new", "priority", "qualified", "watchlist", "pending"]
+ResultTier = Literal[
+    "all", "new", "measured", "priority", "qualified", "watchlist", "pending"
+]
 DashboardSystem = Literal["web", "youtube"]
 DecisionStatus = Literal["shortlisted", "bought", "ignored"]
 
@@ -86,6 +92,7 @@ WebEvidenceRow = tuple[
 ]
 
 _HIDDEN_WEB_AVAILABILITY = {"registered", "aftermarket", "premium", "reserved"}
+_HIDDEN_YOUTUBE_AVAILABILITY = _HIDDEN_WEB_AVAILABILITY
 
 
 def _dashboard_time(value: datetime | None) -> datetime | None:
@@ -463,6 +470,10 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 "new_links",
                 "channels_completed",
                 "candidates_refreshed",
+                "hot_pages",
+                "warm_pages",
+                "cold_or_unrated_pages",
+                "quota_exhausted",
                 "errors",
             ),
             "view_snapshots": (
@@ -470,6 +481,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 "videos_updated",
                 "snapshots",
                 "candidates_refreshed",
+                "quota_exhausted",
             ),
             "availability_checks": (
                 "checked",
@@ -488,6 +500,13 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 "new_videos",
                 "new_domains",
                 "new_links",
+                "quota_exhausted",
+            ),
+            "youtube_intelligence": (
+                "channels_backfilled",
+                "domain_signals_backfilled",
+                "matched",
+                "new_matches",
             ),
         }
         latest_youtube_runs: dict[str, object] = {}
@@ -544,6 +563,47 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                     )
                     or 0
                 ),
+                "hot_channels": int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(YouTubeChannelIntelligence)
+                        .where(YouTubeChannelIntelligence.tier == "hot")
+                    )
+                    or 0
+                ),
+                "warm_channels": int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(YouTubeChannelIntelligence)
+                        .where(YouTubeChannelIntelligence.tier == "warm")
+                    )
+                    or 0
+                ),
+                "dormant_channels": int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(YouTubeChannelIntelligence)
+                        .where(YouTubeChannelIntelligence.tier == "dormant")
+                    )
+                    or 0
+                ),
+                "domain_signals": int(
+                    db.scalar(select(func.count()).select_from(YouTubeDomainSignal)) or 0
+                ),
+                "measured_15d": int(
+                    db.scalar(
+                        select(func.count())
+                        .select_from(YouTubeDomainSignal)
+                        .where(
+                            YouTubeDomainSignal.measured_15d.is_(True),
+                            YouTubeDomainSignal.verified_30d.is_(False),
+                        )
+                    )
+                    or 0
+                ),
+                "local_dropped_matches": int(
+                    db.scalar(select(func.count()).select_from(DroppedDomainMatch)) or 0
+                ),
                 "linked_videos_due_refresh": int(
                     db.scalar(
                         select(func.count())
@@ -565,6 +625,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 ),
             },
             "tiers": tier_counts,
+            "quota": youtube_quota_snapshot(db, settings),
             "latest_runs": latest_youtube_runs,
         }
 
@@ -718,10 +779,23 @@ def dashboard(
             select(Candidate, Domain, Video)
             .join(Domain, Domain.id == Candidate.domain_id)
             .join(Video, Video.id == Candidate.best_video_id)
-            .where(Candidate.tier != "rejected")
+            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .where(
+                Candidate.tier != "rejected",
+                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
+                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+            )
         )
         if tier == "new":
             candidate_statement = candidate_statement.where(Candidate.updated_at >= new_since)
+        elif tier == "measured":
+            candidate_statement = candidate_statement.join(
+                YouTubeDomainSignal,
+                YouTubeDomainSignal.domain_id == Domain.id,
+            ).where(
+                YouTubeDomainSignal.measured_15d.is_(True),
+                YouTubeDomainSignal.verified_30d.is_(False),
+            )
         elif tier != "all":
             candidate_statement = candidate_statement.where(Candidate.tier == tier)
         candidate_rows = db.execute(
@@ -776,7 +850,14 @@ def dashboard(
     youtube_tier_counts = {
         tier_name: int(count)
         for tier_name, count in db.execute(
-            select(Candidate.tier, func.count()).group_by(Candidate.tier)
+            select(Candidate.tier, func.count())
+            .join(Domain, Domain.id == Candidate.domain_id)
+            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .where(
+                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
+                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+            )
+            .group_by(Candidate.tier)
         ).all()
     }
     web_tier_counts = {
@@ -796,7 +877,31 @@ def dashboard(
         db.scalar(
             select(func.count())
             .select_from(Candidate)
-            .where(Candidate.tier != "rejected", Candidate.updated_at >= new_since)
+            .join(Domain, Domain.id == Candidate.domain_id)
+            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .where(
+                Candidate.tier != "rejected",
+                Candidate.updated_at >= new_since,
+                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
+                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+            )
+        )
+        or 0
+    )
+    youtube_measured_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(YouTubeDomainSignal)
+            .join(Candidate, Candidate.domain_id == YouTubeDomainSignal.domain_id)
+            .join(Domain, Domain.id == Candidate.domain_id)
+            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .where(
+                Candidate.tier != "rejected",
+                YouTubeDomainSignal.measured_15d.is_(True),
+                YouTubeDomainSignal.verified_30d.is_(False),
+                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
+                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+            )
         )
         or 0
     )
@@ -836,6 +941,29 @@ def dashboard(
         )
         or 0
     )
+    youtube_hot_channels = (
+        db.scalar(
+            select(func.count())
+            .select_from(YouTubeChannelIntelligence)
+            .where(YouTubeChannelIntelligence.tier == "hot")
+        )
+        or 0
+    )
+    youtube_warm_channels = (
+        db.scalar(
+            select(func.count())
+            .select_from(YouTubeChannelIntelligence)
+            .where(YouTubeChannelIntelligence.tier == "warm")
+        )
+        or 0
+    )
+    youtube_domain_signals = (
+        db.scalar(select(func.count()).select_from(YouTubeDomainSignal)) or 0
+    )
+    youtube_local_matches = (
+        db.scalar(select(func.count()).select_from(DroppedDomainMatch)) or 0
+    )
+    youtube_quota = youtube_quota_snapshot(db, settings)
     adaptive_refresh_due = (
         db.scalar(
             select(func.count())
@@ -876,6 +1004,16 @@ def dashboard(
             )
         ).all()
     decision_by_domain = {decision.domain_id: decision.status for decision in decisions}
+    youtube_signal_by_domain: dict[int, YouTubeDomainSignal] = {}
+    if view == "youtube" and displayed_domain_ids:
+        youtube_signals = db.scalars(
+            select(YouTubeDomainSignal).where(
+                YouTubeDomainSignal.domain_id.in_(displayed_domain_ids)
+            )
+        ).all()
+        youtube_signal_by_domain = {
+            signal.domain_id: signal for signal in youtube_signals
+        }
     decision_counts = {
         decision_status: int(count)
         for decision_status, count in db.execute(
@@ -905,9 +1043,11 @@ def dashboard(
             "youtube_tier_counts": youtube_tier_counts,
             "web_tier_counts": web_tier_counts,
             "youtube_new_count": youtube_new_count,
+            "youtube_measured_count": youtube_measured_count,
             "web_new_count": web_new_count,
             "new_since": new_since,
             "decision_by_domain": decision_by_domain,
+            "youtube_signal_by_domain": youtube_signal_by_domain,
             "decision_counts": decision_counts,
             "return_to": return_to,
             "daily_budget": daily_budget,
@@ -919,6 +1059,11 @@ def dashboard(
             "exact_links": exact_links,
             "youtube_channels": youtube_channels,
             "youtube_channels_complete": youtube_channels_complete,
+            "youtube_hot_channels": youtube_hot_channels,
+            "youtube_warm_channels": youtube_warm_channels,
+            "youtube_domain_signals": youtube_domain_signals,
+            "youtube_local_matches": youtube_local_matches,
+            "youtube_quota": youtube_quota,
             "adaptive_refresh_due": adaptive_refresh_due,
             "dropped_ingested": dropped_ingested,
             "cumulative_videos": settings.legacy_videos_checked + crawler_videos,
@@ -959,9 +1104,15 @@ def export_candidates(
     db: Session = Depends(get_db),
 ) -> Response:
     statement = (
-        select(Candidate, Domain, Video)
+        select(Candidate, Domain, Video, YouTubeDomainSignal)
         .join(Domain, Domain.id == Candidate.domain_id)
         .join(Video, Video.id == Candidate.best_video_id)
+        .outerjoin(YouTubeDomainSignal, YouTubeDomainSignal.domain_id == Domain.id)
+        .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+        .where(
+            Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
+            or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+        )
     )
     if tier == "all":
         statement = statement.where(Candidate.tier.in_(["priority", "qualified", "watchlist"]))
@@ -970,6 +1121,11 @@ def export_candidates(
         statement = statement.where(
             Candidate.tier != "rejected",
             Candidate.updated_at >= new_since,
+        )
+    elif tier == "measured":
+        statement = statement.where(
+            YouTubeDomainSignal.measured_15d.is_(True),
+            YouTubeDomainSignal.verified_30d.is_(False),
         )
     else:
         statement = statement.where(Candidate.tier == tier)
@@ -990,9 +1146,17 @@ def export_candidates(
             "exact_links",
             "best_video_title",
             "best_video_url",
+            "traffic_confidence",
+            "monthly_linked_video_exposure",
+            "expected_outbound_clicks_monthly",
+            "monthly_revenue_low_usd",
+            "monthly_revenue_high_usd",
+            "suggested_purchase_ceiling_usd",
+            "buy_score",
+            "monetization_route",
         ]
     )
-    for candidate, domain, video in rows:
+    for candidate, domain, video, signal in rows:
         writer.writerow(
             [
                 domain.name,
@@ -1007,6 +1171,14 @@ def export_candidates(
                 candidate.link_count,
                 video.title,
                 f"https://www.youtube.com/watch?v={video.id}",
+                signal.traffic_confidence if signal is not None else "collecting",
+                signal.monthly_linked_video_exposure if signal is not None else 0,
+                signal.expected_clicks_monthly if signal is not None else 0,
+                signal.monthly_revenue_low_usd if signal is not None else 0.0,
+                signal.monthly_revenue_high_usd if signal is not None else 0.0,
+                signal.max_purchase_price_usd if signal is not None else 0.0,
+                signal.buy_score if signal is not None else 0.0,
+                signal.monetization_route if signal is not None else "",
             ]
         )
     return Response(
