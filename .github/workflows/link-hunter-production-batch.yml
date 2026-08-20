@@ -108,11 +108,26 @@ jobs:
             finish "error" "Dashboard preview credential unavailable; zero paid calls made"
           fi
 
-          curl -fsS -u "admin:$dashboard_password" \
+          preview_cookie_jar="$(mktemp)"
+          login_code="$(
+            curl -sS -o /dev/null -w '%{http_code}' \
+              --cookie-jar "$preview_cookie_jar" \
+              --data-urlencode "username=admin" \
+              --data-urlencode "password=$dashboard_password" \
+              --data-urlencode "next=/admin/link-hunter/proof-preview" \
+              "$PUBLIC_URL/login"
+          )"
+          unset dashboard_password
+          if [ "$login_code" != "303" ]; then
+            rm -f "$preview_cookie_jar"
+            finish "error" "Dashboard preview login failed; zero paid calls made"
+          fi
+
+          curl -fsS --cookie "$preview_cookie_jar" \
             "$PUBLIC_URL/admin/link-hunter/proof-preview" \
             >/tmp/link-hunter-production-preview.json 2>/tmp/link-hunter-production-preview.err
           preview_code=$?
-          unset dashboard_password
+          rm -f "$preview_cookie_jar"
           if [ $preview_code -ne 0 ]; then
             rm -f /tmp/link-hunter-production-preview.json /tmp/link-hunter-production-preview.err
             finish "error" "Zero-cost production preview request failed"

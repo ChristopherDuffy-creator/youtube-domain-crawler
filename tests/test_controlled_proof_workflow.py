@@ -27,6 +27,10 @@ def test_controlled_proof_uses_zero_cost_production_preview_before_activation() 
     activation = text.index("LINK_HUNTER_ENABLED=true")
 
     assert preflight < activation
+    assert '"$PUBLIC_URL/login"' in text
+    assert '--cookie-jar "$preflight_cookie_jar"' in text
+    assert '--cookie "$preflight_cookie_jar"' in text
+    assert '-u "admin:$dashboard_password"' not in text
     assert 'payload.get(\'provider_calls_made\') == 0' in text
     assert "preview.get('paid_requests_made') == 0" in text
     assert "preview.get('ready_for_controlled_proof') is True" in text
