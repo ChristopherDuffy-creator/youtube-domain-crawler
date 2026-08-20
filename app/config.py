@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     youtube_channel_recrawl_hours: int = Field(default=24, ge=1, le=720)
     youtube_view_refresh_interval_hours: int = Field(default=6, ge=1, le=168)
     youtube_view_refresh_batch_size: int = Field(default=2_500, ge=50, le=10_000)
-    availability_batch_size: int = Field(default=100, ge=1, le=500)
+    availability_batch_size: int = Field(default=500, ge=1, le=500)
     scheduler_enabled: bool = True
 
     porkbun_api_key: str = ""

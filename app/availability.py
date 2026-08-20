@@ -34,12 +34,15 @@ class AvailabilityResult:
 
 
 def classify_rdap_dns(rdap_status: str, dns_status: str) -> str:
+    # A domain that resolves is necessarily registered, even when the shared
+    # RDAP endpoint is rate-limited.  Treat DNS as decisive for rejection so
+    # obvious live businesses never remain in the candidate queue as unknown.
+    if dns_status == "resolves":
+        return "registered"
     if rdap_status == "registered":
         return "registered"
     if rdap_status == "not_found" and dns_status == "nxdomain":
         return "likely_available"
-    if rdap_status == "not_found" and dns_status == "resolves":
-        return "conflicting"
     return "unknown"
 
 
@@ -199,8 +202,18 @@ def check_porkbun(domain: str, settings: Settings) -> AvailabilityResult:
 def check_domain(
     domain: str, settings: Settings, exact_registrar_check: bool = False
 ) -> AvailabilityResult:
-    rdap_status, rdap_error = check_rdap(domain)
     dns_status = check_dns(domain)
+    if dns_status == "resolves":
+        return AvailabilityResult(
+            status="registered",
+            source="dns",
+            rdap_status="skipped",
+            dns_status=dns_status,
+        )
+
+    # RDAP is the scarce/rate-limited check.  Only spend it on names for which
+    # DNS did not already prove an active registration.
+    rdap_status, rdap_error = check_rdap(domain)
     status = classify_rdap_dns(rdap_status, dns_status)
     if status == "likely_available" and settings.registrar_enabled and exact_registrar_check:
         registrar_result = check_porkbun(domain, settings)
