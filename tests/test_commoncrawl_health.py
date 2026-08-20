@@ -124,5 +124,7 @@ def test_health_exposes_sanitized_youtube_and_email_operations() -> None:
             "errors": 1,
         },
         "finished_at": now.replace(tzinfo=None).isoformat(),
+        "failure_stage": None,
+        "error_summary": None,
     }
     assert "private-candidate.example" not in str(payload)

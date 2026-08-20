@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import io
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -93,6 +94,21 @@ WebEvidenceRow = tuple[
 
 _HIDDEN_WEB_AVAILABILITY = {"registered", "aftermarket", "premium", "reserved"}
 _HIDDEN_YOUTUBE_AVAILABILITY = _HIDDEN_WEB_AVAILABILITY
+
+
+def _sanitized_job_error(value: str | None) -> str | None:
+    """Expose enough failure context for operations without leaking targets or secrets."""
+    if not value:
+        return None
+    cleaned = re.sub(r"https?://\S+", "[url]", value)
+    cleaned = re.sub(
+        r"\b[A-Za-z0-9.-]+\.(?:com|net|org|io|co|dev|app|xyz|info|biz)\b",
+        "[domain]",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\bAIza[A-Za-z0-9_-]+\b", "[secret]", cleaned)
+    return cleaned[:500]
 
 
 def _dashboard_time(value: datetime | None) -> datetime | None:
@@ -531,6 +547,8 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                     if latest.finished_at is not None
                     else None
                 ),
+                "failure_stage": raw_counters.get("failure_stage"),
+                "error_summary": _sanitized_job_error(latest.error),
             }
 
         tier_counts = {
