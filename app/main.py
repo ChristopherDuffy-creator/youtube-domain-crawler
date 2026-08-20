@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.backup import build_logical_snapshot
 from app.config import get_settings
-from app.database import Base, SessionLocal, engine, get_db
+from app.database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
 from app.jobs import JOB_FUNCTIONS, build_scheduler, ensure_seed_data, ingest_dropped_text
 from app.link_hunter import run_provider_proof_job
 from app.link_hunter_preview import build_provider_proof_preview
@@ -127,6 +127,7 @@ templates.env.filters["dashboard_time"] = _dashboard_time
 async def lifespan(_: FastAPI):
     global scheduler
     Base.metadata.create_all(bind=engine)
+    ensure_runtime_schema(engine)
     with SessionLocal() as db:
         ensure_seed_data(db)
     if settings.scheduler_enabled:
