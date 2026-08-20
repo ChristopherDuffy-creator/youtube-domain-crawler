@@ -3,7 +3,7 @@ name: Railway CLI Deploy
 # Direct source upload fallback for Railway GitHub snapshot failures.
 # This workflow verifies the live production health endpoint after deployment
 # and publishes a commit status that can be inspected without Railway UI access.
-# YouTube intelligence observability deployment trigger.
+# YouTube 64-bit aggregate production deployment trigger.
 on:
   push:
     branches:
