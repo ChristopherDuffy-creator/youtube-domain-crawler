@@ -38,8 +38,6 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
     recent_cutoff = utcnow() - timedelta(hours=6)
     ranked = ("watchlist", "qualified", "priority")
 
-    # Prioritise visible opportunities, then recently touched rejected rows from
-    # the short-lived explicit-URL cleanup. Keep the repair bounded at startup.
     candidate_rows = db.execute(
         select(Candidate.domain_id, Candidate.tier, Candidate.updated_at)
         .where(
@@ -84,16 +82,12 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
                 affected.add(link.domain_id)
                 removed += 1
             elif not link.active and plausible and recent_rejected:
-                # Restore only rows that were just demoted by the temporary
-                # clickable-only cleanup; do not resurrect arbitrary old links.
                 link.active = True
                 affected.add(link.domain_id)
                 restored += 1
         db.commit()
 
     if affected:
-        # Rebuild only the touched domains in small chunks so Candidate and
-        # YouTubeDomainSignal agree without recreating the Railway RAM spike.
         from app.jobs import refresh_candidates
 
         for chunk in _chunks(sorted(affected), 25):
@@ -179,23 +173,44 @@ def enforce_candidate_signal_consistency(
     settings: Settings,
     domain_ids: set[int] | None = None,
 ) -> int:
-    weak_signal_domains = select(YouTubeDomainSignal.domain_id).where(
-        YouTubeDomainSignal.monthly_linked_video_exposure < settings.watchlist_monthly_views
-    )
-    if domain_ids is not None:
-        if not domain_ids:
-            return 0
-        weak_signal_domains = weak_signal_domains.where(
-            YouTubeDomainSignal.domain_id.in_(domain_ids)
-        )
+    """Fail closed when a ranked Candidate disagrees with its displayed signal.
 
-    result = db.execute(
-        update(Candidate)
-        .where(
-            Candidate.domain_id.in_(weak_signal_domains),
-            Candidate.tier.in_(("watchlist", "qualified", "priority")),
-        )
-        .values(tier="pending", updated_at=utcnow())
+    A candidate may only remain in a ranked tier if a YouTubeDomainSignal exists
+    and its current linked-video exposure still meets that tier's own floor.
+    Missing or stale-low signals are demoted to Pending until the normal refresh
+    pipeline recalculates the candidate. This keeps the dashboard trustworthy
+    even if a prior job was interrupted between Candidate and signal updates.
+    """
+    if domain_ids is not None and not domain_ids:
+        return 0
+
+    scope = []
+    if domain_ids is not None:
+        scope.append(Candidate.domain_id.in_(domain_ids))
+
+    thresholds = (
+        ("watchlist", settings.watchlist_monthly_views),
+        ("qualified", settings.qualified_monthly_views),
+        ("priority", settings.priority_monthly_views),
     )
+    changed = 0
+    for tier, threshold in thresholds:
+        sufficient_signal = exists(
+            select(YouTubeDomainSignal.domain_id).where(
+                YouTubeDomainSignal.domain_id == Candidate.domain_id,
+                YouTubeDomainSignal.monthly_linked_video_exposure >= threshold,
+            )
+        )
+        result = db.execute(
+            update(Candidate)
+            .where(
+                Candidate.tier == tier,
+                ~sufficient_signal,
+                *scope,
+            )
+            .values(tier="pending", updated_at=utcnow())
+        )
+        changed += int(result.rowcount or 0)
+
     db.commit()
-    return int(result.rowcount or 0)
+    return changed
