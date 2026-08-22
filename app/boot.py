@@ -2,10 +2,9 @@ from __future__ import annotations
 
 """Memory-safe production bootstrap for Railway.
 
-The crawler now has enough indexed data that the original per-run defaults can
-materialise too many ORM rows at once. Cap the memory-heavy batches before the
-application settings are imported, serialize background jobs so two large jobs
-cannot spike RAM together, and run lightweight YouTube data-hygiene repairs.
+Production safe mode keeps the crawler advancing in small resumable batches.
+The database is the permanent ledger, so lowering batch sizes reduces peak RAM
+without losing work or changing opportunity rules.
 """
 
 import logging
@@ -14,15 +13,19 @@ from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
-# These are throughput caps, not feature disables. Jobs are resumable and recur,
-# so smaller batches continue advancing the permanent ledgers with a lower peak
-# memory footprint.
+# Conservative production caps after a second Railway OOM. These are temporary
+# throughput caps, not feature disables. The recurring jobs resume from the
+# permanent database ledger on every run.
 _BATCH_CAPS = {
-    "YOUTUBE_CHANNEL_PAGES_PER_RUN": 30,
-    "YOUTUBE_VIEW_REFRESH_BATCH_SIZE": 2_000,
-    "YOUTUBE_INTELLIGENCE_BACKFILL_BATCH_SIZE": 500,
-    "YOUTUBE_LOCAL_MATCH_BATCH_SIZE": 20_000,
-    "LINK_HUNTER_FREE_SCREEN_BATCH_SIZE": 5_000,
+    "YOUTUBE_CHANNEL_PAGES_PER_RUN": 10,
+    "YOUTUBE_CHANNEL_PAGE_BURST": 3,
+    "YOUTUBE_VIEW_REFRESH_BATCH_SIZE": 500,
+    "YOUTUBE_INTELLIGENCE_BACKFILL_BATCH_SIZE": 100,
+    "YOUTUBE_LOCAL_MATCH_BATCH_SIZE": 5_000,
+    "AVAILABILITY_BATCH_SIZE": 100,
+    "LINK_HUNTER_SUMMARY_BATCH_SIZE": 50,
+    "LINK_HUNTER_LINK_REFRESH_BATCH_SIZE": 50,
+    "LINK_HUNTER_FREE_SCREEN_BATCH_SIZE": 1_000,
 }
 
 
@@ -34,8 +37,6 @@ def _cap_int_env(name: str, maximum: int) -> None:
     try:
         value = int(raw)
     except ValueError:
-        # Leave validation to Settings so a bad production variable remains
-        # visible rather than being silently hidden by the bootstrap.
         return
     if value > maximum:
         logger.warning("Capping %s from %s to %s for Railway memory safety", name, value, maximum)
@@ -66,8 +67,8 @@ _original_lifespan_context = main_module.app.router.lifespan_context
 
 def _memory_safe_build_scheduler(settings):
     scheduler = _original_build_scheduler(settings)
-    # The old scheduler could run several memory-heavy jobs concurrently. One
-    # worker keeps the web app responsive while crawler jobs execute serially.
+    # One worker means memory-heavy crawler jobs cannot overlap. If several are
+    # due together they queue and run sequentially rather than multiplying RAM.
     scheduler.configure(executors={"default": ThreadPoolExecutor(max_workers=1)})
     return scheduler
 
@@ -91,8 +92,9 @@ def _consistent_refresh_youtube_domain_signals(
 
 @asynccontextmanager
 async def _production_lifespan(app):
-    # Enter the original lifespan first so create_all/runtime migrations have
-    # completed before the cleanup touches production tables.
+    # Schema setup/scheduler start happens in the original lifespan. The hygiene
+    # pass is bounded and idempotent; it removes legacy false matches while
+    # preserving genuine bare domains.
     async with _original_lifespan_context(app):
         with SessionLocal() as db:
             purge_legacy_bare_youtube_links(db, main_module.settings)
@@ -100,9 +102,6 @@ async def _production_lifespan(app):
 
 
 main_module.build_scheduler = _memory_safe_build_scheduler
-# jobs.py imported the function directly, while backfill code resolves it from
-# youtube_intelligence.py. Patch both references so interrupted/stale signal
-# refreshes can never leave a visible "Watchlist · 0 views" contradiction.
 youtube_intelligence_module.refresh_youtube_domain_signals = (
     _consistent_refresh_youtube_domain_signals
 )
