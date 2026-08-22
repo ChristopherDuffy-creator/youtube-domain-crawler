@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
-from sqlalchemy import delete, exists, select, update
+from sqlalchemy import case, delete, exists, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.domain_tools import is_plausible_youtube_link
 from app.models import Candidate, VideoDomain, VideoRefreshState, YouTubeDomainSignal, utcnow
 
 logger = logging.getLogger(__name__)
@@ -19,23 +21,83 @@ def _is_explicit_url_clause():
     )
 
 
-def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str, int]:
-    """Remove old prose/file-name matches that were incorrectly indexed as links.
+def _chunks(values: list[int], size: int = 50):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
-    This is database-side and idempotent so it is safe at every deployment. It
-    deliberately keeps dropped-domain list parsing broad; only YouTube outbound
-    links are required to have an explicit URL form.
+
+def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str, int]:
+    """Remove ambiguous bare-text matches without deleting real bare domains.
+
+    Genuine YouTube descriptions often contain ``example.com`` without http or
+    www, so bare links remain first-class evidence. The parser's plausibility
+    rules reject obvious prose/file collisions such as B.Tech, 3.how, m.ch and
+    manage.py. This deployment repair also restores plausible bare links for
+    candidates that the short-lived clickable-only hotfix may have demoted.
     """
-    bare_active = VideoDomain.active.is_(True) & ~_is_explicit_url_clause()
-    removed = int(
-        db.scalar(
-            select(VideoDomain.id)
-            .where(bare_active)
-            .limit(1)
+    recent_cutoff = utcnow() - timedelta(hours=6)
+    ranked = ("watchlist", "qualified", "priority")
+
+    # Prioritise visible opportunities, then recently touched rejected rows from
+    # the short-lived explicit-URL cleanup. Keep the repair bounded at startup.
+    candidate_rows = db.execute(
+        select(Candidate.domain_id, Candidate.tier, Candidate.updated_at)
+        .where(
+            or_(
+                Candidate.tier.in_(ranked),
+                Candidate.updated_at >= recent_cutoff,
+            )
         )
-        is not None
-    )
-    db.execute(update(VideoDomain).where(bare_active).values(active=False))
+        .order_by(
+            case((Candidate.tier.in_(ranked), 0), else_=1),
+            Candidate.updated_at.desc(),
+            Candidate.domain_id.asc(),
+        )
+        .limit(750)
+    ).all()
+    candidate_state = {
+        int(domain_id): (str(tier), updated_at)
+        for domain_id, tier, updated_at in candidate_rows
+    }
+
+    removed = 0
+    restored = 0
+    affected: set[int] = set()
+    for chunk in _chunks(list(candidate_state), 50):
+        bare_links = db.scalars(
+            select(VideoDomain).where(
+                VideoDomain.domain_id.in_(chunk),
+                ~_is_explicit_url_clause(),
+            )
+        ).all()
+        for link in bare_links:
+            plausible = is_plausible_youtube_link(link.raw_url)
+            state = candidate_state.get(link.domain_id)
+            recent_rejected = bool(
+                state
+                and state[0] == "rejected"
+                and state[1] is not None
+                and state[1] >= recent_cutoff
+            )
+            if link.active and not plausible:
+                link.active = False
+                affected.add(link.domain_id)
+                removed += 1
+            elif not link.active and plausible and recent_rejected:
+                # Restore only rows that were just demoted by the temporary
+                # clickable-only cleanup; do not resurrect arbitrary old links.
+                link.active = True
+                affected.add(link.domain_id)
+                restored += 1
+        db.commit()
+
+    if affected:
+        # Rebuild only the touched domains in small chunks so Candidate and
+        # YouTubeDomainSignal agree without recreating the Railway RAM spike.
+        from app.jobs import refresh_candidates
+
+        for chunk in _chunks(sorted(affected), 25):
+            refresh_candidates(db, set(chunk))
 
     active_link_for_candidate = exists(
         select(VideoDomain.id).where(
@@ -98,12 +160,18 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
     db.execute(delete(VideoRefreshState).where(~active_link_for_refresh))
     db.commit()
 
-    # A Watchlist/Qualified/Priority candidate cannot legitimately have a lower
-    # aggregate exposure than the watch threshold. If an interrupted refresh
-    # leaves a stale Candidate beside a newer zero/low signal, fail closed to
-    # Pending instead of displaying an impossible "Watchlist · 0 views" row.
     enforce_candidate_signal_consistency(db, settings)
-    return {"legacy_bare_links_found": removed}
+    logger.info(
+        "YouTube bare-link hygiene removed=%s restored=%s affected_domains=%s",
+        removed,
+        restored,
+        len(affected),
+    )
+    return {
+        "legacy_bare_links_removed": removed,
+        "plausible_bare_links_restored": restored,
+        "affected_domains": len(affected),
+    }
 
 
 def enforce_candidate_signal_consistency(
