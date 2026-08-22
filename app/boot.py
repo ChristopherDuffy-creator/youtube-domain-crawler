@@ -7,13 +7,14 @@ The database is the permanent ledger, so lowering batch sizes reduces peak RAM
 without losing work or changing opportunity rules.
 """
 
+import gc
 import logging
 import os
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
-# Conservative production caps after a second Railway OOM. These are temporary
+# Conservative production caps after repeated Railway OOMs. These are temporary
 # throughput caps, not feature disables. The recurring jobs resume from the
 # permanent database ledger on every run.
 _BATCH_CAPS = {
@@ -27,6 +28,14 @@ _BATCH_CAPS = {
     "LINK_HUNTER_LINK_REFRESH_BATCH_SIZE": 50,
     "LINK_HUNTER_FREE_SCREEN_BATCH_SIZE": 1_000,
 }
+
+# refresh_youtube_domain_signals historically eager-loaded Domain -> links ->
+# Video -> snapshots for every affected domain in one ORM graph. A fan-out run
+# can hand refresh_candidates thousands of affected domains, bypassing the
+# normal backfill batch-size setting and exhausting even an 8 GB Railway
+# replica. Keep this graph tiny regardless of the caller's input size.
+_SIGNAL_DOMAIN_CHUNK = 5
+_SIGNAL_UNSCOPED_LIMIT = 25
 
 
 def _cap_int_env(name: str, maximum: int) -> None:
@@ -73,6 +82,14 @@ def _memory_safe_build_scheduler(settings):
     return scheduler
 
 
+def _release_orm_memory(db) -> None:
+    """Drop loaded relationship state between signal chunks."""
+    try:
+        db.expire_all()
+    finally:
+        gc.collect()
+
+
 def _consistent_refresh_youtube_domain_signals(
     db,
     settings,
@@ -80,13 +97,40 @@ def _consistent_refresh_youtube_domain_signals(
     *,
     limit=None,
 ):
+    # Scoped refreshes are the dangerous path: refresh_candidates may pass a
+    # very large set of domain IDs after channel fan-out. Process only a handful
+    # of domains at a time so links/videos/snapshots from one group can be freed
+    # before the next group is loaded.
+    if domain_ids is not None:
+        ids = sorted(int(value) for value in domain_ids)
+        if not ids:
+            return 0
+        updated = 0
+        for start in range(0, len(ids), _SIGNAL_DOMAIN_CHUNK):
+            chunk = set(ids[start : start + _SIGNAL_DOMAIN_CHUNK])
+            updated += _original_refresh_youtube_domain_signals(
+                db,
+                settings,
+                chunk,
+                limit=None,
+            )
+            enforce_candidate_signal_consistency(db, settings, chunk)
+            _release_orm_memory(db)
+        return updated
+
+    # Never allow an unscoped production call to materialise every active
+    # domain. Even if a caller forgets a limit, retain a hard production guard.
+    effective_limit = _SIGNAL_UNSCOPED_LIMIT if limit is None else min(
+        int(limit), _SIGNAL_UNSCOPED_LIMIT
+    )
     updated = _original_refresh_youtube_domain_signals(
         db,
         settings,
-        domain_ids,
-        limit=limit,
+        None,
+        limit=effective_limit,
     )
-    enforce_candidate_signal_consistency(db, settings, domain_ids)
+    enforce_candidate_signal_consistency(db, settings, None)
+    _release_orm_memory(db)
     return updated
 
 
