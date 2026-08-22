@@ -2,9 +2,9 @@ from __future__ import annotations
 
 """Memory-safe production bootstrap for Railway.
 
-Production safe mode keeps the crawler advancing in small resumable batches.
-The database is the permanent ledger, so lowering batch sizes reduces peak RAM
-without losing work or changing opportunity rules.
+High-throughput production mode. The expensive YouTube money-signal ORM graph
+is independently hard-chunked, so discovery/refresh jobs can run at useful
+scale without materialising thousands of domains and snapshots at once.
 """
 
 import gc
@@ -14,26 +14,27 @@ from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
-# Conservative production caps after repeated Railway OOMs. These are temporary
-# throughput caps, not feature disables. The recurring jobs resume from the
-# permanent database ledger on every run.
+# Restore most of the crawler's production throughput now that the actual OOM
+# path is guarded below. These remain sensible ceilings rather than the former
+# all-out maxima; they can be raised again after production memory is observed.
 _BATCH_CAPS = {
-    "YOUTUBE_CHANNEL_PAGES_PER_RUN": 10,
-    "YOUTUBE_CHANNEL_PAGE_BURST": 3,
-    "YOUTUBE_VIEW_REFRESH_BATCH_SIZE": 500,
-    "YOUTUBE_INTELLIGENCE_BACKFILL_BATCH_SIZE": 100,
-    "YOUTUBE_LOCAL_MATCH_BATCH_SIZE": 5_000,
-    "AVAILABILITY_BATCH_SIZE": 100,
-    "LINK_HUNTER_SUMMARY_BATCH_SIZE": 50,
-    "LINK_HUNTER_LINK_REFRESH_BATCH_SIZE": 50,
-    "LINK_HUNTER_FREE_SCREEN_BATCH_SIZE": 1_000,
+    "YOUTUBE_CHANNEL_PAGES_PER_RUN": 75,
+    "YOUTUBE_CHANNEL_PAGE_BURST": 8,
+    "YOUTUBE_VIEW_REFRESH_BATCH_SIZE": 20_000,
+    "YOUTUBE_INTELLIGENCE_BACKFILL_BATCH_SIZE": 1_000,
+    "YOUTUBE_LOCAL_MATCH_BATCH_SIZE": 50_000,
+    "AVAILABILITY_BATCH_SIZE": 300,
+    "LINK_HUNTER_SUMMARY_BATCH_SIZE": 500,
+    "LINK_HUNTER_LINK_REFRESH_BATCH_SIZE": 500,
+    "LINK_HUNTER_FREE_SCREEN_BATCH_SIZE": 10_000,
 }
 
 # refresh_youtube_domain_signals historically eager-loaded Domain -> links ->
 # Video -> snapshots for every affected domain in one ORM graph. A fan-out run
-# can hand refresh_candidates thousands of affected domains, bypassing the
-# normal backfill batch-size setting and exhausting even an 8 GB Railway
-# replica. Keep this graph tiny regardless of the caller's input size.
+# can hand refresh_candidates thousands of affected domains, bypassing ordinary
+# job batch settings and exhausting even an 8 GB Railway replica. This is the
+# hard memory boundary and stays tiny even while the surrounding crawler runs
+# at high throughput.
 _SIGNAL_DOMAIN_CHUNK = 5
 _SIGNAL_UNSCOPED_LIMIT = 25
 
@@ -76,8 +77,8 @@ _original_lifespan_context = main_module.app.router.lifespan_context
 
 def _memory_safe_build_scheduler(settings):
     scheduler = _original_build_scheduler(settings)
-    # One worker means memory-heavy crawler jobs cannot overlap. If several are
-    # due together they queue and run sequentially rather than multiplying RAM.
+    # Keep heavy jobs serialized. Higher per-job throughput is safe when jobs do
+    # not overlap and the signal graph is independently hard-chunked below.
     scheduler.configure(executors={"default": ThreadPoolExecutor(max_workers=1)})
     return scheduler
 
@@ -99,8 +100,7 @@ def _consistent_refresh_youtube_domain_signals(
 ):
     # Scoped refreshes are the dangerous path: refresh_candidates may pass a
     # very large set of domain IDs after channel fan-out. Process only a handful
-    # of domains at a time so links/videos/snapshots from one group can be freed
-    # before the next group is loaded.
+    # at a time so links/videos/snapshots from one group can be freed first.
     if domain_ids is not None:
         ids = sorted(int(value) for value in domain_ids)
         if not ids:
