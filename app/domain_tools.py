@@ -9,7 +9,16 @@ import tldextract
 
 _extractor = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 
+# YouTube opportunity links must be explicit URLs. The old parser also accepted
+# any bare token shaped like a domain, which turned ordinary prose such as
+# "B.Tech" and filenames such as "manage.py" into fake outbound links.
 URL_RE = re.compile(
+    r"(?i)(?<![@\w])(?:https?://|www\.)[^\s<>\[\]{}\"']+"
+)
+
+# Dropped-domain TXT/CSV ingestion is intentionally broader: those inputs really
+# are lists of domain names and therefore do not need a URL scheme.
+DOMAIN_RE = re.compile(
     r"(?i)(?<![@\w])(?:https?://|www\.)[^\s<>\[\]{}\"']+"
     r"|(?<![@\w])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z]{2,63}(?:/[^\s<>\[\]{}\"']*)?"
@@ -184,7 +193,7 @@ def extract_links(description: str) -> list[ExtractedLink]:
                 position=round(match.start() / length, 4),
                 context=context,
                 has_cta=any(phrase in context_lower for phrase in CTA_PHRASES),
-                clickable=bool(re.match(r"(?i)^(?:https?://|www\.)", raw)),
+                clickable=True,
             )
         )
     return results
@@ -194,7 +203,7 @@ def extract_domain_names(text: str) -> list[str]:
     """Extract valid, non-platform domains from dropped-domain text/CSV."""
     names: list[str] = []
     seen: set[str] = set()
-    for match in URL_RE.finditer(text or ""):
+    for match in DOMAIN_RE.finditer(text or ""):
         normalized = _normalise_url(match.group(0))
         if not normalized:
             continue

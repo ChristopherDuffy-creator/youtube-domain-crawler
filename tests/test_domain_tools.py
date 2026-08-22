@@ -17,22 +17,24 @@ def test_extracts_exact_commercial_links_and_context() -> None:
     assert links[0].clickable is True
 
 
-def test_extracts_bare_domain_but_not_email_or_redirector() -> None:
+def test_youtube_links_require_explicit_url_not_bare_prose() -> None:
     description = (
-        "Resources: andygrabertraining.com/program. "
+        "B.Tech students can use manage.py and read 3.how examples. "
+        "Bare resource andygrabertraining.com/program is not clickable. "
+        "Real links: http://example.com/a and www.seconddomain.net/start. "
         "Email info@example.com or use https://bit.ly/abc."
     )
     links = extract_links(description)
 
-    assert [link.domain for link in links] == ["andygrabertraining.com"]
-    assert links[0].clickable is False
+    assert [link.domain for link in links] == ["example.com", "seconddomain.net"]
+    assert all(link.clickable for link in links)
 
 
 def test_handles_multilevel_public_suffix() -> None:
     assert registrable_domain("courses.example.co.uk") == ("example.co.uk", "co.uk")
 
 
-def test_dropped_text_deduplicates_domains() -> None:
+def test_dropped_text_still_accepts_bare_domains_and_deduplicates() -> None:
     text = "example.com\nhttps://example.com/path, seconddomain.net\nexample.com"
     assert extract_domain_names(text) == ["example.com", "seconddomain.net"]
 
