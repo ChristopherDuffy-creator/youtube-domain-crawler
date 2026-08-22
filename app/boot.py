@@ -150,3 +150,16 @@ youtube_intelligence_module.refresh_youtube_domain_signals = (
 jobs_module.refresh_youtube_domain_signals = _consistent_refresh_youtube_domain_signals
 main_module.app.router.lifespan_context = _production_lifespan
 app = main_module.app
+
+
+@app.middleware("http")
+async def _repair_ranked_youtube_rows_before_render(request, call_next):
+    """Never render a ranked YouTube row whose current signal cannot support it."""
+    if (
+        request.method == "GET"
+        and request.url.path == "/"
+        and request.query_params.get("view", "web") == "youtube"
+    ):
+        with SessionLocal() as db:
+            enforce_candidate_signal_consistency(db, main_module.settings)
+    return await call_next(request)
