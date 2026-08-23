@@ -15,11 +15,10 @@ from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# The operator can still explicitly disable paid proof with a Railway variable.
-# When no override exists, production now runs the approved cost-capped Link
-# Hunter automatically instead of leaving the traffic-proof stage manual-only.
-if os.getenv("LINK_HUNTER_ENABLED") is None:
-    os.environ["LINK_HUNTER_ENABLED"] = "true"
+# This production service is the automatic Web Hunter.  Force proof on even if
+# Railway still has the legacy LINK_HUNTER_ENABLED=false variable from the old
+# manual-proof setup. Spend remains independently bounded by the provider ledger.
+os.environ["LINK_HUNTER_ENABLED"] = "true"
 
 # Original YouTube throughput.  Web summary batches are intentionally narrower:
 # 25 cheap summaries feeding 5 deep proofs gives far better proof coverage than
