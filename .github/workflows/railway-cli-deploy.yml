@@ -3,7 +3,7 @@ name: Railway CLI Deploy
 # Direct source upload fallback for Railway GitHub snapshot failures.
 # This workflow verifies the live production health endpoint after deployment
 # and publishes a commit status that can be inspected without Railway UI access.
-# Traffic-first automatic Web Hunter production deployment trigger.
+# Force-enabled traffic-first Web Hunter production deployment trigger.
 on:
   push:
     branches:
@@ -45,16 +45,22 @@ jobs:
 
       - name: Verify live production health
         run: |
+          last_body=""
           for attempt in $(seq 1 30); do
             body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
+            last_body="$body"
             if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("database") == "ok"; assert p.get("link_hunter_enabled") is True; y=p.get("youtube") or {}; assert "domain_signals" in (y.get("totals") or {}); assert "stats_remaining" in (y.get("quota") or {}); assert isinstance(p.get("email"), dict)' 2>/dev/null; then
               echo "$body"
               exit 0
             fi
             echo "Waiting for production health endpoint ($attempt/30)"
+            if [ -n "$body" ]; then
+              echo "Health body: $body"
+            fi
             sleep 10
           done
           echo "Production health verification failed"
+          echo "Last health body: $last_body"
           exit 1
 
       - name: Publish Railway deployment status
