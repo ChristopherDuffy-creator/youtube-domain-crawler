@@ -173,16 +173,77 @@ def enforce_candidate_signal_consistency(
     settings: Settings,
     domain_ids: set[int] | None = None,
 ) -> int:
-    """Fail closed when a ranked Candidate disagrees with its displayed signal.
+    """Fail closed when ranked YouTube evidence is stale or implausible.
 
-    A candidate may only remain in a ranked tier if a YouTubeDomainSignal exists
-    and its current linked-video exposure still meets that tier's own floor.
-    Missing or stale-low signals are demoted to Pending until the normal refresh
-    pipeline recalculates the candidate. This keeps the dashboard trustworthy
-    even if a prior job was interrupted between Candidate and signal updates.
+    Ranked candidates are revalidated against the same raw-link plausibility
+    rules used by new ingestion. This closes the legacy-ledger hole where an old
+    active false-positive link could be cleaned once, remain elsewhere in the
+    permanent ledger, then regain enough exposure to climb back into Watchlist.
+
+    Any ranked domain with newly-invalid active evidence is immediately demoted
+    and its displayed money signal is zeroed. A later normal video refresh can
+    restore the candidate if genuine active links remain.
     """
     if domain_ids is not None and not domain_ids:
         return 0
+
+    ranked = ("watchlist", "qualified", "priority")
+    ranked_query = select(Candidate.domain_id).where(Candidate.tier.in_(ranked))
+    if domain_ids is not None:
+        ranked_query = ranked_query.where(Candidate.domain_id.in_(domain_ids))
+    ranked_ids = [int(value) for value in db.scalars(ranked_query).all()]
+
+    invalid_domains: set[int] = set()
+    for chunk in _chunks(ranked_ids, 50):
+        links = db.scalars(
+            select(VideoDomain).where(
+                VideoDomain.domain_id.in_(chunk),
+                VideoDomain.active.is_(True),
+            )
+        ).all()
+        for link in links:
+            if not is_plausible_youtube_link(link.raw_url):
+                link.active = False
+                invalid_domains.add(int(link.domain_id))
+
+    changed = 0
+    if invalid_domains:
+        result = db.execute(
+            update(Candidate)
+            .where(
+                Candidate.domain_id.in_(invalid_domains),
+                Candidate.tier.in_(ranked),
+            )
+            .values(tier="pending", updated_at=utcnow())
+        )
+        changed += int(result.rowcount or 0)
+        db.execute(
+            update(YouTubeDomainSignal)
+            .where(YouTubeDomainSignal.domain_id.in_(invalid_domains))
+            .values(
+                active_video_count=0,
+                active_link_count=0,
+                channel_count=0,
+                lifetime_linked_video_views=0,
+                monthly_linked_video_exposure=0,
+                observation_days=0.0,
+                traffic_confidence="revalidating_links",
+                measured_15d=False,
+                verified_30d=False,
+                cta_rate=0.0,
+                clickable_rate=0.0,
+                expected_clicks_monthly=0,
+                monthly_revenue_low_usd=0.0,
+                monthly_revenue_high_usd=0.0,
+                max_purchase_price_usd=0.0,
+                buy_score=0.0,
+                updated_at=utcnow(),
+            )
+        )
+        logger.info(
+            "Continuous ranked YouTube hygiene demoted %s domains with stale invalid links",
+            len(invalid_domains),
+        )
 
     scope = []
     if domain_ids is not None:
@@ -193,7 +254,6 @@ def enforce_candidate_signal_consistency(
         ("qualified", settings.qualified_monthly_views),
         ("priority", settings.priority_monthly_views),
     )
-    changed = 0
     for tier, threshold in thresholds:
         sufficient_signal = exists(
             select(YouTubeDomainSignal.domain_id).where(
