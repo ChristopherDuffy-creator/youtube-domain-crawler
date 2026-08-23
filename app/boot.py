@@ -2,9 +2,10 @@ from __future__ import annotations
 
 """Memory-safe full-throughput production bootstrap for Railway.
 
-The YouTube signal graph is hard-chunked to protect the 8 GB replica.  The web
-Link Hunter is also upgraded here to prioritise verified, monetisable traffic
-rather than backlink volume and to advance its cost-capped proof automatically.
+The YouTube candidate/signal graphs are hard-chunked to protect the 8 GB
+replica. The web Link Hunter is also upgraded here to prioritise verified,
+monetisable traffic rather than backlink volume and to advance its cost-capped
+proof automatically.
 """
 
 import gc
@@ -15,12 +16,12 @@ from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# This production service is the automatic Web Hunter.  Force proof on even if
+# This production service is the automatic Web Hunter. Force proof on even if
 # Railway still has the legacy LINK_HUNTER_ENABLED=false variable from the old
 # manual-proof setup. Spend remains independently bounded by the provider ledger.
 os.environ["LINK_HUNTER_ENABLED"] = "true"
 
-# Original YouTube throughput.  Web summary batches are intentionally narrower:
+# Original YouTube throughput. Web summary batches are intentionally narrower:
 # 25 cheap summaries feeding 5 deep proofs gives far better proof coverage than
 # 100 summaries feeding the same five detailed checks, without raising spend.
 _BATCH_CAPS = {
@@ -35,11 +36,11 @@ _BATCH_CAPS = {
     "LINK_HUNTER_FREE_SCREEN_BATCH_SIZE": 50_000,
 }
 
-# refresh_youtube_domain_signals historically eager-loaded Domain -> links ->
-# Video -> snapshots for every affected domain in one ORM graph. A fan-out run
-# can hand refresh_candidates thousands of affected domains and exhaust even an
-# 8 GB Railway replica. This hard boundary stays tiny regardless of crawler
-# throughput.
+# Both refresh_candidates and refresh_youtube_domain_signals can eager-load
+# Domain -> links -> Video -> snapshots. A 50k-video snapshot run can therefore
+# hand thousands of affected domains to the ORM at once. Keep throughput high,
+# but make the expensive graph boundary tiny and deterministic.
+_CANDIDATE_DOMAIN_CHUNK = 5
 _SIGNAL_DOMAIN_CHUNK = 5
 _SIGNAL_UNSCOPED_LIMIT = 25
 
@@ -71,11 +72,13 @@ import app.web_intelligence as web_intelligence_module  # noqa: E402
 import app.youtube_intelligence as youtube_intelligence_module  # noqa: E402
 from apscheduler.executors.pool import ThreadPoolExecutor  # noqa: E402
 from apscheduler.triggers.interval import IntervalTrigger  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 from app.data_hygiene import (  # noqa: E402
     enforce_candidate_signal_consistency,
     purge_legacy_bare_youtube_links,
 )
 from app.database import SessionLocal  # noqa: E402
+from app.models import Candidate, VideoDomain  # noqa: E402
 from app.web_hunter_upgrade import (  # noqa: E402
     enforce_money_tier,
     regrade_existing_web_opportunities,
@@ -85,6 +88,7 @@ from app.web_hunter_upgrade import (  # noqa: E402
 )
 
 _original_build_scheduler = main_module.build_scheduler
+_original_refresh_candidates = jobs_module.refresh_candidates
 _original_refresh_youtube_domain_signals = (
     youtube_intelligence_module.refresh_youtube_domain_signals
 )
@@ -184,11 +188,11 @@ def _traffic_first_load_web_evidence_rows(
 def _memory_safe_build_scheduler(settings):
     scheduler = _original_build_scheduler(settings)
     # Keep memory-heavy jobs serialized. Full YouTube throughput stays safe when
-    # jobs do not overlap and the signal graph is hard-chunked below.
+    # jobs do not overlap and the ORM graphs are independently hard-chunked.
     scheduler.configure(executors={"default": ThreadPoolExecutor(max_workers=1)})
 
     # The provider budget ledger is the kill switch: at the existing defaults a
-    # proof reserves at most $0.18 and the day stops at $2.16.  Every two hours
+    # proof reserves at most $0.18 and the day stops at $2.16. Every two hours
     # therefore advances up to five deep domains, or roughly 60/day at the cap.
     if settings.link_hunter_enabled and settings.dataforseo_enabled:
         scheduler.add_job(
@@ -206,11 +210,41 @@ def _memory_safe_build_scheduler(settings):
 
 
 def _release_orm_memory(db) -> None:
-    """Drop loaded relationship state between signal chunks."""
+    """Drop loaded relationship state between graph chunks."""
     try:
         db.expire_all()
     finally:
         gc.collect()
+
+
+def _memory_safe_refresh_candidates(db, domain_ids=None) -> int:
+    """Refresh candidates in tiny graph chunks without reducing video throughput.
+
+    The six-hour view-snapshot job may update up to 50k videos. Its old tail
+    passed every affected domain to refresh_candidates at once, which eagerly
+    loaded links, videos and snapshots for the whole set. Chunking here preserves
+    the 50k statistics pass while bounding the expensive ORM relationship graph.
+    """
+    if domain_ids is None:
+        candidate_ids = db.scalars(select(Candidate.domain_id)).all()
+        active_ids = db.scalars(
+            select(VideoDomain.domain_id)
+            .where(VideoDomain.active.is_(True))
+            .distinct()
+        ).all()
+        ids = sorted({int(value) for value in [*candidate_ids, *active_ids]})
+    else:
+        ids = sorted(int(value) for value in domain_ids)
+
+    if not ids:
+        return 0
+
+    updated = 0
+    for start in range(0, len(ids), _CANDIDATE_DOMAIN_CHUNK):
+        chunk = set(ids[start : start + _CANDIDATE_DOMAIN_CHUNK])
+        updated += _original_refresh_candidates(db, chunk)
+        _release_orm_memory(db)
+    return updated
 
 
 def _consistent_refresh_youtube_domain_signals(
@@ -220,8 +254,7 @@ def _consistent_refresh_youtube_domain_signals(
     *,
     limit=None,
 ):
-    # Scoped refreshes are the dangerous path: refresh_candidates may pass a
-    # very large set of domain IDs after channel fan-out. Process only a handful
+    # Scoped refreshes are another dangerous graph path. Process only a handful
     # at a time so links/videos/snapshots from one group can be freed first.
     if domain_ids is not None:
         ids = sorted(int(value) for value in domain_ids)
@@ -258,9 +291,9 @@ def _consistent_refresh_youtube_domain_signals(
 
 @asynccontextmanager
 async def _production_lifespan(app):
-    # Schema setup/scheduler start happens in the original lifespan.  Repair old
-    # false YouTube matches and re-grade existing web rows under the new money-
-    # first model so stale backlink-heavy scores disappear after deployment.
+    # Schema setup/scheduler start happens in the original lifespan. Repair old
+    # false YouTube matches and re-grade existing web rows under the money-first
+    # model so stale backlink-heavy scores disappear after deployment.
     async with _original_lifespan_context(app):
         with SessionLocal() as db:
             purge_legacy_bare_youtube_links(db, main_module.settings)
@@ -273,7 +306,7 @@ async def _production_lifespan(app):
         yield
 
 
-# Patch every imported reference used by the running app.  link_hunter imported
+# Patch every imported reference used by the running app. link_hunter imported
 # the projection/reranker by name, so both the source module and its local global
 # must be replaced.
 web_intelligence_module.project_opportunity_economics = (
@@ -286,6 +319,7 @@ link_hunter_module._score_opportunity = _traffic_first_score_opportunity
 link_hunter_module._save_summary_opportunity = _traffic_first_save_summary_opportunity
 main_module._load_web_evidence_rows = _traffic_first_load_web_evidence_rows
 main_module.build_scheduler = _memory_safe_build_scheduler
+jobs_module.refresh_candidates = _memory_safe_refresh_candidates
 youtube_intelligence_module.refresh_youtube_domain_signals = (
     _consistent_refresh_youtube_domain_signals
 )
@@ -296,7 +330,7 @@ app = main_module.app
 
 @app.middleware("http")
 async def _repair_ranked_youtube_rows_before_render(request, call_next):
-    """Never render a ranked YouTube row whose current signal cannot support it."""
+    """Never render a ranked YouTube row whose current evidence cannot support it."""
     if (
         request.method == "GET"
         and request.url.path == "/"
