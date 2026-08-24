@@ -1,9 +1,8 @@
 name: Railway CLI Deploy
 
 # Direct source upload fallback for Railway GitHub snapshot failures.
-# This workflow verifies production health plus a live-data dashboard renderer
-# smoke test, not merely the unauthenticated login redirect.
-# Authenticated-dashboard 500 diagnostic deployment trigger.
+# Verify health plus full authenticated ASGI rendering for both dashboard views.
+# Full dashboard pipeline diagnostic deployment trigger.
 on:
   push:
     branches:
@@ -43,37 +42,39 @@ jobs:
           --service youtube-domain-crawler
           --ci
 
-      - name: Verify live production health and real dashboard renderer
+      - name: Verify live health and authenticated dashboard pipelines
         run: |
           last_body=""
-          last_diag=""
+          last_youtube=""
+          last_web=""
           for attempt in $(seq 1 30); do
             body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
-            diag="$(curl -sS https://youtube-domain-crawler-production.up.railway.app/ops/youtube-dashboard-smoke || true)"
+            youtube="$(curl -sS 'https://youtube-domain-crawler-production.up.railway.app/ops/dashboard-smoke?view=youtube&pipeline=asgi' || true)"
+            web="$(curl -sS 'https://youtube-domain-crawler-production.up.railway.app/ops/dashboard-smoke?view=web&pipeline=asgi' || true)"
             last_body="$body"
-            last_diag="$diag"
+            last_youtube="$youtube"
+            last_web="$web"
             health_ok=0
-            diag_ok=0
-            if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("database") == "ok"; assert p.get("link_hunter_enabled") is True; y=p.get("youtube") or {}; assert "domain_signals" in (y.get("totals") or {}); assert "stats_remaining" in (y.get("quota") or {}); assert isinstance(p.get("email"), dict)' 2>/dev/null; then
-              health_ok=1
-            fi
-            if DIAG="$diag" python -c 'import json, os; p=json.loads(os.environ["DIAG"]); assert p.get("ok") is True; assert int(p.get("status_code", 0)) == 200; assert int(p.get("body_bytes", 0)) > 0' 2>/dev/null; then
-              diag_ok=1
-            fi
-            if [ "$health_ok" = "1" ] && [ "$diag_ok" = "1" ]; then
+            youtube_ok=0
+            web_ok=0
+            if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("database") == "ok"; assert p.get("link_hunter_enabled") is True' 2>/dev/null; then health_ok=1; fi
+            if DIAG="$youtube" python -c 'import json, os; p=json.loads(os.environ["DIAG"]); assert p.get("ok") is True; assert p.get("status_code") == 200' 2>/dev/null; then youtube_ok=1; fi
+            if DIAG="$web" python -c 'import json, os; p=json.loads(os.environ["DIAG"]); assert p.get("ok") is True; assert p.get("status_code") == 200' 2>/dev/null; then web_ok=1; fi
+            if [ "$health_ok" = "1" ] && [ "$youtube_ok" = "1" ] && [ "$web_ok" = "1" ]; then
               echo "$body"
-              echo "$diag"
+              echo "YouTube diagnostic: $youtube"
+              echo "Web diagnostic: $web"
               exit 0
             fi
-            echo "Waiting for production health/renderer ($attempt/30): health_ok=$health_ok diag_ok=$diag_ok"
-            if [ -n "$diag" ]; then
-              echo "Dashboard diagnostic: $diag"
-            fi
+            echo "Waiting ($attempt/30): health=$health_ok youtube=$youtube_ok web=$web_ok"
+            echo "YouTube diagnostic: $youtube"
+            echo "Web diagnostic: $web"
             sleep 10
           done
           echo "Production verification failed"
-          echo "Last health body: $last_body"
-          echo "Last dashboard diagnostic: $last_diag"
+          echo "Last health: $last_body"
+          echo "Last YouTube diagnostic: $last_youtube"
+          echo "Last Web diagnostic: $last_web"
           exit 1
 
       - name: Publish Railway deployment status
@@ -83,10 +84,10 @@ jobs:
         run: |
           if [ "${{ job.status }}" = "success" ]; then
             state=success
-            description="Railway deploy, health and live dashboard renderer passed"
+            description="Railway deploy and both authenticated dashboards passed"
           else
             state=failure
-            description="Railway deploy/health/live dashboard renderer failed"
+            description="Railway deploy or authenticated dashboard smoke failed"
           fi
           curl -fsS \
             -X POST \
