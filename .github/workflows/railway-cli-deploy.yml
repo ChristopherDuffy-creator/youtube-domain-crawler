@@ -2,7 +2,7 @@ name: Railway CLI Deploy
 
 # Direct source upload fallback for Railway GitHub snapshot failures.
 # Verify health plus direct live-data rendering for both dashboard views.
-# Authenticated dashboard fallback clean retry deployment trigger.
+# Web dashboard PostgreSQL parameter-limit fix deployment trigger.
 on:
   push:
     branches:
