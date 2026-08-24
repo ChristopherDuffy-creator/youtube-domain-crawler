@@ -1,9 +1,9 @@
 name: Railway CLI Deploy
 
 # Direct source upload fallback for Railway GitHub snapshot failures.
-# This workflow verifies the live production health endpoint after deployment
-# and publishes a commit status that can be inspected without Railway UI access.
-# Reliable daily digest executor and catch-up deployment trigger.
+# This workflow verifies both production health and the YouTube dashboard path
+# after deployment, then publishes a commit status we can inspect remotely.
+# Dashboard 500 guard removal + route verification deployment trigger.
 on:
   push:
     branches:
@@ -43,24 +43,38 @@ jobs:
           --service youtube-domain-crawler
           --ci
 
-      - name: Verify live production health
+      - name: Verify live production health and dashboard route
         run: |
           last_body=""
+          last_dashboard_code=""
           for attempt in $(seq 1 30); do
             body="$(curl -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
+            dashboard_code="$(curl -sS -o /tmp/dashboard-body -w '%{http_code}' 'https://youtube-domain-crawler-production.up.railway.app/?view=youtube' || true)"
             last_body="$body"
+            last_dashboard_code="$dashboard_code"
+            health_ok=0
             if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("database") == "ok"; assert p.get("link_hunter_enabled") is True; y=p.get("youtube") or {}; assert "domain_signals" in (y.get("totals") or {}); assert "stats_remaining" in (y.get("quota") or {}); assert isinstance(p.get("email"), dict)' 2>/dev/null; then
+              health_ok=1
+            fi
+            # Unauthenticated dashboard requests should redirect to login (303).
+            # A 500 here means request middleware or dashboard routing is broken.
+            if [ "$health_ok" = "1" ] && [ "$dashboard_code" = "303" ]; then
               echo "$body"
+              echo "YouTube dashboard route returned expected 303 login redirect"
               exit 0
             fi
-            echo "Waiting for production health endpoint ($attempt/30)"
+            echo "Waiting for production health/dashboard ($attempt/30): health_ok=$health_ok dashboard=$dashboard_code"
             if [ -n "$body" ]; then
               echo "Health body: $body"
             fi
+            if [ -s /tmp/dashboard-body ]; then
+              echo "Dashboard body: $(head -c 300 /tmp/dashboard-body)"
+            fi
             sleep 10
           done
-          echo "Production health verification failed"
+          echo "Production verification failed"
           echo "Last health body: $last_body"
+          echo "Last dashboard code: $last_dashboard_code"
           exit 1
 
       - name: Publish Railway deployment status
@@ -70,10 +84,10 @@ jobs:
         run: |
           if [ "${{ job.status }}" = "success" ]; then
             state=success
-            description="Railway production deploy and health check passed"
+            description="Railway deploy, health and dashboard route passed"
           else
             state=failure
-            description="Railway production deploy or health check failed"
+            description="Railway deploy/health/dashboard verification failed"
           fi
           curl -fsS \
             -X POST \
