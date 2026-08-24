@@ -78,7 +78,7 @@ from app.data_hygiene import (  # noqa: E402
     purge_legacy_bare_youtube_links,
 )
 from app.database import SessionLocal  # noqa: E402
-from app.models import Candidate, VideoDomain  # noqa: E402
+from app.models import Candidate, RunLog, VideoDomain  # noqa: E402
 from app.web_hunter_upgrade import (  # noqa: E402
     enforce_money_tier,
     regrade_existing_web_opportunities,
@@ -185,11 +185,62 @@ def _traffic_first_load_web_evidence_rows(
     return rows if limit is None else rows[: int(limit)]
 
 
+def _run_daily_digest_catchup() -> None:
+    """Send today's digest if the normal 08:00 UTC run was missed or failed."""
+    now = datetime.now(UTC)
+    due_at = now.replace(hour=8, minute=0, second=0, microsecond=0)
+    if now < due_at:
+        return
+
+    with SessionLocal() as db:
+        runs = db.scalars(
+            select(RunLog)
+            .where(
+                RunLog.job == "daily_digest",
+                RunLog.started_at >= due_at,
+            )
+            .order_by(RunLog.started_at.desc())
+            .limit(5)
+        ).all()
+        for run in runs:
+            counters = run.counters if isinstance(run.counters, dict) else {}
+            if run.status == "complete" and int(counters.get("emailed", 0) or 0) >= 1:
+                return
+            if run.status == "running":
+                return
+
+    logger.warning("Daily digest missing after 08:00 UTC; running catch-up now")
+    jobs_module.run_daily_digest()
+
+
 def _memory_safe_build_scheduler(settings):
     scheduler = _original_build_scheduler(settings)
-    # Keep memory-heavy jobs serialized. Full YouTube throughput stays safe when
-    # jobs do not overlap and the ORM graphs are independently hard-chunked.
-    scheduler.configure(executors={"default": ThreadPoolExecutor(max_workers=1)})
+    # Heavy crawler jobs stay serialized for RAM safety, but the tiny email
+    # digest gets its own worker so a long YouTube/Web job cannot starve it.
+    scheduler.configure(
+        executors={
+            "default": ThreadPoolExecutor(max_workers=1),
+            "email": ThreadPoolExecutor(max_workers=1),
+        }
+    )
+    scheduler.modify_job(
+        "daily_digest",
+        executor="email",
+        misfire_grace_time=6 * 60 * 60,
+    )
+    scheduler.add_job(
+        _run_daily_digest_catchup,
+        IntervalTrigger(
+            hours=1,
+            start_date=datetime.now(UTC) + timedelta(minutes=2),
+        ),
+        id="daily_digest_catchup",
+        replace_existing=True,
+        executor="email",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=6 * 60 * 60,
+    )
 
     # The provider budget ledger is the kill switch: at the existing defaults a
     # proof reserves at most $0.18 and the day stops at $2.16. Every two hours
