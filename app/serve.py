@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-"""Production ASGI entrypoint.
-
-Import the full production bootstrap, then keep data-maintenance work out of the
-HTTP request path. Ranked YouTube hygiene is already enforced by the crawler's
-candidate/signal refresh wrappers; running the same write-capable consistency
-pass on every dashboard GET can collide with long refresh transactions and turn
-an otherwise healthy service into a 500 for the user.
-"""
+"""Production ASGI entrypoint with safe dashboard diagnostics."""
 
 import logging
 import traceback
 
-from fastapi import Request
+import httpx
+from fastapi import Query, Request
 from fastapi.responses import JSONResponse
 
 from app.boot import app
@@ -35,58 +29,91 @@ app.user_middleware = [
     if not _is_ranked_youtube_request_hygiene(middleware)
 ]
 _removed = _before - len(app.user_middleware)
-
-# Middleware is built lazily by Starlette. Reset the cached stack in case the
-# imported app constructed it during import-time setup.
 app.middleware_stack = None
 logger.info("Production serving wrapper removed %s request-time hygiene middleware(s)", _removed)
 
 
-@app.get("/ops/youtube-dashboard-smoke")
-def youtube_dashboard_smoke() -> JSONResponse:
-    """Run the real authenticated dashboard renderer without exposing its data.
+def _safe_failure(exc: Exception) -> JSONResponse:
+    logger.exception("Dashboard smoke diagnostic failed")
+    frames = traceback.format_exc().splitlines()
+    return JSONResponse(
+        status_code=500,
+        content={
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:300],
+            "trace": [line[:300] for line in frames[-12:]],
+            "request_hygiene_removed": _removed,
+        },
+    )
 
-    Temporary production diagnostic: it bypasses only the auth dependency by
-    calling the route function directly, uses the live database, and returns a
-    compact exception trace if the render fails. No row/domain values are emitted.
-    """
-    scope = {
-        "type": "http",
-        "http_version": "1.1",
-        "method": "GET",
-        "scheme": "https",
-        "path": "/",
-        "raw_path": b"/",
-        "query_string": b"view=youtube",
-        "headers": [],
-        "client": ("127.0.0.1", 0),
-        "server": ("diagnostic", 443),
-        "root_path": "",
-    }
-    request = Request(scope)
+
+@app.get("/ops/dashboard-smoke")
+async def dashboard_smoke(
+    view: str = Query(default="youtube", pattern="^(youtube|web)$"),
+    pipeline: str = Query(default="asgi", pattern="^(asgi|direct)$"),
+) -> JSONResponse:
+    """Exercise the live dashboard without exposing dashboard/domain data."""
     try:
-        with SessionLocal() as db:
-            response = main_module.dashboard(
-                request=request,
-                view="youtube",
-                tier="all",
-                _="admin",
-                db=db,
+        if pipeline == "direct":
+            scope = {
+                "type": "http",
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "https",
+                "path": "/",
+                "raw_path": b"/",
+                "query_string": f"view={view}".encode(),
+                "headers": [],
+                "client": ("127.0.0.1", 0),
+                "server": ("diagnostic", 443),
+                "root_path": "",
+            }
+            request = Request(scope)
+            with SessionLocal() as db:
+                response = main_module.dashboard(
+                    request=request,
+                    view=view,
+                    tier="all",
+                    _="admin",
+                    db=db,
+                )
+            body = getattr(response, "body", b"") or b""
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "view": view,
+                    "pipeline": pipeline,
+                    "status_code": response.status_code,
+                    "body_bytes": len(body),
+                    "request_hygiene_removed": _removed,
+                }
             )
-        body = getattr(response, "body", b"") or b""
-        return JSONResponse({"ok": True, "status_code": response.status_code, "body_bytes": len(body)})
-    except Exception as exc:  # diagnostic boundary intentionally broad
-        logger.exception("YouTube dashboard smoke diagnostic failed")
-        frames = traceback.format_exc().splitlines()
-        # File/line/function/error text only. Do not expose request headers, SQL
-        # parameters, environment variables, database rows or domain values.
-        safe_trace = [line[:300] for line in frames[-12:]]
+
+        # Full ASGI path: signed login cookie, dependency/auth, middleware,
+        # dashboard query construction, template render and response middleware.
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=True)
+        cookie = main_module._create_dashboard_session()
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://diagnostic.local",
+            follow_redirects=False,
+            timeout=60.0,
+        ) as client:
+            response = await client.get(
+                f"/?view={view}",
+                cookies={main_module.DASHBOARD_SESSION_COOKIE: cookie},
+            )
         return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "error_type": type(exc).__name__,
-                "error": str(exc)[:300],
-                "trace": safe_trace,
+            {
+                "ok": response.status_code == 200 and len(response.content) > 0,
+                "view": view,
+                "pipeline": pipeline,
+                "status_code": response.status_code,
+                "body_bytes": len(response.content),
+                "request_hygiene_removed": _removed,
             },
+            status_code=200 if response.status_code == 200 else 500,
         )
+    except Exception as exc:  # diagnostic boundary intentionally broad
+        return _safe_failure(exc)
