@@ -172,6 +172,7 @@ def test_health_exposes_only_aggregate_paid_proof_cost_and_result_counts() -> No
 
     assert payload["web_intelligence"]["latest_proof"] == {
         "status": "complete",
+        "failure_label": None,
         "summary_screened": 100,
         "deep_proof_target_count": 5,
         "source_links_verified": 3,
