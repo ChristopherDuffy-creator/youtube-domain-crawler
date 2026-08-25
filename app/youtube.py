@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
+from threading import Lock
+from time import monotonic, sleep
 from typing import Any
 
 import httpx
@@ -71,16 +73,50 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return None
 
 
+class _StatisticsRequestPacer:
+    """Reserve evenly-spaced request slots across every local client instance."""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = monotonic,
+        sleeper: Callable[[float], None] = sleep,
+    ) -> None:
+        self._clock = clock
+        self._sleeper = sleeper
+        self._lock = Lock()
+        self._next_request_at = 0.0
+
+    def wait_for_slot(self, requests_per_minute: int) -> None:
+        interval = 60.0 / max(1, int(requests_per_minute))
+        with self._lock:
+            now = self._clock()
+            scheduled_at = max(now, self._next_request_at)
+            self._next_request_at = scheduled_at + interval
+        delay = scheduled_at - now
+        if delay > 0:
+            self._sleeper(delay)
+
+
+_GLOBAL_STATISTICS_REQUEST_PACER = _StatisticsRequestPacer()
+
+
 class YouTubeClient:
     def __init__(
         self,
         api_key: str,
         timeout: float = 30.0,
         statistics_workers: int = 1,
+        statistics_requests_per_minute: int = 120,
+        statistics_request_pacer: _StatisticsRequestPacer | None = None,
     ) -> None:
         self.api_key = api_key
         self.timeout = timeout
         self.statistics_workers = max(1, min(8, int(statistics_workers)))
+        self.statistics_requests_per_minute = max(1, int(statistics_requests_per_minute))
+        self._statistics_request_pacer = (
+            statistics_request_pacer or _GLOBAL_STATISTICS_REQUEST_PACER
+        )
 
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         if not self.api_key:
@@ -246,6 +282,9 @@ class YouTubeClient:
 
         def fetch_chunk(chunk: list[str]) -> list[VideoStatistics]:
             statistics: list[VideoStatistics] = []
+            self._statistics_request_pacer.wait_for_slot(
+                self.statistics_requests_per_minute
+            )
             payload = self._get(
                 "videos:batchGetStats",
                 {

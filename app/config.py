@@ -132,6 +132,7 @@ class Settings(BaseSettings):
     youtube_view_refresh_interval_hours: int = Field(default=6, ge=1, le=168)
     youtube_view_refresh_batch_size: int = Field(default=50_000, ge=50, le=500_000)
     youtube_statistics_workers: int = Field(default=4, ge=1, le=8)
+    youtube_statistics_requests_per_minute: int = Field(default=120, ge=1, le=10_000)
     youtube_search_daily_limit: int = Field(default=96, ge=1, le=100)
     youtube_data_daily_limit: int = Field(default=9_000, ge=100, le=10_000)
     youtube_fanout_daily_data_limit: int = Field(default=8_000, ge=100, le=9_500)
