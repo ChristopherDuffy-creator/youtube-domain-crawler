@@ -1,0 +1,35 @@
+name: Porkbun Raw Availability
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/porkbun-raw-availability.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Read raw Porkbun availability responses
+        shell: bash
+        run: |
+          set +e
+          npx -y @railway/cli@latest run \
+            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+            --environment production \
+            --service youtube-domain-crawler \
+            --no-local \
+            python -m scripts.porkbun_raw_availability
+          exit 0
