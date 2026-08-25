@@ -1,0 +1,51 @@
+name: Emergency Pause Crawler Scheduler
+
+# One-purpose circuit breaker for database-pressure incidents. It is path-gated
+# so routine source changes cannot disable scheduled work.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/pause-crawler-scheduler-emergency.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crawler-scheduler-emergency-pause
+  cancel-in-progress: false
+
+jobs:
+  pause:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      APPROVAL_MARKER: EMERGENCY_PAUSE_SCHEDULER_20260825
+    steps:
+      - name: Require the incident pause marker
+        run: |
+          test "$APPROVAL_MARKER" = "EMERGENCY_PAUSE_SCHEDULER_20260825"
+          test -n "$RAILWAY_TOKEN"
+
+      - name: Disable only the in-process scheduler
+        run: >-
+          npx -y @railway/cli@latest variable set SCHEDULER_ENABLED=false
+          --project 31fbe878-aa83-4b74-9820-e9f0d13b984c
+          --environment production
+          --service youtube-domain-crawler
+          --json
+
+      - name: Verify the safe pause reached production
+        run: |
+          for attempt in $(seq 1 30); do
+            body="$(curl --max-time 20 -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
+            if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("status") == "ok"; assert p.get("database") == "ok"; assert p.get("scheduler") is False; assert p.get("link_hunter_enabled") is True' 2>/dev/null; then
+              echo "$body"
+              exit 0
+            fi
+            echo "Waiting for scheduler pause ($attempt/30)"
+            sleep 10
+          done
+          echo "Crawler scheduler did not pause safely"
+          exit 1
