@@ -37,7 +37,15 @@ def test_health_exposes_only_sanitized_commoncrawl_counts() -> None:
     # datetime is UTC-aware. The production PostgreSQL path is unaffected.
     expected_finished_at = now.replace(tzinfo=None).isoformat()
     assert payload["database"] == "ok"
-    assert payload["database_storage"] is None
+    assert payload["database_storage"] == {
+        "backend": "sqlite",
+        "enabled": True,
+        "limit_gb": 16.0,
+        "database_bytes": None,
+        "database_gb": None,
+        "blocked": False,
+        "reason": "non_postgresql",
+    }
     assert payload["commoncrawl_prefilter"] == {
         "status": "complete",
         "checked": 10,

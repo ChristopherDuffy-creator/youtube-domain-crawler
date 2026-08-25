@@ -52,6 +52,7 @@ from app.models import (
     YouTubeDomainSignal,
 )
 from app.provider_budget import provider_daily_budget_snapshot
+from app.storage_guard import database_storage_status, storage_guard_allows_writes
 from app.web_hunter_upgrade import regrade_existing_web_opportunities
 from app.youtube_intelligence import youtube_quota_snapshot
 
@@ -130,13 +131,14 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_runtime_schema(engine)
     with SessionLocal() as db:
-        ensure_seed_data(db)
-        regraded = regrade_existing_web_opportunities(
-            db,
-            _score_opportunity,
-            limit=250,
-        )
-        logger.info("Traffic-first Web Hunter regraded %s existing opportunities", regraded)
+        if storage_guard_allows_writes(db, settings, "startup_maintenance"):
+            ensure_seed_data(db)
+            regraded = regrade_existing_web_opportunities(
+                db,
+                _score_opportunity,
+                limit=250,
+            )
+            logger.info("Traffic-first Web Hunter regraded %s existing opportunities", regraded)
     if settings.scheduler_enabled:
         scheduler = build_scheduler(settings)
         scheduler.start()
@@ -439,7 +441,13 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
     try:
         db.scalar(select(func.count()).select_from(RunLog))
         database = "ok"
-        if db.bind is not None and db.bind.dialect.name == "postgresql":
+        storage_status = database_storage_status(db, settings)
+        database_storage = storage_status.as_dict()
+        if (
+            db.bind is not None
+            and db.bind.dialect.name == "postgresql"
+            and storage_status.database_bytes is not None
+        ):
             storage_rows = db.execute(
                 text(
                     """
@@ -450,18 +458,14 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                     """
                 )
             ).all()
-            database_bytes = db.scalar(text("SELECT pg_database_size(current_database())"))
-            database_storage = {
-                "database_bytes": int(database_bytes or 0),
-                "largest_relations": [
-                    {
-                        "name": str(name),
-                        "estimated_rows": int(row_count or 0),
-                        "total_bytes": int(total_bytes or 0),
-                    }
-                    for name, row_count, total_bytes in storage_rows
-                ],
-            }
+            database_storage["largest_relations"] = [
+                {
+                    "name": str(name),
+                    "estimated_rows": int(row_count or 0),
+                    "total_bytes": int(total_bytes or 0),
+                }
+                for name, row_count, total_bytes in storage_rows
+            ]
 
         latest_screening = db.scalar(
             select(RunLog)
