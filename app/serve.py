@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from threading import Lock
 
 from fastapi import Depends, Query, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from sqlalchemy import distinct, func, select
 
 from app.boot import app
@@ -65,6 +65,22 @@ def _set_pilot_cookie(response, session_id: str, is_new: bool) -> None:
     )
 
 
+def _pilot_robots(site) -> str:
+    lines = ["User-agent: *", "Allow: /"]
+    if site.indexable:
+        lines.append(f"Sitemap: https://{site.domain}/sitemap.xml")
+    return "\n".join(lines) + "\n"
+
+
+def _pilot_sitemap(site) -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"  <url><loc>https://{site.domain}/</loc></url>\n"
+        "</urlset>\n"
+    )
+
+
 @app.middleware("http")
 async def _pilot_site_router(request: Request, call_next):
     """Serve many lightweight sites from one app, selected solely by Host.
@@ -80,6 +96,21 @@ async def _pilot_site_router(request: Request, call_next):
     if site is None:
         return await call_next(request)
 
+    path = request.url.path or "/"
+    if path == "/robots.txt":
+        return PlainTextResponse(
+            _pilot_robots(site),
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+    if path == "/sitemap.xml":
+        if not site.indexable:
+            return Response(status_code=404)
+        return Response(
+            content=_pilot_sitemap(site),
+            media_type="application/xml",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
     try:
         _ensure_pilot_schema()
     except Exception:
@@ -87,7 +118,6 @@ async def _pilot_site_router(request: Request, call_next):
         return JSONResponse({"status": "temporarily unavailable"}, status_code=503)
 
     session_id, is_new_session = _pilot_session(request)
-    path = request.url.path or "/"
     landing_path = path
     if request.url.query:
         landing_path += f"?{request.url.query}"
@@ -137,17 +167,9 @@ async def _pilot_site_router(request: Request, call_next):
         else:
             response = main_module.templates.TemplateResponse(
                 request=request,
-                name="pilot_message.html",
-                context={
-                    "site": site,
-                    "title": "Recommendations are being finalised",
-                    "message": (
-                        "Thanks — your click has been counted. We are currently reviewing the "
-                        "best matching options for this guide."
-                    ),
-                    "detail": "The full recommendation link will be switched on shortly.",
-                },
-                headers={"Cache-Control": "no-store"},
+                name="pilot_recommendations.html",
+                context={"site": site},
+                headers={"Cache-Control": "public, max-age=60"},
             )
         _set_pilot_cookie(response, session_id, is_new_session)
         return response
@@ -296,8 +318,8 @@ def pilot_metrics(
             )
             clicks = interest_clicks + outbound_clicks
             top_paths = [
-                {"path": path, "pageviews": int(count)}
-                for path, count in db.execute(
+                {"path": event_path, "pageviews": int(count)}
+                for event_path, count in db.execute(
                     select(pilot_site_events.c.path, func.count().label("n"))
                     .where(*filters, pilot_site_events.c.event_type == "pageview")
                     .group_by(pilot_site_events.c.path)
