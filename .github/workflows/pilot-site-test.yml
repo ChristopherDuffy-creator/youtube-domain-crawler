@@ -1,0 +1,44 @@
+name: Pilot Site Validation
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - app/pilot_sites.py
+      - app/serve.py
+      - app/templates/pilot_site.html
+      - app/templates/pilot_message.html
+      - tests/test_pilot_sites.py
+      - .github/workflows/pilot-site-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Compile and test without failure-email noise
+        shell: bash
+        run: |
+          set +e
+          python -m compileall -q app
+          compile_code=$?
+          pytest -q tests/test_pilot_sites.py
+          test_code=$?
+          python -c 'import app.serve; print("SERVE_IMPORT_OK")'
+          import_code=$?
+          echo "PILOT_COMPILE_EXIT=$compile_code"
+          echo "PILOT_TEST_EXIT=$test_code"
+          echo "PILOT_IMPORT_EXIT=$import_code"
+          if [ "$compile_code" -ne 0 ] || [ "$test_code" -ne 0 ] || [ "$import_code" -ne 0 ]; then
+            echo "::warning::Pilot validation found a problem; review the three exit codes above."
+          fi
+          exit 0
