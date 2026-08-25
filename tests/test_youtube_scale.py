@@ -27,6 +27,7 @@ from app.models import (
     Video,
     VideoDomain,
     VideoRefreshState,
+    ViewSnapshot,
     YouTubeChannel,
     YouTubeChannelIntelligence,
     YouTubeDomainSignal,
@@ -291,6 +292,61 @@ def test_adaptive_refresh_requests_only_due_linked_videos() -> None:
         assert state.last_view_count == 252_500
         untouched = db.get(VideoRefreshState, "latervideo01")
         assert untouched is not None and untouched.last_view_count == 250_000
+
+
+def test_snapshot_refresh_bulk_inserts_only_missing_daily_snapshots() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        youtube_view_refresh_batch_size=500,
+        youtube_data_daily_limit=100,
+        youtube_fanout_daily_data_limit=100,
+        youtube_stats_daily_limit=100,
+    )
+    now = datetime.now(UTC)
+    video_ids = ["snapshot0001", "snapshot0002", "snapshot0003"]
+
+    with Session(engine) as db:
+        db.add_all(
+            [Video(id=video_id, lifetime_views=200_000, active=True) for video_id in video_ids]
+        )
+        db.add_all(
+            [
+                VideoRefreshState(
+                    video_id=video_id,
+                    next_refresh_at=now - timedelta(minutes=1),
+                    last_view_count=200_000,
+                )
+                for video_id in video_ids
+            ]
+        )
+        db.add(
+            ViewSnapshot(
+                video_id="snapshot0001",
+                captured_at=now - timedelta(hours=1),
+                capture_date=now.date(),
+                view_count=200_000,
+            )
+        )
+        db.commit()
+
+        client = FakeStatisticsClient()
+        counters = run_view_snapshot_batch(db, settings, client)  # type: ignore[arg-type]
+        snapshots = db.scalars(
+            select(ViewSnapshot)
+            .where(ViewSnapshot.video_id.in_(video_ids))
+            .order_by(ViewSnapshot.video_id)
+        ).all()
+
+        assert client.requested == video_ids
+        assert counters["videos_due"] == 3
+        assert counters["videos_updated"] == 3
+        assert counters["snapshots"] == 2
+        assert counters["statistics_calls"] == 1
+        assert len(snapshots) == 3
+        assert {snapshot.video_id for snapshot in snapshots} == set(video_ids)
+        assert all(snapshot.capture_date == now.date() for snapshot in snapshots)
+        assert all(snapshot.view_count == 252_500 for snapshot in snapshots)
 
 
 def test_every_linked_video_gets_first_follow_up_within_one_day() -> None:
