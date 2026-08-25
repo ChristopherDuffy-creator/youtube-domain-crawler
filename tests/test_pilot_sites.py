@@ -9,6 +9,7 @@ from app.pilot_sites import (
 )
 
 
+# This test module is also the lightweight CI trigger for the pilot branch.
 def test_normalize_host_handles_www_and_port() -> None:
     assert normalize_host("WWW.CraftsHeaven.Club:443") == "craftsheaven.club"
 
