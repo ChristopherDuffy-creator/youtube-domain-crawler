@@ -1,5 +1,6 @@
 name: Pilot Apply DNS
 
+# One-shot DNS setup for the three purchased pilot domains.
 on:
   push:
     branches:
