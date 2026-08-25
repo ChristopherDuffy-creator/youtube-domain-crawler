@@ -6,6 +6,8 @@ on:
       - pilot/three-site-validation
     paths:
       - .github/workflows/pilot-report.yml
+      - scripts/pilot_report.py
+      - pilot/PILOT_BASELINE_2026-08-25.json
   workflow_dispatch:
     inputs:
       since:
