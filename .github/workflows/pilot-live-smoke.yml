@@ -20,6 +20,7 @@ jobs:
         run: |
           set +e
           base="https://youtube-domain-crawler-production.up.railway.app"
+          echo "Smoke version 2"
           for domain in craftsheaven.club satvic.yoga teamgerardiperformance.com; do
             echo "=== HOST-ROUTED $domain ==="
             for path in / /privacy /go/main; do
