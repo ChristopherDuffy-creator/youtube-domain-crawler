@@ -907,6 +907,7 @@ def dashboard(
     request: Request,
     view: DashboardSystem = "web",
     tier: ResultTier = "all",
+    decision: DecisionStatus | None = None,
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
@@ -920,24 +921,37 @@ def dashboard(
             .join(Domain, Domain.id == Candidate.domain_id)
             .join(Video, Video.id == Candidate.best_video_id)
             .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .outerjoin(
+                DashboardDecision,
+                (DashboardDecision.domain_id == Domain.id)
+                & (DashboardDecision.system == "youtube"),
+            )
             .where(
                 Candidate.tier != "rejected",
                 Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
                 or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
             )
         )
-        if tier == "new":
-            candidate_statement = candidate_statement.where(Candidate.updated_at >= new_since)
-        elif tier == "measured":
-            candidate_statement = candidate_statement.join(
-                YouTubeDomainSignal,
-                YouTubeDomainSignal.domain_id == Domain.id,
-            ).where(
-                YouTubeDomainSignal.measured_15d.is_(True),
-                YouTubeDomainSignal.verified_30d.is_(False),
+        if decision is not None:
+            candidate_statement = candidate_statement.where(
+                DashboardDecision.status == decision
             )
-        elif tier != "all":
-            candidate_statement = candidate_statement.where(Candidate.tier == tier)
+        else:
+            candidate_statement = candidate_statement.where(DashboardDecision.id.is_(None))
+            if tier == "new":
+                candidate_statement = candidate_statement.where(
+                    Candidate.updated_at >= new_since
+                )
+            elif tier == "measured":
+                candidate_statement = candidate_statement.join(
+                    YouTubeDomainSignal,
+                    YouTubeDomainSignal.domain_id == Domain.id,
+                ).where(
+                    YouTubeDomainSignal.measured_15d.is_(True),
+                    YouTubeDomainSignal.verified_30d.is_(False),
+                )
+            elif tier != "all":
+                candidate_statement = candidate_statement.where(Candidate.tier == tier)
         candidate_rows = db.execute(
             candidate_statement.order_by(
                 case(
@@ -1000,6 +1014,26 @@ def dashboard(
             .group_by(Candidate.tier)
         ).all()
     }
+    youtube_open_tier_counts = {
+        tier_name: int(count)
+        for tier_name, count in db.execute(
+            select(Candidate.tier, func.count())
+            .join(Domain, Domain.id == Candidate.domain_id)
+            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .outerjoin(
+                DashboardDecision,
+                (DashboardDecision.domain_id == Domain.id)
+                & (DashboardDecision.system == "youtube"),
+            )
+            .where(
+                Candidate.tier != "rejected",
+                DashboardDecision.id.is_(None),
+                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
+                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+            )
+            .group_by(Candidate.tier)
+        ).all()
+    }
     web_tier_counts = {
         tier_name: int(count)
         for tier_name, count in db.execute(
@@ -1019,8 +1053,14 @@ def dashboard(
             .select_from(Candidate)
             .join(Domain, Domain.id == Candidate.domain_id)
             .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .outerjoin(
+                DashboardDecision,
+                (DashboardDecision.domain_id == Domain.id)
+                & (DashboardDecision.system == "youtube"),
+            )
             .where(
                 Candidate.tier != "rejected",
+                DashboardDecision.id.is_(None),
                 Candidate.updated_at >= new_since,
                 Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
                 or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
@@ -1035,8 +1075,14 @@ def dashboard(
             .join(Candidate, Candidate.domain_id == YouTubeDomainSignal.domain_id)
             .join(Domain, Domain.id == Candidate.domain_id)
             .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+            .outerjoin(
+                DashboardDecision,
+                (DashboardDecision.domain_id == Domain.id)
+                & (DashboardDecision.system == "youtube"),
+            )
             .where(
                 Candidate.tier != "rejected",
+                DashboardDecision.id.is_(None),
                 YouTubeDomainSignal.measured_15d.is_(True),
                 YouTubeDomainSignal.verified_30d.is_(False),
                 Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
@@ -1063,7 +1109,7 @@ def dashboard(
         "priority", 0
     )
     youtube_results = sum(
-        youtube_tier_counts.get(tier_name, 0)
+        youtube_open_tier_counts.get(tier_name, 0)
         for tier_name in ("priority", "qualified", "watchlist", "pending")
     )
     crawler_videos = db.scalar(select(func.count()).select_from(Video)) or 0
@@ -1174,6 +1220,7 @@ def dashboard(
         context={
             "dashboard_view": view,
             "result_tier": tier,
+            "decision_filter": decision,
             "candidate_rows": candidate_rows,
             "web_evidence_rows": web_evidence_rows,
             "proof_preview": proof_preview,
@@ -1181,6 +1228,7 @@ def dashboard(
             "qualified": qualified,
             "youtube_results": youtube_results,
             "youtube_tier_counts": youtube_tier_counts,
+            "youtube_open_tier_counts": youtube_open_tier_counts,
             "web_tier_counts": web_tier_counts,
             "youtube_new_count": youtube_new_count,
             "youtube_measured_count": youtube_measured_count,

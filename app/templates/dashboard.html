@@ -83,10 +83,13 @@
       <a class="stat-card{% if result_tier == 'all' %} active{% endif %}" href="/?view=youtube"><span>{{ "{:,}".format(youtube_results) }}</span><small>All YouTube results</small></a>
       <a class="stat-card new{% if result_tier == 'new' %} active{% endif %}" href="/?view=youtube&amp;tier=new"><span>{{ "{:,}".format(youtube_new_count) }}</span><small>New since your last visit</small></a>
       <a class="stat-card qualified{% if result_tier == 'measured' %} active{% endif %}" href="/?view=youtube&amp;tier=measured"><span>{{ "{:,}".format(youtube_measured_count) }}</span><small>15-day measured — click to view</small></a>
-      <a class="stat-card priority{% if result_tier == 'priority' %} active{% endif %}" href="/?view=youtube&amp;tier=priority"><span>{{ "{:,}".format(youtube_tier_counts.get('priority', 0)) }}</span><small>Priority — click to view</small></a>
-      <a class="stat-card qualified{% if result_tier == 'qualified' %} active{% endif %}" href="/?view=youtube&amp;tier=qualified"><span>{{ "{:,}".format(youtube_tier_counts.get('qualified', 0)) }}</span><small>Qualified — click to view</small></a>
-      <a class="stat-card watchlist{% if result_tier == 'watchlist' %} active{% endif %}" href="/?view=youtube&amp;tier=watchlist"><span>{{ "{:,}".format(youtube_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — click to view</small></a>
-      <a class="stat-card pending{% if result_tier == 'pending' %} active{% endif %}" href="/?view=youtube&amp;tier=pending"><span>{{ "{:,}".format(youtube_tier_counts.get('pending', 0)) }}</span><small>Pending — click to view</small></a>
+      <a class="stat-card priority{% if result_tier == 'priority' and not decision_filter %} active{% endif %}" href="/?view=youtube&amp;tier=priority"><span>{{ "{:,}".format(youtube_open_tier_counts.get('priority', 0)) }}</span><small>Priority — open</small></a>
+      <a class="stat-card qualified{% if result_tier == 'qualified' and not decision_filter %} active{% endif %}" href="/?view=youtube&amp;tier=qualified"><span>{{ "{:,}".format(youtube_open_tier_counts.get('qualified', 0)) }}</span><small>Qualified — open</small></a>
+      <a class="stat-card watchlist{% if result_tier == 'watchlist' and not decision_filter %} active{% endif %}" href="/?view=youtube&amp;tier=watchlist"><span>{{ "{:,}".format(youtube_open_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — uncategorised</small></a>
+      <a class="stat-card pending{% if result_tier == 'pending' and not decision_filter %} active{% endif %}" href="/?view=youtube&amp;tier=pending"><span>{{ "{:,}".format(youtube_open_tier_counts.get('pending', 0)) }}</span><small>Pending — open</small></a>
+      <a class="stat-card new{% if decision_filter == 'shortlisted' %} active{% endif %}" href="/?view=youtube&amp;decision=shortlisted"><span>{{ decision_counts.get('shortlisted', 0) }}</span><small>Shortlisted — click to view</small></a>
+      <a class="stat-card qualified{% if decision_filter == 'bought' %} active{% endif %}" href="/?view=youtube&amp;decision=bought"><span>{{ decision_counts.get('bought', 0) }}</span><small>Bought — click to view</small></a>
+      <a class="stat-card pending{% if decision_filter == 'ignored' %} active{% endif %}" href="/?view=youtube&amp;decision=ignored"><span>{{ decision_counts.get('ignored', 0) }}</span><small>Ignored — click to view</small></a>
       <article><span>{{ "{:,}".format(cumulative_videos) }}</span><small>Videos checked cumulative</small></article>
       <article><span>{{ "{:,}".format(cumulative_domains) }}</span><small>Domains checked cumulative</small></article>
       <article><span>{{ "{:,}".format(cumulative_dropped) }}</span><small>Dropped names checked/loaded</small></article>
@@ -107,7 +110,7 @@
           <p class="eyebrow">YOUTUBE</p>
           <h2>YouTube opportunities</h2>
           <p>Priority {{ "{:,}".format(priority_threshold) }}+ · Qualified {{ "{:,}".format(qualified_threshold) }}+ · Watchlist {{ "{:,}".format(watch_threshold) }}+ · 15-day measured is an early decision signal, not 30-day verification.</p>
-          {% if result_tier != 'all' %}<p class="filter-summary">Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> only · <a href="/?view=youtube">Show all results</a></p>{% endif %}
+          {% if decision_filter %}<p class="filter-summary">Showing <strong>{{ decision_filter }}</strong> only · <a href="/?view=youtube&amp;tier=watchlist">Back to uncategorised Watchlist</a></p>{% elif result_tier != 'all' %}<p class="filter-summary">Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> only · <a href="/?view=youtube">Show all open results</a></p>{% endif %}
         </div>
       </div>
       <div class="table-wrap">
@@ -144,7 +147,7 @@
               </td>
             </tr>
           {% else %}
-            <tr><td colspan="8" class="empty">No {{ 'new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'ranked') }} YouTube candidates yet.</td></tr>
+            <tr><td colspan="8" class="empty">No {{ decision_filter if decision_filter else ('new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'open ranked')) }} YouTube candidates yet.</td></tr>
           {% endfor %}
           </tbody>
         </table>
