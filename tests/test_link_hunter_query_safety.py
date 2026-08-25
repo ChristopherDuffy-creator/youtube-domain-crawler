@@ -34,6 +34,7 @@ def test_large_priority_name_pool_is_split_before_sql_execution(monkeypatch):
         "exact_links": {name: 1 for name in names},
         "independent_sites": {},
         "verified_links": {},
+        "observations": {},
         "youtube": {},
         "availability": {},
         "screening": {},

@@ -278,6 +278,12 @@ def traffic_first_rerank_summary_targets(
         summary_scores[target] = round(summary_score, 2)
 
         verified_links = max(0, int(signal.get("verified_links", 0) or 0))
+        observed_live_links = max(0, int(signal.get("observed_live_links", 0) or 0))
+        clickable_live_links = max(0, int(signal.get("clickable_live_links", 0) or 0))
+        max_survival_days = max(
+            0.0,
+            float(signal.get("max_observed_survival_days", 0.0) or 0.0),
+        )
         exact_links = max(0, int(signal.get("exact_links", 0) or 0))
         commoncrawl_hits = max(0, int(signal.get("commoncrawl_hits", 0) or 0))
         youtube_views = max(0, int(signal.get("youtube_monthly_views", 0) or 0))
@@ -289,6 +295,9 @@ def traffic_first_rerank_summary_targets(
         verified_points = (
             min(18.0, 12.0 + 2.0 * math.log2(verified_links)) if verified_links else 0.0
         )
+        observed_points = min(5.0, 1.5 * math.log2(1 + observed_live_links))
+        clickable_points = min(8.0, 3.0 * math.log2(1 + clickable_live_links))
+        survival_points = min(3.0, 0.6 * math.log2(1 + max_survival_days))
         exact_points = min(8.0, 2.0 * math.log2(1 + exact_links))
         youtube_points = min(12.0, 2.5 * math.log10(1 + youtube_views))
         commoncrawl_points = min(5.0, 1.5 * math.log2(1 + commoncrawl_hits))
@@ -312,6 +321,9 @@ def traffic_first_rerank_summary_targets(
         combined_scores[target] = round(
             summary_score
             + verified_points
+            + observed_points
+            + clickable_points
+            + survival_points
             + exact_points
             + youtube_points
             + commoncrawl_points
@@ -336,6 +348,8 @@ def traffic_first_rerank_summary_targets(
             -float(free_signals.get(target, {}).get("summary_rescue_points", 0.0) or 0.0),
             -float(free_signals.get(target, {}).get("source_focus_bonus", 0.0) or 0.0),
             -float(summaries.get(target, {}).get("rank") or 0.0),
+            -int(free_signals.get(target, {}).get("clickable_live_links", 0) or 0),
+            -int(free_signals.get(target, {}).get("observed_live_links", 0) or 0),
             -int(free_signals.get(target, {}).get("verified_links", 0) or 0),
             -int(free_signals.get(target, {}).get("youtube_monthly_views", 0) or 0),
             -int(
