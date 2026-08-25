@@ -4,8 +4,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.jobs import ingest_dropped_text, process_video, refresh_candidates
-from app.models import Candidate, Domain, DroppedDomain, ViewSnapshot
+from app.jobs import _process_video_isolated, ingest_dropped_text, process_video, refresh_candidates
+from app.models import Candidate, Domain, DroppedDomain, Video, ViewSnapshot
 from app.youtube import YouTubeVideo
 
 
@@ -63,3 +63,48 @@ def test_video_to_qualified_candidate_and_dropped_match() -> None:
         )
         assert repeated == {"parsed": 2, "new": 1, "matched_index": 1}
         assert len(db.scalars(select(DroppedDomain)).all()) == 2
+
+
+def test_malformed_video_is_isolated_and_external_text_is_sanitized() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+
+    bad_video = YouTubeVideo(
+        id="x" * 21,
+        title="bad",
+        channel_id="channel-1",
+        channel_title="Example channel",
+        description="",
+        published_at=now,
+        view_count=1,
+    )
+    good_video = YouTubeVideo(
+        id="goodvideo01",
+        title="Good\x00 title\x1f",
+        channel_id="channel-1",
+        channel_title="Example\x00 channel",
+        description="Get this at https://clean-example.com/path\x00",
+        published_at=now,
+        view_count=10,
+    )
+
+    with Session(engine) as db:
+        failed_result, error = _process_video_isolated(
+            db, bad_video, "seed", "test"
+        )
+        saved_result, saved_error = _process_video_isolated(
+            db, good_video, "seed", "test"
+        )
+        db.commit()
+
+        assert failed_result is None
+        assert error is not None and "Invalid YouTube video identifier" in error
+        assert saved_error is None
+        assert saved_result is not None
+        stored = db.get(Video, "goodvideo01")
+        assert stored is not None
+        assert stored.title == "Good title"
+        assert stored.channel_title == "Example channel"
+        assert stored.description == "Get this at https://clean-example.com/path"
+        assert db.scalar(select(Domain).where(Domain.name == "clean-example.com")) is not None

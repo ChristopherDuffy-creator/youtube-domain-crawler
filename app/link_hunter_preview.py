@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -19,14 +19,107 @@ from app.models import (
     SourcePage,
     WebScreening,
 )
-from app.provider_budget import provider_daily_budget_snapshot
+from app.provider_budget import (
+    effective_provider_daily_limit_usd,
+    effective_provider_run_limit_usd,
+    provider_daily_budget_snapshot,
+)
+from app.web_hunter_upgrade import (
+    _cached_summary_signals,
+    _source_focus_signals,
+    _summary_rescue_points,
+    traffic_first_rerank_summary_targets,
+)
 
 _BLOCKED_AVAILABILITY = {"registered", "aftermarket", "premium", "reserved"}
 _RECENT_FALLBACK_POOL = 10_000
 _SCREENED_PRIORITY_POOL = 50_000
+_SQL_IN_CHUNK = 9_000
 
 
-def _dataforseo_checked_targets(db: Session) -> set[str]:
+def _chunks(values: list[str], size: int = _SQL_IN_CHUNK):
+    """Yield bounded chunks for the few candidate-name filters we need.
+
+    PostgreSQL limits a statement to 65,535 bind parameters.  Keep a margin
+    below that limit because these selectors are also used by production
+    bootstrap code that may add predicates in the future.
+    """
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
+
+
+def _dropped_domains_for_names(db: Session, names: set[str]) -> list[DroppedDomain]:
+    """Fetch dropped rows in bounded batches, preserving the old ordering."""
+    if not names:
+        return []
+    rows: list[DroppedDomain] = []
+    for chunk in _chunks(sorted(names)):
+        rows.extend(
+            db.scalars(
+                select(DroppedDomain)
+                .where(DroppedDomain.name.in_(chunk))
+                .order_by(DroppedDomain.first_seen_at.desc())
+            ).all()
+        )
+    return rows
+
+
+def _checked_targets_for_names(
+    db: Session,
+    names: set[str],
+    *,
+    endpoint: str,
+) -> set[str]:
+    """Return completed provider targets from a bounded candidate pool only."""
+    if not names:
+        return set()
+    checked: set[str] = set()
+    for chunk in _chunks(sorted(names)):
+        checked.update(
+            db.scalars(
+                select(ProviderQuery.target).where(
+                    ProviderQuery.provider == "dataforseo",
+                    ProviderQuery.endpoint == endpoint,
+                    ProviderQuery.status == "complete",
+                    ProviderQuery.target.in_(chunk),
+                )
+            ).all()
+        )
+    return checked
+
+
+def _summary_selection_checked_endpoint() -> str:
+    """Do not repay for summaries; cached winners remain in the deep queue."""
+    return "bulk_backlink_summary"
+
+
+def _blocked_screening_for_names(db: Session, names: set[str]) -> set[str]:
+    """Return blocked screening rows from a bounded candidate pool only."""
+    if not names:
+        return set()
+    blocked: set[str] = set()
+    for chunk in _chunks(sorted(names)):
+        blocked.update(
+            db.scalars(
+                select(WebScreening.domain_name).where(
+                    WebScreening.status == "blocked",
+                    WebScreening.domain_name.in_(chunk),
+                )
+            ).all()
+        )
+    return blocked
+
+
+def _dataforseo_checked_targets(
+    db: Session,
+    names: set[str] | None = None,
+) -> set[str]:
+    if names is not None:
+        return _checked_targets_for_names(
+            db,
+            names,
+            endpoint="bulk_backlink_summary",
+        )
     return set(
         db.scalars(
             select(ProviderQuery.target).where(
@@ -38,8 +131,17 @@ def _dataforseo_checked_targets(db: Session) -> set[str]:
     )
 
 
-def _dataforseo_deep_checked_targets(db: Session) -> set[str]:
+def _dataforseo_deep_checked_targets(
+    db: Session,
+    names: set[str] | None = None,
+) -> set[str]:
     """Domains whose expensive detailed backlink proof already completed."""
+    if names is not None:
+        return _checked_targets_for_names(
+            db,
+            names,
+            endpoint="backlinks",
+        )
     return set(
         db.scalars(
             select(ProviderQuery.target).where(
@@ -151,6 +253,8 @@ def _free_rank_context(db: Session) -> dict[str, Any]:
         "youtube": _youtube_signals(db),
         "availability": _availability_signals(db),
         "screening": _screening_signals(db),
+        "cached_summary": _cached_summary_signals(db),
+        "source_focus": _source_focus_signals(db),
     }
 
 
@@ -204,6 +308,8 @@ def _free_preproof_score(
 def _free_signal_row(name: str, context: dict[str, Any]) -> dict[str, int | float | str]:
     yt = context["youtube"].get(name, {})
     free_screen = context["screening"].get(name, {})
+    summary_signal = context.get("cached_summary", {}).get(name, {})
+    focus_signal = context.get("source_focus", {}).get(name, {})
     return {
         "exact_links": int(context["exact_links"].get(name, 0) or 0),
         "independent_sites": int(context["independent_sites"].get(name, 0) or 0),
@@ -216,6 +322,21 @@ def _free_signal_row(name: str, context: dict[str, Any]) -> dict[str, int | floa
         "screening_status": str(free_screen.get("status", "unscreened")),
         "screening_quality": float(free_screen.get("quality_score", 0.0) or 0.0),
         "screening_risk": float(free_screen.get("risk_score", 0.0) or 0.0),
+        "summary_rescue_points": _summary_rescue_points(summary_signal),
+        "cached_summary_rank": float(summary_signal.get("rank", 0.0) or 0.0),
+        "cached_referring_pages": int(summary_signal.get("referring_pages", 0) or 0),
+        "cached_referring_domains": int(
+            summary_signal.get("referring_domains", 0) or 0
+        ),
+        "source_focus_bonus": max(
+            0.0,
+            float(focus_signal.get("best_weight", 0.0) or 0.0),
+        ),
+        "source_focus_category": str(focus_signal.get("best_category", "") or ""),
+        "source_focus_government": int(focus_signal.get("government", 0) or 0),
+        "source_focus_academic": int(focus_signal.get("academic", 0) or 0),
+        "source_focus_editorial": int(focus_signal.get("editorial", 0) or 0),
+        "source_focus_community": int(focus_signal.get("community", 0) or 0),
     }
 
 
@@ -233,6 +354,12 @@ def _free_score_for_name(name: str, context: dict[str, Any]) -> tuple[float, dic
         screening_quality=float(row["screening_quality"]),
         screening_risk=float(row["screening_risk"]),
     )
+    score = round(
+        score
+        + min(25.0, float(row["summary_rescue_points"]))
+        + min(8.0, float(row["source_focus_bonus"])),
+        2,
+    )
     return score, row
 
 
@@ -240,51 +367,21 @@ def _rank_free_candidates(
     candidates: list[DroppedDomain],
     context: dict[str, Any],
 ) -> tuple[list[DroppedDomain], dict[str, float], dict[str, dict[str, int | float | str]]]:
-    commoncrawl: dict[str, int] = context["commoncrawl"]
-    exact_links: dict[str, int] = context["exact_links"]
-    independent_sites: dict[str, int] = context["independent_sites"]
-    verified_links: dict[str, int] = context["verified_links"]
-    youtube: dict[str, dict[str, int]] = context["youtube"]
-    availability: dict[str, str] = context["availability"]
-    screening: dict[str, dict[str, int | float | str]] = context["screening"]
     original_position = {drop.name: position for position, drop in enumerate(candidates)}
 
     scores: dict[str, float] = {}
     signals: dict[str, dict[str, int | float | str]] = {}
     for drop in candidates:
-        yt = youtube.get(drop.name, {})
-        free_screen = screening.get(drop.name, {})
-        row = {
-            "exact_links": exact_links.get(drop.name, 0),
-            "independent_sites": independent_sites.get(drop.name, 0),
-            "verified_links": verified_links.get(drop.name, 0),
-            "commoncrawl_hits": commoncrawl.get(drop.name, 0),
-            "youtube_monthly_views": int(yt.get("monthly_views", 0)),
-            "youtube_video_count": int(yt.get("video_count", 0)),
-            "youtube_link_count": int(yt.get("link_count", 0)),
-            "availability": availability.get(drop.name, "unknown"),
-            "screening_status": str(free_screen.get("status", "unscreened")),
-            "screening_quality": float(free_screen.get("quality_score", 0.0)),
-            "screening_risk": float(free_screen.get("risk_score", 0.0)),
-        }
+        score, row = _free_score_for_name(drop.name, context)
         signals[drop.name] = row
-        scores[drop.name] = _free_preproof_score(
-            exact_links=int(row["exact_links"]),
-            independent_sites=int(row["independent_sites"]),
-            verified_links=int(row["verified_links"]),
-            commoncrawl_hits=int(row["commoncrawl_hits"]),
-            youtube_monthly_views=int(row["youtube_monthly_views"]),
-            youtube_video_count=int(row["youtube_video_count"]),
-            youtube_link_count=int(row["youtube_link_count"]),
-            availability_status=str(row["availability"]),
-            screening_quality=float(row["screening_quality"]),
-            screening_risk=float(row["screening_risk"]),
-        )
+        scores[drop.name] = score
 
     ordered = sorted(
         candidates,
         key=lambda drop: (
             -scores[drop.name],
+            -float(signals[drop.name]["summary_rescue_points"]),
+            -float(signals[drop.name]["source_focus_bonus"]),
             -int(signals[drop.name]["verified_links"]),
             -int(signals[drop.name]["independent_sites"]),
             -int(signals[drop.name]["exact_links"]),
@@ -326,7 +423,6 @@ def _select_provider_summary_targets_with_ranking(
     int,
     dict[str, Any],
 ]:
-    already_checked = _dataforseo_checked_targets(db)
     context = _free_rank_context(db)
     availability: dict[str, str] = context["availability"]
 
@@ -336,28 +432,25 @@ def _select_provider_summary_targets_with_ranking(
         .limit(_RECENT_FALLBACK_POOL)
     ).all()
     priority_names = _priority_candidate_names(context)
-    priority_drops: list[DroppedDomain] = []
-    if priority_names:
-        priority_drops = db.scalars(
-            select(DroppedDomain)
-            .where(DroppedDomain.name.in_(priority_names))
-            .order_by(DroppedDomain.first_seen_at.desc())
-        ).all()
+    priority_drops = _dropped_domains_for_names(db, priority_names)
+    priority_drops.sort(key=lambda drop: drop.first_seen_at, reverse=True)
 
     candidate_map = {drop.name: drop for drop in recent_drops}
     for drop in priority_drops:
         candidate_map.setdefault(drop.name, drop)
     pooled = list(candidate_map.values())
+    pooled_names = {drop.name for drop in pooled}
+    already_checked = _checked_targets_for_names(
+        db,
+        pooled_names,
+        endpoint=_summary_selection_checked_endpoint(),
+    )
     unchecked = [drop for drop in pooled if drop.name not in already_checked]
 
-    locally_blocked = set(
-        db.scalars(
-            select(WebScreening.domain_name).where(
-                WebScreening.status == "blocked",
-                WebScreening.domain_name.in_([drop.name for drop in unchecked]),
-            )
-        ).all()
-    ) if unchecked else set()
+    locally_blocked = _blocked_screening_for_names(
+        db,
+        {drop.name for drop in unchecked},
+    )
 
     blocked_names = {
         drop.name
@@ -419,31 +512,36 @@ def select_cached_deep_proof_targets_with_ranking(
     it failed to make the top five in the same batch that first summarised it.
     """
     rank_context = context or _free_rank_context(db)
-    already_deep = _dataforseo_deep_checked_targets(db)
+    detailed_proof_exists = exists(
+        select(ProviderQuery.id).where(
+            ProviderQuery.provider == "dataforseo",
+            ProviderQuery.endpoint == "backlinks",
+            ProviderQuery.status == "complete",
+            ProviderQuery.target == Domain.name,
+        )
+    )
+    blocked_screening_exists = exists(
+        select(WebScreening.id).where(
+            WebScreening.status == "blocked",
+            WebScreening.domain_name == Domain.name,
+        )
+    )
     rows = db.execute(
         select(BacklinkSummary, Domain)
         .join(Domain, Domain.id == BacklinkSummary.domain_id)
         .where(
             BacklinkSummary.provider == "dataforseo",
             BacklinkSummary.referring_pages > 0,
+            ~detailed_proof_exists,
+            ~blocked_screening_exists,
+            or_(
+                Domain.availability_status.is_(None),
+                ~Domain.availability_status.in_(_BLOCKED_AVAILABILITY),
+            ),
         )
-    ).all()
+    ).yield_per(1_000)
     if not rows:
         return [], {}, {}, {}, {}
-
-    candidate_names = [domain.name for _, domain in rows if domain.name not in already_deep]
-    blocked_screening = (
-        set(
-            db.scalars(
-                select(WebScreening.domain_name).where(
-                    WebScreening.status == "blocked",
-                    WebScreening.domain_name.in_(candidate_names),
-                )
-            ).all()
-        )
-        if candidate_names
-        else set()
-    )
 
     combined_scores: dict[str, float] = {}
     summary_scores: dict[str, float] = {}
@@ -452,10 +550,6 @@ def select_cached_deep_proof_targets_with_ranking(
     sort_rows: list[tuple[str, float, float, float, int, int]] = []
     for summary, domain in rows:
         name = domain.name
-        if name in already_deep or name in blocked_screening:
-            continue
-        if domain.availability_status in _BLOCKED_AVAILABILITY:
-            continue
         free_score, signal = _free_score_for_name(name, rank_context)
         summary_score = _summary_signal_score(_summary_record_payload(summary))
         combined = round(free_score + summary_score, 2)
@@ -519,41 +613,18 @@ def _summary_signal_score(summary: dict[str, Any]) -> float:
 def rerank_summary_screen_targets(
     targets: list[str],
     free_scores: dict[str, float],
-    free_signals: dict[str, dict[str, int | str]],
+    free_signals: dict[str, dict[str, int | float | str]],
     summaries: dict[str, dict[str, Any]],
     deep_limit: int,
 ) -> tuple[list[str], dict[str, float], dict[str, float]]:
-    """Choose only the best live-summary targets for detailed paid proof."""
-    original_position = {target: position for position, target in enumerate(targets)}
-    summary_scores = {
-        target: _summary_signal_score(summaries.get(target, {})) for target in targets
-    }
-    combined_scores = {
-        target: round(float(free_scores.get(target, 0.0)) + summary_scores[target], 2)
-        for target in targets
-    }
-    eligible = [
-        target
-        for target in targets
-        if int(summaries.get(target, {}).get("referring_pages") or 0) > 0
-    ]
-    ordered = sorted(
-        eligible,
-        key=lambda target: (
-            -combined_scores[target],
-            -float(free_scores.get(target, 0.0)),
-            -int(free_signals.get(target, {}).get("verified_links", 0) or 0),
-            -int(free_signals.get(target, {}).get("independent_sites", 0) or 0),
-            -int(
-                summaries.get(target, {}).get("referring_main_domains")
-                or summaries.get(target, {}).get("referring_domains")
-                or 0
-            ),
-            -int(summaries.get(target, {}).get("referring_pages") or 0),
-            original_position[target],
-        ),
+    """Choose detailed-proof targets using the canonical traffic-first policy."""
+    return traffic_first_rerank_summary_targets(
+        targets,
+        free_scores,
+        free_signals,
+        summaries,
+        deep_limit,
     )
-    return ordered[: max(0, deep_limit)], combined_scores, summary_scores
 
 
 def _proof_readiness(
@@ -566,20 +637,21 @@ def _proof_readiness(
     daily_budget: dict[str, float | int | str],
 ) -> dict[str, Any]:
     """Return zero-cost activation diagnostics without exposing secrets."""
+    run_cap = effective_provider_run_limit_usd(settings)
     blockers: list[str] = []
     warnings: list[str] = []
     if not settings.dataforseo_enabled:
         blockers.append("dataforseo_credentials_not_configured")
     if not work_available:
         blockers.append("no_queued_work")
-    if estimated_max_cost_usd > settings.link_hunter_proof_max_cost_usd:
+    if estimated_max_cost_usd > run_cap:
         blockers.append("estimated_cost_exceeds_configured_cap")
     # The database reservation holds the full configured per-run envelope.
     # Stop before Railway paid mode is enabled when that reservation cannot fit.
     if (
         work_available
         and float(daily_budget.get("remaining_usd") or 0.0) + 1e-9
-        < settings.link_hunter_proof_max_cost_usd
+        < run_cap
     ):
         blockers.append("daily_budget_exhausted")
     if settings.link_hunter_enabled:
@@ -651,6 +723,8 @@ def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, A
     daily_budget = provider_daily_budget_snapshot(db, settings)
     work_available_count = len(targets) + len(cached_targets)
 
+    run_cap = effective_provider_run_limit_usd(settings)
+    daily_cap = effective_provider_daily_limit_usd(settings)
     return {
         "targets": targets,
         "target_count": len(targets),
@@ -670,10 +744,10 @@ def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, A
         "backlinks_per_domain": settings.link_hunter_backlinks_per_domain,
         "max_source_pages": max_source_pages,
         "estimated_max_cost_usd": estimated_max_cost,
-        "configured_cost_cap_usd": settings.link_hunter_proof_max_cost_usd,
-        "daily_cost_cap_usd": settings.link_hunter_daily_max_cost_usd,
+        "configured_cost_cap_usd": run_cap,
+        "daily_cost_cap_usd": daily_cap,
         "daily_budget": daily_budget,
-        "within_cost_cap": estimated_max_cost <= settings.link_hunter_proof_max_cost_usd,
+        "within_cost_cap": estimated_max_cost <= run_cap,
         "dataforseo_configured": settings.dataforseo_enabled,
         "link_hunter_enabled": settings.link_hunter_enabled,
         "paid_requests_made": 0,

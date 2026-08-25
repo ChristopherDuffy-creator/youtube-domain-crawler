@@ -24,9 +24,10 @@ from sqlalchemy.orm import Session
 
 from app.backup import build_logical_snapshot
 from app.config import get_settings
+from app.data_hygiene import purge_legacy_bare_youtube_links
 from app.database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
 from app.jobs import JOB_FUNCTIONS, build_scheduler, ensure_seed_data, ingest_dropped_text
-from app.link_hunter import run_provider_proof_job
+from app.link_hunter import _score_opportunity, run_provider_proof_job
 from app.link_hunter_preview import build_provider_proof_preview
 from app.models import (
     BacklinkSummary,
@@ -52,6 +53,7 @@ from app.models import (
     YouTubeDomainSignal,
 )
 from app.provider_budget import provider_daily_budget_snapshot
+from app.web_hunter_upgrade import regrade_existing_web_opportunities
 from app.youtube_intelligence import youtube_quota_snapshot
 
 settings = get_settings()
@@ -130,6 +132,13 @@ async def lifespan(_: FastAPI):
     ensure_runtime_schema(engine)
     with SessionLocal() as db:
         ensure_seed_data(db)
+        purge_legacy_bare_youtube_links(db, settings)
+        regraded = regrade_existing_web_opportunities(
+            db,
+            _score_opportunity,
+            limit=250,
+        )
+        logger.info("Traffic-first Web Hunter regraded %s existing opportunities", regraded)
     if settings.scheduler_enabled:
         scheduler = build_scheduler(settings)
         scheduler.start()
@@ -374,8 +383,12 @@ def _load_web_evidence_rows(
             (Opportunity.tier == "watchlist", 2),
             else_=3,
         ),
+        Opportunity.verified_live_link.desc(),
+        OpportunityEconomics.monthly_revenue_high_usd.desc().nullslast(),
+        OpportunityEconomics.expected_clicks_monthly.desc().nullslast(),
+        Opportunity.source_page_traffic_estimate.desc(),
         Opportunity.score.desc(),
-        Opportunity.link_strength.desc(),
+        Opportunity.independent_site_count.desc(),
     )
     if limit is not None:
         statement = statement.limit(limit)
@@ -1379,7 +1392,8 @@ def trigger_link_hunter_proof(_: None = Depends(require_admin_token)) -> dict[st
         counters = run_provider_proof_job()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"status": "complete", "job": "link_hunter_proof", "counters": counters}
+    status_value = "skipped" if counters.get("run_in_progress") else "complete"
+    return {"status": status_value, "job": "link_hunter_proof", "counters": counters}
 
 
 @app.post("/api/run/{job_name}")

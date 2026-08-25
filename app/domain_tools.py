@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+import unicodedata
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
@@ -13,13 +14,33 @@ _extractor = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
 # www., so keep them. We filter ambiguous bare tokens after parsing instead of
 # requiring a scheme.
 URL_RE = re.compile(
-    r"(?i)(?<![@\w])(?:https?://|www\.)[^\s<>\[\]{}\"']+"
-    r"|(?<![@\w])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"(?i)(?<![@\w-])(?:https?://|www\.)[^\s<>\[\]{}\"']+"
+    r"|(?<![@\w-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z]{2,63}(?:/[^\s<>\[\]{}\"']*)?"
 )
 
 TRAILING_PUNCTUATION = ".,;:!?)]}>\"'"
 EXPLICIT_URL_RE = re.compile(r"(?i)^(?:https?://|www\.)")
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def sanitize_external_text(value: object | None) -> str:
+    """Return text that PostgreSQL can safely store without changing layout.
+
+    Third-party APIs occasionally return NUL bytes or other C0 control
+    characters. PostgreSQL rejects NUL bytes in text columns, which used to
+    roll back an entire channel page. Preserve normal whitespace (including
+    newlines in descriptions) while dropping characters that have no useful
+    display or URL-extraction meaning.
+    """
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    return "".join(
+        character
+        for character in text
+        if character in {"\n", "\r", "\t"} or unicodedata.category(character) != "Cc"
+    )
 
 # Bare filename/prose collisions that are common in technical video text. An
 # explicit URL is always allowed, and a bare token with a path is strong URL
@@ -124,12 +145,19 @@ class ExtractedLink:
 
 
 def registrable_domain(hostname: str) -> tuple[str, str] | None:
+    if not hostname or any(ord(character) < 32 or ord(character) == 127 for character in hostname):
+        return None
     host = hostname.strip().strip(".").lower()
     if host.startswith("www."):
         host = host[4:]
+    if not host or len(host) > 253 or ".." in host:
+        return None
     try:
         host = host.encode("idna").decode("ascii")
     except UnicodeError:
+        return None
+    labels = host.split(".")
+    if any(not _HOST_LABEL_RE.fullmatch(label) for label in labels):
         return None
     extracted = _extractor(host)
     if not extracted.domain or not extracted.suffix:
@@ -197,6 +225,7 @@ def is_plausible_youtube_link(raw: str) -> bool:
 
 
 def extract_links(description: str) -> list[ExtractedLink]:
+    description = sanitize_external_text(description)
     if not description:
         return []
 
@@ -240,7 +269,7 @@ def extract_domain_names(text: str) -> list[str]:
     """Extract valid, non-platform domains from dropped-domain text/CSV."""
     names: list[str] = []
     seen: set[str] = set()
-    for match in URL_RE.finditer(text or ""):
+    for match in URL_RE.finditer(sanitize_external_text(text)):
         normalized = _normalise_url(match.group(0))
         if not normalized:
             continue

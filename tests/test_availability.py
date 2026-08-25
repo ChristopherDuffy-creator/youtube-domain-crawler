@@ -1,15 +1,22 @@
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from app.availability import (
-    RDAP_MAX_ATTEMPTS,
     AvailabilityResult,
+    _reset_rdap_circuits_for_tests,
     check_domain,
     check_porkbun,
     check_rdap,
     classify_rdap_dns,
 )
 from app.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def reset_rdap_circuits() -> None:
+    _reset_rdap_circuits_for_tests()
 
 
 def test_rdap_dns_classification_is_conservative() -> None:
@@ -143,9 +150,8 @@ def test_exact_registrar_is_only_used_after_likely_available_and_traffic_gate(mo
     assert calls == ["candidate-example.com"]
 
 
-def test_rdap_retries_transient_rate_limit(monkeypatch) -> None:
+def test_rdap_retries_transient_server_errors(monkeypatch) -> None:
     responses = [
-        FakeResponse({}, status_code=429),
         FakeResponse({}, status_code=503),
         FakeResponse({}, status_code=404),
     ]
@@ -157,10 +163,10 @@ def test_rdap_retries_transient_rate_limit(monkeypatch) -> None:
 
     assert status == "not_found"
     assert error is None
-    assert sleeps == [1, 2]
+    assert sleeps == [1]
 
 
-def test_rdap_reports_persistent_rate_limit_after_bounded_retries(monkeypatch) -> None:
+def test_rdap_stops_immediately_after_a_rate_limit(monkeypatch) -> None:
     attempts = 0
 
     def rate_limited(domain: str) -> FakeResponse:
@@ -173,6 +179,37 @@ def test_rdap_reports_persistent_rate_limit_after_bounded_retries(monkeypatch) -
 
     status, error = check_rdap("limited-example.com")
 
-    assert attempts == RDAP_MAX_ATTEMPTS
+    assert attempts == 1
     assert status == "rate_limited"
     assert error == "RDAP rate limited"
+
+
+def test_rdap_rate_limit_opens_a_tld_specific_circuit(monkeypatch) -> None:
+    attempts = 0
+
+    def rate_limited(domain: str) -> FakeResponse:
+        nonlocal attempts
+        attempts += 1
+        return FakeResponse({}, status_code=429)
+
+    monkeypatch.setattr("app.availability._paced_rdap_get", rate_limited)
+
+    first_status, _ = check_rdap("one-example.com")
+    second_status, second_error = check_rdap("two-example.com")
+
+    assert first_status == "rate_limited"
+    assert second_status == "rate_limited"
+    assert "circuit open" in (second_error or "")
+    assert attempts == 1
+
+
+def test_invalid_domain_is_rejected_before_dns_or_rdap(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.availability.check_dns",
+        lambda domain: (_ for _ in ()).throw(AssertionError("DNS should not run")),
+    )
+
+    result = check_domain("-bit.ly", Settings())
+
+    assert result.source == "validation"
+    assert result.error == "Invalid registrable domain"

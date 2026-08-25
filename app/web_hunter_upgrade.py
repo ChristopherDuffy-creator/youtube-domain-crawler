@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-"""Traffic-first production helpers for the web-wide Link Hunter.
+"""Canonical traffic-first helpers for the web-wide Link Hunter.
 
 Backlink volume remains useful evidence, but it is deliberately secondary to
 verified live links, source-page traffic, modelled clicks and revenue. The
 crawler's goal is to find domains that can receive monetisable humans now, not
 merely domains that accumulated many historical backlinks.
 
-The production bootstrap imports this module after the core Link Hunter modules
-are loaded. In that production-only path we also install a narrow rescue/focus
-layer that:
+The helpers implement a narrow rescue/focus layer that:
 
 * reconsiders strong summary-only cases until they receive a detailed proof;
 * gives modest preference to government and academic links;
@@ -19,8 +17,6 @@ layer that:
 """
 
 import math
-import sys
-from dataclasses import replace
 from typing import Any, Callable
 
 from sqlalchemy import select
@@ -32,7 +28,6 @@ from app.models import (
     LinkObservation,
     Opportunity,
     OpportunityEconomics,
-    ProviderQuery,
     SourceLink,
     SourcePage,
     SourceSite,
@@ -247,79 +242,6 @@ def _summary_rescue_points(signal: dict[str, float | int]) -> float:
     )
 
 
-def traffic_first_projection(
-    original: Callable[..., Any],
-    opportunity: Opportunity,
-    domain: Domain,
-    links: list[SourceLink],
-    *,
-    traffic: int,
-    verified: bool,
-    evidence_score: float,
-    clickability_score: float = 0.0,
-    screening_risk: float = 0.0,
-):
-    """Re-score an existing economic projection around real traffic evidence."""
-    projection = original(
-        opportunity,
-        domain,
-        links,
-        traffic=traffic,
-        verified=verified,
-        evidence_score=evidence_score,
-        clickability_score=clickability_score,
-        screening_risk=screening_risk,
-    )
-
-    traffic = max(0, int(traffic or 0))
-    clicks = max(0, int(projection.expected_clicks_monthly or 0))
-    revenue_high = max(0.0, float(projection.monthly_revenue_high_usd or 0.0))
-    risk = max(0.0, min(100.0, float(projection.risk_score or 0.0)))
-
-    traffic_points = min(28.0, 7.5 * math.log10(traffic + 1))
-    click_points = min(22.0, 10.0 * math.log10(clicks + 1))
-    revenue_points = min(22.0, 10.0 * math.log10(revenue_high + 1.0))
-    evidence_bonus = min(10.0, max(0.0, evidence_score) * 0.10)
-    verified_points = 10.0 if verified else 0.0
-    clickability_points = (
-        min(5.0, max(0.0, min(100.0, clickability_score)) / 20.0)
-        if verified
-        else 0.0
-    )
-    availability_points = {
-        "available": 3.0,
-        "likely_available": 2.0,
-        "conflicting": 0.5,
-    }.get(str(domain.availability_status or "unknown"), 0.0)
-    confidence_points = min(5.0, max(0.0, float(projection.confidence or 0.0)) * 5.0)
-    risk_penalty = risk * 0.10
-
-    buy_score = max(
-        0.0,
-        min(
-            100.0,
-            traffic_points
-            + click_points
-            + revenue_points
-            + evidence_bonus
-            + verified_points
-            + clickability_points
-            + availability_points
-            + confidence_points
-            - risk_penalty,
-        ),
-    )
-
-    # A backlink asset can still be interesting SEO evidence, but it is not a
-    # traffic-buy candidate until at least one monetisable click is modelled.
-    if traffic <= 0 or clicks <= 0 or revenue_high <= 0:
-        buy_score = min(buy_score, 24.9)
-    if not verified:
-        buy_score = min(buy_score, 39.9)
-
-    return replace(projection, buy_score=round(buy_score, 1))
-
-
 def traffic_first_rerank_summary_targets(
     targets: list[str],
     free_scores: dict[str, float],
@@ -507,166 +429,45 @@ def regrade_existing_web_opportunities(
     return updated
 
 
-def traffic_first_web_row_key(row: tuple[Any, ...]) -> tuple[Any, ...]:
-    """Sort dashboard rows by money/traffic proof before backlink vanity metrics."""
-    opportunity = row[0]
-    economics = row[6] if len(row) > 6 else None
-    tier_rank = {
-        "priority": 0,
-        "qualified": 1,
-        "watchlist": 2,
-        "pending": 3,
-    }.get(str(opportunity.tier or "pending"), 4)
-    revenue_high = float(economics.monthly_revenue_high_usd or 0.0) if economics else 0.0
-    clicks = int(economics.expected_clicks_monthly or 0) if economics else 0
-    return (
-        tier_rank,
-        -int(bool(opportunity.verified_live_link)),
-        -revenue_high,
-        -clicks,
-        -int(opportunity.source_page_traffic_estimate or 0),
-        -float(opportunity.score or 0.0),
-        -int(opportunity.independent_site_count or 0),
+def apply_source_focus_bonus(
+    db: Session | None,
+    opportunity: Opportunity,
+    domain: Domain,
+    saved_links: list[SourceLink],
+    *,
+    traffic: int,
+    verified: bool,
+) -> None:
+    """Apply the capped authority tie-breaker on every normal scoring path."""
+    if db is None or not saved_links:
+        return
+
+    focus = _source_focus_for_links(db, saved_links)
+    raw_weight = max(0.0, float(focus.get("best_weight", 0.0) or 0.0))
+    if raw_weight <= 0.0:
+        return
+
+    multiplier = 0.5 if verified and int(traffic or 0) > 0 else 0.125
+    score_bonus = min(4.0, raw_weight * multiplier)
+    economics = db.scalar(
+        select(OpportunityEconomics).where(
+            OpportunityEconomics.domain_id == opportunity.domain_id
+        )
     )
+    current = float(opportunity.score or 0.0)
+    if economics is not None:
+        current = max(current, float(economics.buy_score or 0.0))
+    adjusted = round(min(100.0, current + score_bonus), 1)
+    opportunity.score = adjusted
+    if economics is not None:
+        economics.buy_score = adjusted
 
-
-def _install_production_web_focus() -> None:
-    """Patch the already-loaded Link Hunter only when app.boot imports this module."""
-    import app.link_hunter as link_hunter_module
-    import app.link_hunter_preview as preview_module
-
-    original_score = link_hunter_module._score_opportunity
-    original_free_context = preview_module._free_rank_context
-    original_rank_free = preview_module._rank_free_candidates
-
-    def detailed_proof_checked_targets(db: Session) -> set[str]:
-        # A cheap bulk summary no longer retires a candidate forever. Only a
-        # completed detailed backlinks proof does. This makes the top summary-only
-        # pool cycle back through the 25-name screen until five at a time receive
-        # the expensive proof.
-        return set(
-            db.scalars(
-                select(ProviderQuery.target).where(
-                    ProviderQuery.provider == "dataforseo",
-                    ProviderQuery.endpoint == "backlinks",
-                    ProviderQuery.status == "complete",
-                )
-            ).all()
-        )
-
-    def focused_free_context(db: Session) -> dict[str, Any]:
-        context = original_free_context(db)
-        context["cached_summary"] = _cached_summary_signals(db)
-        context["source_focus"] = _source_focus_signals(db)
-        return context
-
-    def focused_rank_free(candidates, context):
-        ordered, scores, signals = original_rank_free(candidates, context)
-        cached = context.get("cached_summary", {})
-        focused = context.get("source_focus", {})
-        original_position = {item.name: index for index, item in enumerate(ordered)}
-
-        for candidate in candidates:
-            name = candidate.name
-            summary_signal = cached.get(name, {})
-            focus_signal = focused.get(name, {})
-            rescue_points = _summary_rescue_points(summary_signal)
-            focus_weight = max(0.0, float(focus_signal.get("best_weight", 0.0) or 0.0))
-            row = signals.setdefault(name, {})
-            row["summary_rescue_points"] = rescue_points
-            row["cached_summary_rank"] = float(summary_signal.get("rank", 0.0) or 0.0)
-            row["cached_referring_pages"] = int(summary_signal.get("referring_pages", 0) or 0)
-            row["cached_referring_domains"] = int(
-                summary_signal.get("referring_domains", 0) or 0
-            )
-            row["source_focus_bonus"] = focus_weight
-            row["source_focus_category"] = str(focus_signal.get("best_category", "") or "")
-            row["source_focus_government"] = int(focus_signal.get("government", 0) or 0)
-            row["source_focus_academic"] = int(focus_signal.get("academic", 0) or 0)
-            row["source_focus_editorial"] = int(focus_signal.get("editorial", 0) or 0)
-            row["source_focus_community"] = int(focus_signal.get("community", 0) or 0)
-            scores[name] = round(
-                float(scores.get(name, 0.0))
-                + min(25.0, rescue_points)
-                + min(8.0, focus_weight),
-                2,
-            )
-
-        ordered = sorted(
-            candidates,
-            key=lambda candidate: (
-                -float(scores.get(candidate.name, 0.0)),
-                -float(signals.get(candidate.name, {}).get("summary_rescue_points", 0.0) or 0.0),
-                -float(signals.get(candidate.name, {}).get("source_focus_bonus", 0.0) or 0.0),
-                -int(signals.get(candidate.name, {}).get("verified_links", 0) or 0),
-                -int(signals.get(candidate.name, {}).get("independent_sites", 0) or 0),
-                original_position.get(candidate.name, len(original_position)),
-            ),
-        )
-        return ordered, scores, signals
-
-    def focused_score(
-        opportunity,
-        domain,
-        saved_links,
-        traffic,
-        verified,
-        *,
-        db=None,
-        clickability_score=0.0,
-    ):
-        original_score(
-            opportunity,
-            domain,
-            saved_links,
-            traffic,
-            verified,
-            db=db,
-            clickability_score=clickability_score,
-        )
-        if db is None or not saved_links:
-            return
-
-        focus = _source_focus_for_links(db, list(saved_links))
-        raw_weight = max(0.0, float(focus.get("best_weight", 0.0) or 0.0))
-        if raw_weight <= 0.0:
-            return
-
-        # Authority is a tie-breaker only. A directly verified traffic case can
-        # receive at most +4 buy-score points; unverified/zero-traffic evidence
-        # gets only a token bump and remains behind the traffic-first gates.
-        multiplier = 0.5 if verified and int(traffic or 0) > 0 else 0.125
-        score_bonus = min(4.0, raw_weight * multiplier)
-        economics = db.scalar(
-            select(OpportunityEconomics).where(
-                OpportunityEconomics.domain_id == opportunity.domain_id
-            )
-        )
-        current = float(opportunity.score or 0.0)
-        if economics is not None:
-            current = max(current, float(economics.buy_score or 0.0))
-        adjusted = round(min(100.0, current + score_bonus), 1)
-        opportunity.score = adjusted
-        if economics is not None:
-            economics.buy_score = adjusted
-
-        ordinary_available = domain.availability_status == "available" and not domain.premium
-        if ordinary_available and verified and adjusted >= 80.0:
-            opportunity.tier = "priority"
-        elif ordinary_available and verified and adjusted >= 65.0:
-            opportunity.tier = "qualified"
-        elif adjusted >= 45.0:
-            opportunity.tier = "watchlist"
-        else:
-            opportunity.tier = "pending"
-
-    preview_module._dataforseo_checked_targets = detailed_proof_checked_targets
-    preview_module._free_rank_context = focused_free_context
-    preview_module._rank_free_candidates = focused_rank_free
-    link_hunter_module._score_opportunity = focused_score
-
-
-# Import-time patching is intentionally restricted to the production bootstrap.
-# Unit tests can import this module's helpers without mutating the global crawler.
-if "app.boot" in sys.modules:
-    _install_production_web_focus()
+    ordinary_available = domain.availability_status == "available" and not domain.premium
+    if ordinary_available and verified and adjusted >= 80.0:
+        opportunity.tier = "priority"
+    elif ordinary_available and verified and adjusted >= 65.0:
+        opportunity.tier = "qualified"
+    elif adjusted >= 45.0:
+        opportunity.tier = "watchlist"
+    else:
+        opportunity.tier = "pending"

@@ -10,13 +10,17 @@ import dns.resolver
 import httpx
 
 from app.config import Settings
+from app.domain_tools import registrable_domain
 
 RDAP_ROOT = "https://rdap.org/domain"
 PORKBUN_ROOT = "https://api.porkbun.com/api/json/v3"
 RDAP_MIN_INTERVAL_SECONDS = 0.25
 RDAP_MAX_ATTEMPTS = 3
+RDAP_RATE_LIMIT_COOLDOWN_SECONDS = 60.0
+RDAP_MAX_COOLDOWN_SECONDS = 15 * 60.0
 _rdap_lock = threading.Lock()
 _last_rdap_call = 0.0
+_rdap_circuits: dict[str, tuple[int, float]] = {}
 _porkbun_lock = threading.Lock()
 _last_porkbun_call = 0.0
 
@@ -31,6 +35,55 @@ class AvailabilityResult:
     price_usd: float | None = None
     premium: bool = False
     error: str | None = None
+
+
+class RdapCircuitOpen(RuntimeError):
+    """Raised before an HTTP request when a registry has just rate-limited us."""
+
+
+def _rdap_registry_key(domain: str) -> str:
+    parsed = registrable_domain(domain)
+    return parsed[1] if parsed is not None else "invalid"
+
+
+def _rdap_circuit_error(domain: str) -> str | None:
+    registry = _rdap_registry_key(domain)
+    with _rdap_lock:
+        state = _rdap_circuits.get(registry)
+        if state is None:
+            return None
+        _, retry_at = state
+        remaining = retry_at - time.monotonic()
+        if remaining <= 0:
+            _rdap_circuits.pop(registry, None)
+            return None
+    return f"RDAP circuit open for .{registry}; retry after {max(1, round(remaining))}s"
+
+
+def _record_rdap_rate_limit(domain: str) -> None:
+    """Back off only the rate-limited TLD while other registries keep moving."""
+    registry = _rdap_registry_key(domain)
+    with _rdap_lock:
+        failures, _ = _rdap_circuits.get(registry, (0, 0.0))
+        failures += 1
+        cooldown = min(
+            RDAP_MAX_COOLDOWN_SECONDS,
+            RDAP_RATE_LIMIT_COOLDOWN_SECONDS * (2 ** min(failures - 1, 4)),
+        )
+        _rdap_circuits[registry] = (failures, time.monotonic() + cooldown)
+
+
+def _record_rdap_success(domain: str) -> None:
+    with _rdap_lock:
+        _rdap_circuits.pop(_rdap_registry_key(domain), None)
+
+
+def _reset_rdap_circuits_for_tests() -> None:
+    """Keep stateful rate-limit tests isolated without changing production flow."""
+    global _last_rdap_call
+    with _rdap_lock:
+        _rdap_circuits.clear()
+        _last_rdap_call = 0.0
 
 
 def classify_rdap_dns(rdap_status: str, dns_status: str) -> str:
@@ -68,6 +121,9 @@ def check_dns(domain: str) -> str:
 
 def _paced_rdap_get(domain: str) -> httpx.Response:
     global _last_rdap_call
+    circuit_error = _rdap_circuit_error(domain)
+    if circuit_error:
+        raise RdapCircuitOpen(circuit_error)
     with _rdap_lock:
         wait_for = RDAP_MIN_INTERVAL_SECONDS - (time.monotonic() - _last_rdap_call)
         if wait_for > 0:
@@ -85,17 +141,27 @@ def check_rdap(domain: str) -> tuple[str, str | None]:
     last_status: int | None = None
     last_error = "RDAP request failed"
     for attempt in range(RDAP_MAX_ATTEMPTS):
+        circuit_error = _rdap_circuit_error(domain)
+        if circuit_error:
+            return "rate_limited", circuit_error
         try:
             response = _paced_rdap_get(domain)
+        except RdapCircuitOpen as exc:
+            return "rate_limited", str(exc)
         except httpx.HTTPError as exc:
             last_status = None
             last_error = str(exc)
         else:
             last_status = response.status_code
             if response.status_code == 200:
+                _record_rdap_success(domain)
                 return "registered", None
             if response.status_code == 404:
+                _record_rdap_success(domain)
                 return "not_found", None
+            if response.status_code == 429:
+                _record_rdap_rate_limit(domain)
+                return "rate_limited", "RDAP rate limited"
             if response.status_code not in {429, 500, 502, 503, 504}:
                 return "error", f"RDAP returned HTTP {response.status_code}"
             last_error = (
@@ -202,6 +268,16 @@ def check_porkbun(domain: str, settings: Settings) -> AvailabilityResult:
 def check_domain(
     domain: str, settings: Settings, exact_registrar_check: bool = False
 ) -> AvailabilityResult:
+    parsed_domain = registrable_domain(domain)
+    if parsed_domain is None or parsed_domain[0] != domain.lower().strip().strip("."):
+        return AvailabilityResult(
+            status="unknown",
+            source="validation",
+            rdap_status="skipped",
+            dns_status="skipped",
+            error="Invalid registrable domain",
+        )
+    domain = parsed_domain[0]
     dns_status = check_dns(domain)
     if dns_status == "resolves":
         return AvailabilityResult(

@@ -300,6 +300,40 @@ def test_never_checked_domains_are_first_in_capped_availability_queue() -> None:
         assert [domain.name for domain in due] == ["never-checked.example"]
 
 
+def test_rate_limited_availability_is_negative_cached_for_three_days() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+
+    with Session(engine) as db:
+        domain = Domain(
+            name="rate-limited.example",
+            availability_status="unknown",
+            rdap_status="rate_limited",
+            last_checked_at=now - timedelta(days=2),
+        )
+        video = Video(id="limitedvideo1", active=True)
+        db.add_all([domain, video])
+        db.flush()
+        db.add(
+            VideoDomain(
+                video_id=video.id,
+                domain_id=domain.id,
+                raw_url="https://rate-limited.example",
+                normalized_url="https://rate-limited.example/",
+                active=True,
+            )
+        )
+        db.commit()
+
+        assert _domains_due_for_check(db, 10) == []
+        domain.last_checked_at = now - timedelta(days=4)
+        db.commit()
+        assert [item.name for item in _domains_due_for_check(db, 10)] == [
+            "rate-limited.example"
+        ]
+
+
 def test_removed_links_are_included_in_targeted_candidate_refresh() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
