@@ -1,0 +1,32 @@
+name: Railway Startup Diagnosis
+
+# Read-only, path-gated diagnostics for a failed production startup.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/railway-startup-diagnosis.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - name: Require project-scoped Railway token
+        run: test -n "$RAILWAY_TOKEN"
+
+      - name: Read recent error logs from the latest deployment
+        run: >-
+          npx -y @railway/cli@latest logs
+          --project 31fbe878-aa83-4b74-9820-e9f0d13b984c
+          --environment production
+          --service youtube-domain-crawler
+          --latest
+          --lines 250
+          --filter "@level:error"
