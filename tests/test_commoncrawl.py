@@ -71,6 +71,24 @@ def test_latest_indexes_uses_collection_catalog_without_proxy_environment(monkey
     assert FakeClient.instances[0].kwargs["trust_env"] is False
 
 
+def test_latest_indexes_spreads_a_fixed_request_budget_across_recent_history(monkeypatch) -> None:
+    _reset()
+    FakeClient.responses = [
+        FakeResponse(
+            payload=[
+                {"id": f"CC-MAIN-2026-{number:02d}"}
+                for number in (30, 25, 21, 18, 13, 8, 4, 1, 99)
+            ]
+        )
+    ]
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+
+    indexes = CommonCrawlClient().latest_indexes(2)
+
+    assert indexes == ["CC-MAIN-2026-30", "CC-MAIN-2026-01"]
+    assert len(indexes) == 2
+
+
 def test_domain_presence_checks_limited_domain_pattern_and_treats_404_as_no_capture(
     monkeypatch,
 ) -> None:

@@ -37,6 +37,7 @@ def test_health_exposes_only_sanitized_commoncrawl_counts() -> None:
     # datetime is UTC-aware. The production PostgreSQL path is unaffected.
     expected_finished_at = now.replace(tzinfo=None).isoformat()
     assert payload["database"] == "ok"
+    assert payload["database_storage"] is None
     assert payload["commoncrawl_prefilter"] == {
         "status": "complete",
         "checked": 10,
@@ -128,3 +129,49 @@ def test_health_exposes_sanitized_youtube_and_email_operations() -> None:
         "error_summary": None,
     }
     assert "private-candidate.example" not in str(payload)
+
+
+def test_health_exposes_only_aggregate_paid_proof_cost_and_result_counts() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+
+    with Session(engine) as db:
+        db.add(
+            RunLog(
+                job="link_hunter_proof",
+                started_at=now,
+                finished_at=now,
+                status="complete",
+                counters={
+                    "summary_screened": 100,
+                    "deep_proof_target_count": 5,
+                    "source_links_verified": 3,
+                    "errors": 0,
+                    "provider_cost_usd": 0.1791,
+                    "daily_budget": {
+                        "limit_usd": 2.16,
+                        "spent_usd": 0.1791,
+                        "reserved_usd": 0.0,
+                    },
+                    "deep_proof_targets": ["private-target.example"],
+                    "error_details": ["private-provider-error.example"],
+                },
+            )
+        )
+        db.commit()
+        payload = health(db)
+
+    assert payload["web_intelligence"]["latest_proof"] == {
+        "status": "complete",
+        "summary_screened": 100,
+        "deep_proof_target_count": 5,
+        "source_links_verified": 3,
+        "errors": 0,
+        "provider_cost_usd": 0.1791,
+        "daily_budget_limit_usd": 2.16,
+        "daily_budget_committed_usd": 0.1791,
+        "finished_at": now.replace(tzinfo=None).isoformat(),
+    }
+    assert "private-target.example" not in str(payload)
+    assert "private-provider-error.example" not in str(payload)

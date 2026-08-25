@@ -1079,7 +1079,10 @@ def run_view_snapshots() -> None:
             counters = run_view_snapshot_batch(
                 db,
                 settings,
-                YouTubeClient(settings.youtube_api_key),
+                YouTubeClient(
+                    settings.youtube_api_key,
+                    statistics_workers=settings.youtube_statistics_workers,
+                ),
             )
             send_new_candidate_alerts(db)
             _finish_run(db, run, "complete", counters)

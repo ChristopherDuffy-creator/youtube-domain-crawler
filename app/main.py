@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.backup import build_logical_snapshot
@@ -431,6 +431,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
     hackernews_summary: dict[str, object] | None = None
     youtube_summary: dict[str, object] | None = None
     web_intelligence_summary: dict[str, object] | None = None
+    database_storage: dict[str, object] | None = None
     email_summary: dict[str, object] = {
         "configured": settings.email_enabled,
         "latest_digest": None,
@@ -438,6 +439,29 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
     try:
         db.scalar(select(func.count()).select_from(RunLog))
         database = "ok"
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            storage_rows = db.execute(
+                text(
+                    """
+                    SELECT relname, n_live_tup, pg_total_relation_size(relid)
+                    FROM pg_stat_user_tables
+                    ORDER BY pg_total_relation_size(relid) DESC
+                    LIMIT 10
+                    """
+                )
+            ).all()
+            database_bytes = db.scalar(text("SELECT pg_database_size(current_database())"))
+            database_storage = {
+                "database_bytes": int(database_bytes or 0),
+                "largest_relations": [
+                    {
+                        "name": str(name),
+                        "estimated_rows": int(row_count or 0),
+                        "total_bytes": int(total_bytes or 0),
+                    }
+                    for name, row_count, total_bytes in storage_rows
+                ],
+            }
 
         latest_screening = db.scalar(
             select(RunLog)
@@ -450,6 +474,19 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
             if latest_screening is not None and isinstance(latest_screening.counters, dict)
             else {}
         )
+        latest_proof = db.scalar(
+            select(RunLog)
+            .where(RunLog.job == "link_hunter_proof")
+            .order_by(RunLog.started_at.desc())
+            .limit(1)
+        )
+        proof_counters = (
+            latest_proof.counters
+            if latest_proof is not None and isinstance(latest_proof.counters, dict)
+            else {}
+        )
+        proof_budget = proof_counters.get("daily_budget")
+        proof_budget = proof_budget if isinstance(proof_budget, dict) else {}
         web_intelligence_summary = {
             "screened": int(db.scalar(select(func.count()).select_from(WebScreening)) or 0),
             "blocked_free": int(
@@ -478,6 +515,34 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 ),
             }
             if latest_screening is not None
+            else None,
+            # Keep paid-work observability public but aggregate-only: this is
+            # enough to prove the hard budget guards held without exposing
+            # candidate targets, source URLs, or provider errors.
+            "latest_proof": {
+                "status": latest_proof.status,
+                "summary_screened": int(proof_counters.get("summary_screened") or 0),
+                "deep_proof_target_count": int(
+                    proof_counters.get("deep_proof_target_count") or 0
+                ),
+                "source_links_verified": int(
+                    proof_counters.get("source_links_verified") or 0
+                ),
+                "errors": int(proof_counters.get("errors") or 0),
+                "provider_cost_usd": float(proof_counters.get("provider_cost_usd") or 0.0),
+                "daily_budget_limit_usd": float(proof_budget.get("limit_usd") or 0.0),
+                "daily_budget_committed_usd": round(
+                    float(proof_budget.get("spent_usd") or 0.0)
+                    + float(proof_budget.get("reserved_usd") or 0.0),
+                    6,
+                ),
+                "finished_at": (
+                    latest_proof.finished_at.isoformat()
+                    if latest_proof.finished_at is not None
+                    else None
+                ),
+            }
+            if latest_proof is not None
             else None,
         }
 
@@ -755,6 +820,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
     return {
         "status": "ok" if database == "ok" else "degraded",
         "database": database,
+        "database_storage": database_storage,
         "scheduler": bool(scheduler and scheduler.running),
         "email": email_summary,
         "link_hunter_enabled": settings.link_hunter_enabled,

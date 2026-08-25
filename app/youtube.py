@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -71,9 +72,15 @@ def _parse_datetime(value: str | None) -> datetime | None:
 
 
 class YouTubeClient:
-    def __init__(self, api_key: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float = 30.0,
+        statistics_workers: int = 1,
+    ) -> None:
         self.api_key = api_key
         self.timeout = timeout
+        self.statistics_workers = max(1, min(8, int(statistics_workers)))
 
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         if not self.api_key:
@@ -227,10 +234,18 @@ class YouTubeClient:
     def fetch_video_statistics_batch(
         self, video_ids: Iterable[str]
     ) -> list[VideoStatistics]:
-        """Use the 2026 granular stats bucket, in official 50-ID batches."""
-        statistics: list[VideoStatistics] = []
+        """Use the 2026 granular stats bucket in bounded 50-ID batches.
+
+        Quota is reserved by the caller before this method is reached.  A
+        small worker pool therefore improves the long refresh job's wall-clock
+        time without increasing its daily quota envelope or overlapping other
+        YouTube job types.
+        """
         unique_ids = list(dict.fromkeys(video_ids))
-        for chunk in _chunks(unique_ids, 50):
+        chunks = list(_chunks(unique_ids, 50))
+
+        def fetch_chunk(chunk: list[str]) -> list[VideoStatistics]:
+            statistics: list[VideoStatistics] = []
             payload = self._get(
                 "videos:batchGetStats",
                 {
@@ -246,7 +261,16 @@ class YouTubeClient:
                             view_count=int(item.get("statistics", {}).get("viewCount", 0)),
                         )
                     )
-        return statistics
+            return statistics
+
+        if len(chunks) < 2 or self.statistics_workers == 1:
+            return [item for chunk in chunks for item in fetch_chunk(chunk)]
+        with ThreadPoolExecutor(
+            max_workers=min(self.statistics_workers, len(chunks))
+        ) as pool:
+            # executor.map keeps the source order deterministic for downstream
+            # snapshot persistence while the HTTP calls themselves overlap.
+            return [item for chunk in pool.map(fetch_chunk, chunks) for item in chunk]
 
 
 def exact_domain_in_description(domain: str, description: str) -> bool:
