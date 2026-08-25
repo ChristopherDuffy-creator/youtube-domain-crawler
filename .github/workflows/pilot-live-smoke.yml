@@ -1,0 +1,38 @@
+name: Pilot Live Smoke
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/pilot-live-smoke.yml
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke test pilot routing and public DNS
+        shell: bash
+        run: |
+          set +e
+          base="https://youtube-domain-crawler-production.up.railway.app"
+          for domain in craftsheaven.club satvic.yoga teamgerardiperformance.com; do
+            echo "=== HOST-ROUTED $domain ==="
+            for path in / /privacy /go/main; do
+              code=$(curl --max-time 20 -sS -o /tmp/body -w '%{http_code}' -H "Host: $domain" "$base$path" || echo ERR)
+              echo "$domain $path -> $code bytes=$(wc -c </tmp/body 2>/dev/null || echo 0)"
+            done
+            echo "=== PUBLIC HTTPS $domain ==="
+            code=$(curl --max-time 20 -sS -o /tmp/public -w '%{http_code}' "https://$domain/" || echo ERR)
+            echo "$domain public -> $code bytes=$(wc -c </tmp/public 2>/dev/null || echo 0)"
+          done
+          echo "=== LEGACY DEEP LINKS ==="
+          for path in /woodworkingplans /woodworking-plans; do
+            code=$(curl --max-time 20 -sS -o /tmp/legacy -w '%{http_code}' -H 'Host: craftsheaven.club' "$base$path" || echo ERR)
+            echo "craftsheaven.club $path -> $code bytes=$(wc -c </tmp/legacy 2>/dev/null || echo 0)"
+          done
+          exit 0
