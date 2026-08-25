@@ -61,6 +61,7 @@ from app.models import (
 )
 from app.scoring import ScoreInputs, calculate_score, determine_tier
 from app.stackexchange_prefilter import run_stackexchange_prefilter as run_stackexchange_prefilter_batch
+from app.storage_guard import storage_guard_allows_writes
 from app.web_intelligence import backfill_existing_web_intelligence, screen_dropped_domains
 from app.youtube import YouTubeClient, YouTubeError, YouTubeVideo, exact_domain_in_description
 from app.youtube_intelligence import (
@@ -103,6 +104,8 @@ def run_web_free_screening_job() -> None:
     """Advance the permanent, zero-provider-cost dropped-domain screening ledger."""
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "web_free_screening"):
+            return
         run = _start_run(db, "web_free_screening")
         counters: dict[str, Any] = {
             "screened": 0,
@@ -135,6 +138,8 @@ def run_web_link_refresh_job() -> None:
     """Extend link-survival observations without any paid provider requests."""
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "web_link_refresh"):
+            return
         run = _start_run(db, "web_link_refresh")
         counters: dict[str, Any] = {
             "due": 0,
@@ -421,6 +426,8 @@ def seed_manual_checkpoint() -> None:
     if not settings.youtube_api_key:
         return
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "seed_checkpoint"):
+            return
         ensure_seed_data(db)
         run = _start_run(db, "seed_checkpoint")
         counters = {
@@ -497,6 +504,8 @@ def _is_expired_search_cursor(error: YouTubeError) -> bool:
 def run_discovery() -> None:
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "youtube_discovery"):
+            return
         ensure_seed_data(db)
         run = _start_run(db, "youtube_discovery")
         counters = {
@@ -924,6 +933,8 @@ def run_channel_fanout() -> None:
     if not settings.youtube_channel_fanout_enabled:
         return
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "youtube_channel_fanout"):
+            return
         run = _start_run(db, "youtube_channel_fanout")
         counters: dict[str, Any] = {}
         try:
@@ -1073,6 +1084,8 @@ def run_view_snapshot_batch(
 def run_view_snapshots() -> None:
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "view_snapshots"):
+            return
         run = _start_run(db, "view_snapshots")
         counters: dict[str, Any] = {}
         try:
@@ -1156,6 +1169,8 @@ def _apply_availability(domain: Domain, result: AvailabilityResult) -> None:
 def run_availability_checks() -> None:
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "availability_checks"):
+            return
         run = _start_run(db, "availability_checks")
         counters: dict[str, Any] = {
             "checked": 0,
@@ -1417,6 +1432,8 @@ def ingest_dropped_text(db: Session, text: str, source: str) -> dict[str, int]:
 def run_dropped_feeds() -> None:
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "dropped_feeds"):
+            return
         run = _start_run(db, "dropped_feeds")
         counters: dict[str, Any] = {
             "configured": len(settings.dropped_domain_feed_urls),
@@ -1487,6 +1504,8 @@ def _dropped_domains_due_for_youtube_search(
 def run_dropped_youtube_search(max_searches: int = 10) -> None:
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "dropped_youtube_search"):
+            return
         run = _start_run(db, "dropped_youtube_search")
         counters = {
             "search_calls": 0,
@@ -1576,6 +1595,8 @@ def run_youtube_intelligence_maintenance() -> None:
     """Advance all permanent YouTube intelligence ledgers without provider calls."""
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "youtube_intelligence"):
+            return
         run = _start_run(db, "youtube_intelligence")
         counters: dict[str, Any] = {
             "channels_backfilled": 0,
@@ -2030,6 +2051,8 @@ def _build_daily_digest_report(
 def run_daily_digest() -> None:
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "daily_digest"):
+            return
         run = _start_run(db, "daily_digest")
         counters = {
             "emailed": 0,
@@ -2121,6 +2144,8 @@ def run_commoncrawl_prefilter_job() -> None:
     """Cache free historical-domain signals inside Railway's private network."""
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "commoncrawl_prefilter"):
+            return
         run = _start_run(db, "commoncrawl_prefilter")
         counters: dict[str, Any] = {
             "candidates": 0,
@@ -2151,6 +2176,8 @@ def run_stackexchange_prefilter_job() -> None:
     """Cache free exact-link evidence from high-view Stack Exchange questions."""
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "stackexchange_prefilter"):
+            return
         run = _start_run(db, "stackexchange_prefilter")
         counters: dict[str, Any] = {
             "candidates": 0,
@@ -2185,6 +2212,8 @@ def run_hackernews_prefilter_job() -> None:
     """Cache free exact-link evidence from Hacker News stories/comments."""
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "hackernews_prefilter"):
+            return
         run = _start_run(db, "hackernews_prefilter")
         counters: dict[str, Any] = {
             "candidates": 0,

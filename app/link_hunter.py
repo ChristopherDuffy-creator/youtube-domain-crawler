@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import logging
 import math
 import socket
 from concurrent.futures import ThreadPoolExecutor
@@ -47,8 +48,11 @@ from app.provider_budget import (
     release_provider_proof_lease,
     reserve_provider_daily_budget,
 )
+from app.storage_guard import database_storage_status, storage_guard_allows_writes
 from app.web_hunter_upgrade import apply_source_focus_bonus, enforce_money_tier
 from app.web_intelligence import project_opportunity_economics, save_opportunity_economics
+
+logger = logging.getLogger(__name__)
 
 MAX_VERIFY_BYTES = 2_000_000
 MAX_VERIFY_REDIRECTS = 5
@@ -1035,6 +1039,28 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
     if not settings.dataforseo_enabled:
         raise DataForSEOError("DataForSEO credentials are not configured")
 
+    storage_status = database_storage_status(db, settings)
+    if not storage_status.write_allowed:
+        logger.warning(
+            "Database storage guard blocked link_hunter_proof before provider calls: %s",
+            storage_status.reason,
+        )
+        return {
+            "targets": 0,
+            "summary_targets": 0,
+            "summary_screened": 0,
+            "deep_proof_target_count": 0,
+            "deep_proof_targets": [],
+            "summary_calls": 0,
+            "backlink_calls": 0,
+            "traffic_calls": 0,
+            "source_links_verified": 0,
+            "provider_cost_usd": 0.0,
+            "errors": 0,
+            "storage_guard_blocked": True,
+            "database_storage": storage_status.as_dict(),
+        }
+
     run_cost_cap = effective_provider_run_limit_usd(settings)
     targets, free_scores, free_signals, _, _ = select_provider_summary_targets_with_ranking(
         db, settings
@@ -1356,6 +1382,17 @@ def run_provider_proof_job() -> dict[str, Any]:
     """Run one externally-triggered paid proof with a durable single-flight guard."""
     settings = get_settings()
     with SessionLocal() as db:
+        if not storage_guard_allows_writes(db, settings, "link_hunter_proof"):
+            return {
+                "targets": 0,
+                "summary_screened": 0,
+                "deep_proof_target_count": 0,
+                "provider_cost_usd": 0.0,
+                "errors": 0,
+                "daily_budget_skipped": False,
+                "storage_guard_blocked": True,
+                "database_storage": database_storage_status(db, settings).as_dict(),
+            }
         lease = acquire_provider_proof_lease(db)
         if lease is None:
             budget = provider_daily_budget_snapshot(db, settings)

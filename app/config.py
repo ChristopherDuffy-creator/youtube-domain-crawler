@@ -112,6 +112,7 @@ class Settings(BaseSettings):
 
     youtube_api_key: str = ""
     database_url: str = "sqlite:///./crawler.db"
+    database_storage_soft_limit_gb: float = Field(default=16.0, ge=0, le=1_024)
     dashboard_password: str = "change-me"
     admin_token: str = "change-me-too"
 
