@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import and_, case, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, insert, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.availability import AvailabilityResult, check_domain
@@ -1036,9 +1036,30 @@ def run_view_snapshot_batch(
         returned = {item.id: item for item in items}
         counters["statistics_calls"] += (len(batch) + 49) // 50
         captured_at = utcnow()
+        capture_date = captured_at.date()
+        videos_by_id = {
+            video.id: video
+            for video in db.scalars(select(Video).where(Video.id.in_(batch))).all()
+        }
+        states_by_video_id = {
+            state.video_id: state
+            for state in db.scalars(
+                select(VideoRefreshState).where(VideoRefreshState.video_id.in_(batch))
+            ).all()
+        }
+        snapshots_by_video_id = {
+            snapshot.video_id: snapshot
+            for snapshot in db.scalars(
+                select(ViewSnapshot).where(
+                    ViewSnapshot.video_id.in_(batch),
+                    ViewSnapshot.capture_date == capture_date,
+                )
+            ).all()
+        }
+        new_snapshots: list[dict[str, Any]] = []
         for video_id in batch:
-            video = db.get(Video, video_id)
-            state = db.get(VideoRefreshState, video_id)
+            video = videos_by_id.get(video_id)
+            state = states_by_video_id.get(video_id)
             if video is None or state is None:
                 continue
             item = returned.get(video_id)
@@ -1060,9 +1081,23 @@ def run_view_snapshot_batch(
             state.next_refresh_at = captured_at + timedelta(hours=interval)
             state.consecutive_low_growth = low_growth_runs
             state.priority_score = priority
-            if _upsert_snapshot(db, item.id, item.view_count, captured_at):
-                counters["snapshots"] += 1
+            existing_snapshot = snapshots_by_video_id.get(video_id)
+            if existing_snapshot is None:
+                new_snapshots.append(
+                    {
+                        "video_id": video_id,
+                        "captured_at": captured_at,
+                        "capture_date": capture_date,
+                        "view_count": item.view_count,
+                    }
+                )
+            else:
+                existing_snapshot.captured_at = captured_at
+                existing_snapshot.view_count = item.view_count
             counters["videos_updated"] += 1
+        if new_snapshots:
+            db.execute(insert(ViewSnapshot), new_snapshots)
+            counters["snapshots"] += len(new_snapshots)
         db.commit()
 
     counters["quota_units_estimate"] = counters["statistics_calls"]
