@@ -1,9 +1,13 @@
 name: Porkbun 3-Site Pilot Dry Run
 
-# Manual-only by design. Registrar/account blockers are expected operating
-# conditions during acquisition checks and should not create GitHub failure
-# notification email noise while the pilot is being developed.
+# Temporary one-shot push trigger for post-identity-verification registrar check.
+# The registrar step is deliberately non-failing so no CI failure email is generated.
 on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/porkbun-pilot-dry-run.yml
   workflow_dispatch:
 
 permissions:
@@ -51,6 +55,6 @@ jobs:
             python -m scripts.pilot_acquisition --mode dry-run
           code=$?
           if [ "$code" -ne 0 ]; then
-            echo "::warning::Porkbun dry-run reported an external registrar/account blocker (exit $code). Review the output above; this is not treated as a CI failure."
+            echo "::warning::Porkbun dry-run reported an external registrar/account blocker (exit $code). Review output above."
           fi
           exit 0
