@@ -51,4 +51,4 @@ jobs:
           --environment production
           --service youtube-domain-crawler
           --no-local
-          python scripts/pilot_acquisition.py --mode dry-run
+          python -m scripts.pilot_acquisition --mode dry-run
