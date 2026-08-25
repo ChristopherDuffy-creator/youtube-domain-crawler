@@ -9,68 +9,61 @@ This pilot is deliberately small. It is not the start of the 1,000-site rollout.
 
 ## Hard guardrails
 - Maximum 3 domains in the pilot.
-- Prefer domains at normal registration pricing; no premium purchases.
+- User is the final acquisition gate and has manually selected the pilot cohort.
+- Prefer domains at normal registration pricing; no premium purchases unless manually approved.
 - Do not exceed the crawler's calculated max purchase price without an explicit economic reason.
-- Reject names with material trademark, active-brand, impersonation, phishing, spam, malware, or reputation risk.
+- Flag material trademark, active-brand, impersonation, phishing, spam, malware, or reputation risk for the user's final decision rather than automatically rejecting descriptive/generic names.
 - Do not recreate a prior business in a way that could imply continuity, affiliation, or endorsement.
 - Preserve the crawler/provider cost controls already in production.
 - Production crawler behaviour remains unchanged by this pilot branch until measurement changes are separately reviewed.
 
-## Original candidates screened out
-### satvic.yoga
-Reject for the pilot. The exact `Satvic Yoga` identity is actively used by a large yoga brand/channel, including the `@satvic.yoga` handle and Satvic Movement ecosystem. This creates avoidable brand/confusion risk.
+## Locked pilot cohort
 
-### petworthy.co
-Reject for the pilot. `PETWORTHY` has a registered international trademark/publication covering commercial marketplace/retail activity related to veterinary products. This is too close to the intended pet monetisation use.
-
-### tapasyavastram.in
-Reject for the pilot. The exact domain/name was previously used as an identifiable Shopify clothing business. Avoid using the expired name as a replacement commercial identity without deeper rights/history clearance.
-
-## Replacement candidate set to final-check at registrar
-The replacements are intentionally more descriptive/generic and span different expected-strength bands so the pilot calibrates the model rather than cherry-picking only one traffic pattern.
-
-### 1. yogastation.guide
+### 1. satvic.yoga
 - Current dashboard band: Acquisition Priority
-- Projected linked-video exposure: 102,670/month
-- Expected clicks: 258/month
-- Modelled revenue: $13-$64/month
-- Current dashboard availability: likely available (RDAP/DNS)
-- Monetisation route: content restore
-- Pilot role: high-exposure traffic-validation site
-
-### 2. ultimatevideographer.com
-- Current dashboard band: Good Earner
-- Projected linked-video exposure: 8,961/month
-- Expected clicks: 17/month
-- Modelled revenue: $4-$17/month
+- Projected linked-video exposure: 85,073/month
+- Expected clicks: 176/month
+- Modelled revenue: $32-$141/month
 - Current dashboard availability: available via Porkbun
-- Displayed price: $11.08
-- Monetisation route: course or lead page
-- Pilot role: commercial-intent / course-lead validation
+- Displayed price: $26.26
+- Monetisation route: affiliate landing
+- Pilot role: strong yoga/wellness traffic and affiliate-intent validation
+- Naming note: `satvic/sattvic` is a traditional descriptive yoga concept. Avoid copying Satvic Movement branding, trade dress, content, or implying affiliation.
 
-### 3. recipe.how
-- Current dashboard band: Micro
-- Projected linked-video exposure: 21,842/month
-- Expected clicks: 18/month
-- Modelled revenue: $1-$4/month
+### 2. petworthy.co
+- Current dashboard band: Acquisition Priority
+- Projected linked-video exposure: 37,708/month
+- Expected clicks: 137/month
+- Modelled revenue: $25-$110/month
 - Current dashboard availability: likely available (RDAP/DNS)
-- Monetisation route: content restore
-- Pilot role: low-value control / calibration site
+- Monetisation route: affiliate landing
+- Pilot role: commercial pet-intent validation
+- Naming note: prior Pet Worthy activity appears defunct, but an exact PETWORTHY mark exists in a pet/veterinary commercial class. User has chosen the domain as final acquisition gate; avoid presenting the pilot as the former business or as affiliated with another PETWORTHY rights holder.
 
-## Why include a low-value control?
-If all three are top-ranked winners, a good result does not tell us how well the scoring model separates strong from weak opportunities. A deliberately weak third site gives us a useful control. If the model is working, `yogastation.guide` should materially outperform `recipe.how` on inbound and/or monetisable value.
+### 3. craftsheaven.club
+- Pilot role: explicit deep-link / offer-intent validation
+- Historic link evidence found pointing specifically to `craftsheaven.club/woodworkingplans` and describing an offer for "16,000 woodworking plans".
+- This gives the pilot a clear original landing-path and visitor-intent hypothesis rather than a generic homepage test.
+- At acquisition, freeze the crawler's current exposure/click/revenue/buy-score metrics from the production dashboard before any later recalculation.
+- Do not copy any prior site's protected content or imply continuity with the former operator.
+
+## Why this cohort is useful
+The three sites test different monetisation/intent patterns:
+- `satvic.yoga`: wellness/affiliate intent with strong projected traffic.
+- `petworthy.co`: pet/tutorial traffic with straightforward commercial affiliate potential.
+- `craftsheaven.club`: an unusually explicit historical deep link and offer intent (`/woodworkingplans`), useful for testing whether restoring visitor intent improves conversion.
 
 ## Required final checks before purchase
 For each domain:
 1. Registrar availability and live checkout price.
-2. Trademark/brand-name collision search.
+2. Record any material brand/trademark caveat for the user's final acquisition decision.
 3. Prior-site identity and purpose review.
 4. Search-engine reputation/spam/malware check.
 5. Link-context review: why was the domain linked and what visitor intent should we expect?
 6. Confirm the proposed landing experience satisfies that intent without impersonating the former owner.
 7. Record expected clicks, expected revenue range, purchase ceiling, and acquisition price at the moment of purchase.
 
-Any failed domain is replaced by the next safest candidate; do not force the shortlist.
+If a domain is no longer available or has a serious technical/reputation problem, return it to the user rather than silently substituting another domain.
 
 ## Build design
 Use one shared lightweight site framework with per-domain configuration rather than three unrelated builds.
@@ -85,6 +78,8 @@ Every pilot site must ship with:
 - privacy/cookie disclosure appropriate to the actual tracking stack
 - uptime/error monitoring
 - no unnecessary daily AI-content generation
+
+For historic deep links such as `/woodworkingplans`, preserve the inbound path or use a semantically correct internal redirect so the original link does not land on an irrelevant generic homepage.
 
 ## Measurement schema
 Capture at minimum, per domain and per day:
@@ -139,4 +134,4 @@ Do not jump straight from 3 to mass acquisition.
 - After the 10-site cohort validates portfolio economics and automation: move to 20/month, then increase only from measured results.
 
 ## Immediate next action
-Final-check the three replacement names at a registrar. The only user-required step should be payment/account authentication for domains that pass the checks. Everything else should be prepared around that gate.
+Final-check live registrar availability/price for `satvic.yoga`, `petworthy.co`, and `craftsheaven.club`. The user performs checkout/payment. Once acquired, configure DNS and deploy the shared pilot framework with predictions frozen at purchase.
