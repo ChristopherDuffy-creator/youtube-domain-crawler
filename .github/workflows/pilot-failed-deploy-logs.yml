@@ -1,0 +1,29 @@
+name: Pilot Failed Deploy Logs
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/pilot-failed-deploy-logs.yml
+
+permissions:
+  contents: read
+
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch failed Railway deployment logs
+        shell: bash
+        run: |
+          set +e
+          npx -y @railway/cli@latest logs 83f0ea28-4bcb-40aa-b7a3-f402f3ebbd04 \
+            --lines 200 \
+            --service youtube-domain-crawler \
+            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+            --environment production || true
+          exit 0
