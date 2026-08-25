@@ -1,5 +1,6 @@
 name: Pilot Live Purchase Remaining
 
+# One-shot execution explicitly authorized by the user after funding Porkbun.
 on:
   push:
     branches:
