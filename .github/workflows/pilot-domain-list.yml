@@ -1,0 +1,29 @@
+name: Pilot Railway Domain List
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/pilot-domain-list.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: List service domains
+        shell: bash
+        run: |
+          set +e
+          npx -y @railway/cli@latest domain list \
+            --service youtube-domain-crawler \
+            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+            --environment production \
+            --json || true
+          exit 0
