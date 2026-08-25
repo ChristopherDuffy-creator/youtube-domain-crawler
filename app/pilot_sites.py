@@ -42,8 +42,11 @@ class PilotSite:
     feature_cards: tuple[tuple[str, str], ...]
     intro_title: str
     intro_text: str
+    guide_title: str
+    guide_intro: str
     disclosure: str = ""
     legacy_paths: tuple[str, ...] = ()
+    indexable: bool = True
 
 
 PILOT_SITES: dict[str, PilotSite] = {
@@ -79,6 +82,11 @@ PILOT_SITES: dict[str, PilotSite] = {
             "the /woodworkingplans path. We preserve that topic so a visitor following an old link "
             "still lands somewhere useful instead of on an unrelated page."
         ),
+        guide_title="How to choose a woodworking plan",
+        guide_intro=(
+            "Before paying for a plan bundle or course, check that the project matches your tools, "
+            "skill level, available space and the kind of finished piece you actually want to build."
+        ),
         legacy_paths=("/woodworkingplans", "/woodworking-plans"),
     ),
     "satvic.yoga": PilotSite(
@@ -112,6 +120,11 @@ PILOT_SITES: dict[str, PilotSite] = {
             "Satvic or sattvic is a longstanding yogic concept. This site is an independent guide "
             "to the topic and is not presented as the website of any particular yoga school, teacher or movement."
         ),
+        guide_title="Choosing a yoga resource that you will actually use",
+        guide_intro=(
+            "A good program should fit your current mobility, experience, schedule and goals. "
+            "Look for clear progression, credible instruction and a format you can sustain consistently."
+        ),
     ),
     "teamgerardiperformance.com": PilotSite(
         domain="teamgerardiperformance.com",
@@ -144,10 +157,18 @@ PILOT_SITES: dict[str, PilotSite] = {
             "This domain previously pointed visitors toward a specific online-training offer. The current site "
             "does not continue or represent that business; it provides independent information and alternative options."
         ),
+        guide_title="What to compare in an online coach",
+        guide_intro=(
+            "Compare the actual service rather than the sales page: programming frequency, trainer access, "
+            "check-ins, nutrition support, progress reviews, cancellation terms and whether plans adapt when life changes."
+        ),
         disclosure=(
             "Independent site. Not affiliated with, endorsed by, or operated by Gerardi "
             "Performance or any previous operator of this domain."
         ),
+        # We want to measure surviving inbound links, not deliberately rank for
+        # the active Gerardi Performance business name in search engines.
+        indexable=False,
     ),
 }
 
