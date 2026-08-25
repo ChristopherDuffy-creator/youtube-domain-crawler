@@ -106,7 +106,7 @@ class YouTubeClient:
         self,
         api_key: str,
         timeout: float = 30.0,
-        statistics_workers: int = 1,
+        statistics_workers: int = 4,
         statistics_requests_per_minute: int = 120,
         statistics_request_pacer: _StatisticsRequestPacer | None = None,
     ) -> None:
