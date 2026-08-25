@@ -1,0 +1,29 @@
+name: Railway Runtime Log Capture
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/railway-runtime-logs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - name: Capture recent runtime logs
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "RAILWAY_TOKEN repository secret is not configured"
+            exit 1
+          fi
+          timeout 25 npx -y @railway/cli@latest logs \
+            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+            --environment production \
+            --service youtube-domain-crawler || true
