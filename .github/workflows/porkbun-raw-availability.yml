@@ -1,5 +1,6 @@
 name: Porkbun Raw Availability
 
+# One-shot raw registrar check after the safe purchase guard saw an unknown status.
 on:
   push:
     branches:
