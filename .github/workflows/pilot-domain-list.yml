@@ -1,5 +1,6 @@
 name: Pilot Railway Domain List
 
+# One-shot domain-capacity inspection after custom-domain attach errors.
 on:
   push:
     branches:
