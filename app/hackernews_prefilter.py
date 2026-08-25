@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlparse
@@ -8,6 +7,11 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.free_source_candidates import (
+    completed_target_exists,
+    load_candidate_lanes,
+    select_fair_candidates,
+)
 from app.hackernews import HackerNewsSearchClient
 from app.models import (
     Domain,
@@ -203,29 +207,16 @@ def _save_hit_links(
     return saved, created
 
 
-def _completed_targets(db: Session) -> set[str]:
-    return set(
-        db.scalars(
-            select(ProviderQuery.target).where(
-                ProviderQuery.provider == "hackernews",
-                ProviderQuery.endpoint == "domain_search",
-                ProviderQuery.status == "complete",
-            )
-        ).all()
-    )
-
-
 def _candidate_drops(db: Session, limit: int) -> list[DroppedDomain]:
-    completed = _completed_targets(db)
-    paid_done = set(
-        db.scalars(
-            select(ProviderQuery.target).where(
-                ProviderQuery.provider == "dataforseo",
-                ProviderQuery.endpoint == "bulk_backlink_summary",
-                ProviderQuery.status == "complete",
-            )
-        ).all()
+    newest, oldest = load_candidate_lanes(
+        db,
+        limit=limit,
+        eligibility=(
+            ~completed_target_exists(provider="hackernews", endpoint="domain_search"),
+            ~completed_target_exists(provider="dataforseo", endpoint="bulk_backlink_summary"),
+        ),
     )
+    candidate_names = {item.name for item in (*newest, *oldest)}
     commoncrawl_hits = {
         target: int(row_count or 0)
         for target, row_count in db.execute(
@@ -233,42 +224,31 @@ def _candidate_drops(db: Session, limit: int) -> list[DroppedDomain]:
                 ProviderQuery.provider == "commoncrawl",
                 ProviderQuery.endpoint == "url_index",
                 ProviderQuery.status == "complete",
+                ProviderQuery.target.in_(candidate_names),
             )
         ).all()
     }
-    stackexchange_hits = {
-        target: sum(int(value or 0) for value in values)
-        for target, values in defaultdict(list, {
-            target: [] for target in []
-        }).items()
-    }
+    stackexchange_hits: dict[str, int] = {}
     for target, row_count in db.execute(
         select(ProviderQuery.target, ProviderQuery.row_count).where(
             ProviderQuery.provider == "stackexchange",
             ProviderQuery.endpoint.like("url_search:%"),
             ProviderQuery.status == "complete",
+            ProviderQuery.target.in_(candidate_names),
         )
     ).all():
         stackexchange_hits[target] = stackexchange_hits.get(target, 0) + int(row_count or 0)
-
-    recent = db.scalars(
-        select(DroppedDomain).order_by(DroppedDomain.first_seen_at.desc()).limit(300)
-    ).all()
-    eligible = [
-        item
-        for item in recent
-        if item.name not in completed and item.name not in paid_done
-    ]
-    eligible.sort(
-        key=lambda item: (
+    return select_fair_candidates(
+        newest,
+        oldest,
+        limit=limit,
+        rank_key=lambda item: (
             0 if stackexchange_hits.get(item.name, 0) > 0 else 1,
             0 if commoncrawl_hits.get(item.name, 0) > 0 else 1,
             0 if item.name.endswith(".com") else 1,
             len(item.name),
-            -item.first_seen_at.timestamp(),
-        )
+        ),
     )
-    return eligible[:limit]
 
 
 def run_hackernews_prefilter(
