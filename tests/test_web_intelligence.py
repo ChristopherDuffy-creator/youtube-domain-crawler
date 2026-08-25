@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -322,3 +323,69 @@ def test_due_link_refresh_extends_survival_history(monkeypatch) -> None:
         assert len(observations) == 1
         assert observations[0].survival_days >= 14.9
         assert db.scalar(select(OpportunityEconomics)) is not None
+
+
+def test_due_link_refresh_fetches_multiple_pages_concurrently(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    barrier = Barrier(3)
+    calls: list[str] = []
+
+    def fake_fetch(url: str, timeout: float) -> tuple[int, str, bytes, str]:
+        calls.append(url)
+        barrier.wait(timeout=1)
+        suffix = url.rsplit("/", 1)[-1]
+        html = f'<article><a href="https://example{suffix}.com/offer">Visit offer</a></article>'
+        return 200, url, html.encode(), html
+
+    monkeypatch.setattr(link_hunter, "_fetch_public_page", fake_fetch)
+    settings = Settings(
+        link_hunter_verification_cache_hours=24,
+        link_hunter_link_refresh_workers=3,
+    )
+
+    with Session(engine) as db:
+        for number in range(1, 4):
+            domain = Domain(name=f"example{number}.com", availability_status="available")
+            site = SourceSite(hostname=f"publisher{number}.example")
+            db.add_all([domain, site])
+            db.flush()
+            page = SourcePage(site_id=site.id, url=f"https://publisher.example/{number}")
+            db.add(page)
+            db.flush()
+            link = SourceLink(
+                source_page_id=page.id,
+                domain_id=domain.id,
+                target_url=f"https://example{number}.com/offer",
+                first_seen_at=datetime.now(UTC) - timedelta(days=15),
+            )
+            db.add(link)
+            db.flush()
+            db.add(
+                Opportunity(
+                    domain_id=domain.id,
+                    best_source_page_id=page.id,
+                    source_page_traffic_estimate=2_000,
+                    commercial_intent=0.5,
+                )
+            )
+            db.add(
+                FetchVerification(
+                    source_link_id=link.id,
+                    fetched_at=datetime.now(UTC) - timedelta(days=2),
+                    link_present=True,
+                )
+            )
+        db.commit()
+
+        counters = link_hunter.refresh_web_link_observations(db, settings, batch_size=10)
+
+        assert counters == {
+            "due": 3,
+            "refreshed": 3,
+            "verified": 3,
+            "missing": 0,
+            "errors": 0,
+        }
+        assert len(calls) == 3
+        assert len(db.scalars(select(LinkObservation)).all()) == 3

@@ -19,8 +19,12 @@ _BATCH_CAPS = {
     "YOUTUBE_INTELLIGENCE_BACKFILL_BATCH_SIZE": 5_000,
     "YOUTUBE_LOCAL_MATCH_BATCH_SIZE": 100_000,
     "AVAILABILITY_BATCH_SIZE": 500,
-    "LINK_HUNTER_SUMMARY_BATCH_SIZE": 25,
+    # The provider preflight model proves that 100 cheap summaries plus five
+    # deep proofs remain inside the immutable $0.18 run envelope.  Keep the
+    # high-volume, low-cost top of the funnel available in production.
+    "LINK_HUNTER_SUMMARY_BATCH_SIZE": 100,
     "LINK_HUNTER_LINK_REFRESH_BATCH_SIZE": 100,
+    "LINK_HUNTER_LINK_REFRESH_WORKERS": 8,
     "LINK_HUNTER_FREE_SCREEN_BATCH_SIZE": 50_000,
 }
 
