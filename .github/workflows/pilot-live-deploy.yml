@@ -1,0 +1,77 @@
+name: Pilot Live Deploy
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/pilot-live-deploy.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: expandosaurus-pilot-live-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy current pilot branch to existing Railway service
+        shell: bash
+        run: |
+          set +e
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::warning::RAILWAY_TOKEN missing"
+            exit 0
+          fi
+          npx -y @railway/cli@latest up \
+            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+            --environment production \
+            --service youtube-domain-crawler \
+            --ci
+          code=$?
+          echo "RAILWAY_DEPLOY_EXIT=$code"
+          if [ "$code" -ne 0 ]; then
+            echo "::warning::Pilot Railway deployment failed; domain attachment skipped."
+            exit 0
+          fi
+
+          health_ok=0
+          for attempt in $(seq 1 24); do
+            body="$(curl --max-time 20 -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
+            if BODY="$body" python -c 'import json,os;p=json.loads(os.environ["BODY"]);assert p.get("status") == "ok";assert p.get("database") == "ok"' 2>/dev/null; then
+              echo "RAILWAY_HEALTH_OK"
+              health_ok=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$health_ok" != "1" ]; then
+            echo "::warning::Existing Railway health endpoint did not recover; custom-domain attachment skipped."
+            exit 0
+          fi
+
+          echo "--- CUSTOM DOMAIN RESULT ---"
+          npx -y @railway/cli@latest domain craftsheaven.club \
+            --port 8080 \
+            --service youtube-domain-crawler \
+            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+            --environment production \
+            --json
+          domain_code=$?
+          echo "RAILWAY_DOMAIN_EXIT=$domain_code"
+          if [ "$domain_code" -ne 0 ]; then
+            echo "--- EXISTING DOMAIN STATUS/LIST ---"
+            npx -y @railway/cli@latest domain list \
+              --service youtube-domain-crawler \
+              --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+              --environment production \
+              --json || true
+          fi
+          exit 0
