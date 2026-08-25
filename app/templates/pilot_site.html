@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ site.site_name }}</title>
   <meta name="description" content="{{ site.subheadline }}">
+  {% if not site.indexable %}<meta name="robots" content="noindex,follow">{% endif %}
   <link rel="canonical" href="https://{{ site.domain }}/">
   <style>
     :root { color-scheme: light; }
