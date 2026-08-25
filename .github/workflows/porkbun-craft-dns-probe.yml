@@ -1,5 +1,6 @@
 name: Porkbun Crafts Heaven DNS Probe
 
+# One-shot, read-only DNS permission probe for the newly acquired pilot domain.
 on:
   push:
     branches:
