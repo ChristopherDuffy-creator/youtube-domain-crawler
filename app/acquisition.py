@@ -13,7 +13,7 @@ from app.domain_tools import registrable_domain
 
 PILOT_DOMAINS = frozenset({
     "satvic.yoga",
-    "petworthy.co",
+    "teamgerardiperformance.com",
     "craftsheaven.club",
 })
 
