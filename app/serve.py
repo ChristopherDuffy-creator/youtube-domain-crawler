@@ -282,11 +282,11 @@ def _crawler_prediction(db, domain_name: str) -> dict[str, object] | None:
     }
 
 
-@app.get("/ops/pilot-metrics")
+@app.get("/ops/pilot-metrics", response_model=None)
 def pilot_metrics(
     since: str | None = Query(default=None),
     _: None = Depends(main_module.require_admin_token),
-) -> dict[str, object] | JSONResponse:
+):
     """Return aggregate pilot metrics from inside Railway's private network.
 
     The endpoint is admin-token protected and deliberately returns no IP data,
