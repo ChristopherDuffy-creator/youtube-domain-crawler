@@ -5,6 +5,10 @@ on:
     branches:
       - pilot/three-site-validation
     paths:
+      - app/pilot_sites.py
+      - app/serve.py
+      - app/templates/pilot_site.html
+      - app/templates/pilot_message.html
       - .github/workflows/pilot-live-deploy.yml
 
 permissions:
@@ -38,7 +42,7 @@ jobs:
           code=$?
           echo "RAILWAY_DEPLOY_EXIT=$code"
           if [ "$code" -ne 0 ]; then
-            echo "::warning::Pilot Railway deployment failed; domain attachment skipped."
+            echo "::warning::Pilot Railway deployment failed."
             exit 0
           fi
 
@@ -53,25 +57,6 @@ jobs:
             sleep 5
           done
           if [ "$health_ok" != "1" ]; then
-            echo "::warning::Existing Railway health endpoint did not recover; custom-domain attachment skipped."
-            exit 0
-          fi
-
-          echo "--- CUSTOM DOMAIN RESULT ---"
-          npx -y @railway/cli@latest domain craftsheaven.club \
-            --port 8080 \
-            --service youtube-domain-crawler \
-            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
-            --environment production \
-            --json
-          domain_code=$?
-          echo "RAILWAY_DOMAIN_EXIT=$domain_code"
-          if [ "$domain_code" -ne 0 ]; then
-            echo "--- EXISTING DOMAIN STATUS/LIST ---"
-            npx -y @railway/cli@latest domain list \
-              --service youtube-domain-crawler \
-              --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
-              --environment production \
-              --json || true
+            echo "::warning::Railway health endpoint did not recover after deployment."
           fi
           exit 0
