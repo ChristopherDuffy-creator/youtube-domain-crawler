@@ -167,13 +167,17 @@ class Settings(BaseSettings):
     link_hunter_link_refresh_workers: int = Field(default=8, ge=1, le=16)
     link_hunter_free_screen_batch_size: int = Field(default=50_000, ge=100, le=1_000_000)
 
-    # Free Q&A prefilter. Anonymous API calls are deliberately tiny, cached in
-    # ProviderQuery, and always respect Stack Exchange's returned backoff/quota.
-    stackexchange_prefilter_batch_size: int = Field(default=5, ge=1, le=20)
+    # Free evidence sources. These remain bounded by each source's existing
+    # polite client/backoff logic and never make DataForSEO requests.
+    commoncrawl_prefilter_batch_size: int = Field(default=25, ge=1, le=25)
+    commoncrawl_prefilter_index_count: int = Field(default=2, ge=1, le=5)
+    stackexchange_prefilter_batch_size: int = Field(default=20, ge=1, le=20)
     stackexchange_min_views: int = Field(default=1_000, ge=0)
     stackexchange_sites: CsvList = Field(
         default_factory=lambda: list(DEFAULT_STACKEXCHANGE_SITES)
     )
+    hackernews_prefilter_batch_size: int = Field(default=25, ge=1, le=25)
+    hackernews_prefilter_hits_per_page: int = Field(default=50, ge=1, le=100)
 
     dropped_domain_feed_urls: CsvList = Field(
         default_factory=lambda: list(DEFAULT_DROPPED_DOMAIN_FEED_URLS)

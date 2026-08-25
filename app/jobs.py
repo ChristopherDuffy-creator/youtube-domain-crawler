@@ -2070,6 +2070,7 @@ def _run_daily_digest_catchup() -> None:
 
 def run_commoncrawl_prefilter_job() -> None:
     """Cache free historical-domain signals inside Railway's private network."""
+    settings = get_settings()
     with SessionLocal() as db:
         run = _start_run(db, "commoncrawl_prefilter")
         counters: dict[str, Any] = {
@@ -2083,7 +2084,11 @@ def run_commoncrawl_prefilter_job() -> None:
             "error_details": [],
         }
         try:
-            counters = run_commoncrawl_prefilter_batch(db, batch_size=10, index_count=2)
+            counters = run_commoncrawl_prefilter_batch(
+                db,
+                batch_size=settings.commoncrawl_prefilter_batch_size,
+                index_count=settings.commoncrawl_prefilter_index_count,
+            )
             status = "complete" if not counters.get("errors") else "partial"
             _finish_run(db, run, status, counters)
         except Exception as exc:
@@ -2129,6 +2134,7 @@ def run_stackexchange_prefilter_job() -> None:
 
 def run_hackernews_prefilter_job() -> None:
     """Cache free exact-link evidence from Hacker News stories/comments."""
+    settings = get_settings()
     with SessionLocal() as db:
         run = _start_run(db, "hackernews_prefilter")
         counters: dict[str, Any] = {
@@ -2144,7 +2150,11 @@ def run_hackernews_prefilter_job() -> None:
             "error_details": [],
         }
         try:
-            counters = run_hackernews_prefilter_batch(db, batch_size=10, hits_per_page=50)
+            counters = run_hackernews_prefilter_batch(
+                db,
+                batch_size=settings.hackernews_prefilter_batch_size,
+                hits_per_page=settings.hackernews_prefilter_hits_per_page,
+            )
             status = "complete" if not counters.get("errors") else "partial"
             _finish_run(db, run, status, counters)
         except Exception as exc:

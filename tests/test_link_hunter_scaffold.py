@@ -85,6 +85,9 @@ def test_link_hunter_is_safe_by_default() -> None:
     assert settings.link_hunter_verification_cache_hours == 24
     assert settings.link_hunter_link_refresh_batch_size == 100
     assert settings.link_hunter_link_refresh_workers == 8
+    assert settings.commoncrawl_prefilter_batch_size == 25
+    assert settings.stackexchange_prefilter_batch_size == 20
+    assert settings.hackernews_prefilter_batch_size == 25
 
 
 def test_dataforseo_client_requires_credentials() -> None:
