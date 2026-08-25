@@ -1,5 +1,6 @@
 name: Pilot Domain DNS Status
 
+# One-shot status read for the three purchased pilot domains.
 on:
   push:
     branches:
