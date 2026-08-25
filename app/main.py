@@ -24,7 +24,6 @@ from sqlalchemy.orm import Session
 
 from app.backup import build_logical_snapshot
 from app.config import get_settings
-from app.data_hygiene import purge_legacy_bare_youtube_links
 from app.database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
 from app.jobs import JOB_FUNCTIONS, build_scheduler, ensure_seed_data, ingest_dropped_text
 from app.link_hunter import _score_opportunity, run_provider_proof_job
@@ -132,7 +131,6 @@ async def lifespan(_: FastAPI):
     ensure_runtime_schema(engine)
     with SessionLocal() as db:
         ensure_seed_data(db)
-        purge_legacy_bare_youtube_links(db, settings)
         regraded = regrade_existing_web_opportunities(
             db,
             _score_opportunity,
