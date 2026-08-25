@@ -1,0 +1,32 @@
+name: Pilot Domain DNS Status
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/pilot-domain-status.yml
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read exact Railway DNS requirements
+        shell: bash
+        run: |
+          set +e
+          for domain in craftsheaven.club satvic.yoga teamgerardiperformance.com; do
+            echo "=== DOMAIN STATUS $domain ==="
+            npx -y @railway/cli@latest domain status "$domain" \
+              --service youtube-domain-crawler \
+              --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+              --environment production \
+              --json || true
+          done
+          exit 0
