@@ -88,8 +88,8 @@ def test_candidate_refresh_chunks_large_scopes(monkeypatch) -> None:
     monkeypatch.setattr(jobs, "_refresh_candidate_chunk", fake_refresh)
     monkeypatch.setattr(jobs, "_release_orm_memory", lambda _db: None)
 
-    assert jobs.refresh_candidates(object(), set(range(12))) == 12
-    assert [len(chunk) for chunk in chunks] == [5, 5, 2]
+    assert jobs.refresh_candidates(object(), set(range(62))) == 62
+    assert [len(chunk) for chunk in chunks] == [25, 25, 12]
 
 
 def test_youtube_signal_refresh_chunks_and_revalidates_each_scope(monkeypatch) -> None:

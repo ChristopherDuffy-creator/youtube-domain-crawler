@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.availability import AvailabilityResult, check_domain
@@ -1237,23 +1237,30 @@ def _best_link_for_video(links: list[VideoDomain]) -> VideoDomain:
     )
 
 
-_CANDIDATE_DOMAIN_CHUNK = 5
+# Candidate graphs can be large, but five-at-a-time turns a single statistics
+# refresh into thousands of database round trips. Twenty-five keeps memory
+# bounded while materially reducing query overhead.
+_CANDIDATE_DOMAIN_CHUNK = 25
 
 
 def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
     settings = get_settings()
     if not domain_ids:
         return 0
-    active_domain_ids = (
-        select(VideoDomain.domain_id)
+    active_link_exists = exists(
+        select(VideoDomain.id)
         .join(Video, Video.id == VideoDomain.video_id)
-        .where(VideoDomain.active.is_(True), Video.active.is_(True))
+        .where(
+            VideoDomain.domain_id == Candidate.domain_id,
+            VideoDomain.active.is_(True),
+            Video.active.is_(True),
+        )
     )
     stale_candidates = update(Candidate).where(
-        Candidate.domain_id.not_in(active_domain_ids),
+        ~active_link_exists,
         Candidate.tier != "rejected",
+        Candidate.domain_id.in_(domain_ids),
     )
-    stale_candidates = stale_candidates.where(Candidate.domain_id.in_(domain_ids))
     db.execute(
         stale_candidates.values(
             tier="rejected",

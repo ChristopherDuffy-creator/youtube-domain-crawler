@@ -61,6 +61,7 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
     removed = 0
     restored = 0
     affected: set[int] = set()
+    affected_video_ids: set[str] = set()
     for chunk in _chunks(list(candidate_state), 50):
         bare_links = db.scalars(
             select(VideoDomain).where(
@@ -80,10 +81,12 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
             if link.active and not plausible:
                 link.active = False
                 affected.add(link.domain_id)
+                affected_video_ids.add(link.video_id)
                 removed += 1
             elif not link.active and plausible and recent_rejected:
                 link.active = True
                 affected.add(link.domain_id)
+                affected_video_ids.add(link.video_id)
                 restored += 1
         db.commit()
 
@@ -93,65 +96,73 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
         for chunk in _chunks(sorted(affected), 25):
             refresh_candidates(db, set(chunk))
 
-    active_link_for_candidate = exists(
-        select(VideoDomain.id).where(
-            VideoDomain.domain_id == Candidate.domain_id,
-            VideoDomain.active.is_(True),
+    candidate_scope = set(candidate_state).union(affected)
+    if candidate_scope:
+        active_link_for_candidate = exists(
+            select(VideoDomain.id).where(
+                VideoDomain.domain_id == Candidate.domain_id,
+                VideoDomain.active.is_(True),
+            )
         )
-    )
-    db.execute(
-        update(Candidate)
-        .where(~active_link_for_candidate)
-        .values(
-            tier="rejected",
-            monthly_views=0,
-            verified_30d=False,
-            observation_days=0.0,
-            score=0.0,
-            video_count=0,
-            link_count=0,
-            best_video_id=None,
-            updated_at=utcnow(),
+        db.execute(
+            update(Candidate)
+            .where(Candidate.domain_id.in_(candidate_scope), ~active_link_for_candidate)
+            .values(
+                tier="rejected",
+                monthly_views=0,
+                verified_30d=False,
+                observation_days=0.0,
+                score=0.0,
+                video_count=0,
+                link_count=0,
+                best_video_id=None,
+                updated_at=utcnow(),
+            )
         )
-    )
 
-    active_link_for_signal = exists(
-        select(VideoDomain.id).where(
-            VideoDomain.domain_id == YouTubeDomainSignal.domain_id,
-            VideoDomain.active.is_(True),
+        active_link_for_signal = exists(
+            select(VideoDomain.id).where(
+                VideoDomain.domain_id == YouTubeDomainSignal.domain_id,
+                VideoDomain.active.is_(True),
+            )
         )
-    )
-    db.execute(
-        update(YouTubeDomainSignal)
-        .where(~active_link_for_signal)
-        .values(
-            active_video_count=0,
-            active_link_count=0,
-            channel_count=0,
-            lifetime_linked_video_views=0,
-            monthly_linked_video_exposure=0,
-            observation_days=0.0,
-            traffic_confidence="no_active_links",
-            measured_15d=False,
-            verified_30d=False,
-            cta_rate=0.0,
-            clickable_rate=0.0,
-            expected_clicks_monthly=0,
-            monthly_revenue_low_usd=0.0,
-            monthly_revenue_high_usd=0.0,
-            max_purchase_price_usd=0.0,
-            buy_score=0.0,
-            updated_at=utcnow(),
+        db.execute(
+            update(YouTubeDomainSignal)
+            .where(YouTubeDomainSignal.domain_id.in_(candidate_scope), ~active_link_for_signal)
+            .values(
+                active_video_count=0,
+                active_link_count=0,
+                channel_count=0,
+                lifetime_linked_video_views=0,
+                monthly_linked_video_exposure=0,
+                observation_days=0.0,
+                traffic_confidence="no_active_links",
+                measured_15d=False,
+                verified_30d=False,
+                cta_rate=0.0,
+                clickable_rate=0.0,
+                expected_clicks_monthly=0,
+                monthly_revenue_low_usd=0.0,
+                monthly_revenue_high_usd=0.0,
+                max_purchase_price_usd=0.0,
+                buy_score=0.0,
+                updated_at=utcnow(),
+            )
         )
-    )
 
-    active_link_for_refresh = exists(
-        select(VideoDomain.id).where(
-            VideoDomain.video_id == VideoRefreshState.video_id,
-            VideoDomain.active.is_(True),
+    for chunk in _chunks(sorted(affected_video_ids), 50):
+        active_link_for_refresh = exists(
+            select(VideoDomain.id).where(
+                VideoDomain.video_id == VideoRefreshState.video_id,
+                VideoDomain.active.is_(True),
+            )
         )
-    )
-    db.execute(delete(VideoRefreshState).where(~active_link_for_refresh))
+        db.execute(
+            delete(VideoRefreshState).where(
+                VideoRefreshState.video_id.in_(chunk),
+                ~active_link_for_refresh,
+            )
+        )
     db.commit()
 
     enforce_candidate_signal_consistency(db, settings)
