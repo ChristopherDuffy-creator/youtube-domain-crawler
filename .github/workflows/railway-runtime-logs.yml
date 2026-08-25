@@ -23,6 +23,10 @@ jobs:
             echo "RAILWAY_TOKEN repository secret is not configured"
             exit 1
           fi
+          npx -y @railway/cli@latest deployment list --json --limit 10 \
+            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+            --environment production \
+            --service youtube-domain-crawler
           npx -y @railway/cli@latest logs --latest --lines 300 \
             --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
             --environment production \
