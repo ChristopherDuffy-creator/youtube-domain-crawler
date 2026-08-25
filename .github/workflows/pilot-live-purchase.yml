@@ -1,0 +1,40 @@
+name: Pilot Live Purchase Remaining
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/pilot-live-purchase.yml
+
+permissions:
+  contents: read
+
+jobs:
+  purchase:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Purchase only Satvic and Team Gerardi within approved caps
+        shell: bash
+        run: |
+          set +e
+          npx -y @railway/cli@latest run \
+            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+            --environment production \
+            --service youtube-domain-crawler \
+            --no-local \
+            python -m scripts.pilot_live_buy_remaining
+          code=$?
+          echo "LIVE_PURCHASE_EXIT=$code"
+          if [ "$code" -ne 0 ]; then
+            echo "::warning::Live purchase stopped safely; inspect purchase output above."
+          fi
+          exit 0
