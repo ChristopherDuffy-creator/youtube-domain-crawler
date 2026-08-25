@@ -10,6 +10,9 @@ class CommonCrawlError(RuntimeError):
     pass
 
 
+HISTORICAL_SAMPLE_WINDOW = 8
+
+
 @dataclass(frozen=True)
 class CommonCrawlPresence:
     domain: str
@@ -40,6 +43,14 @@ class CommonCrawlClient:
         }
 
     def latest_indexes(self, limit: int = 2) -> list[str]:
+        """Select recent indexes spread across a short historical window.
+
+        A dropped domain is commonly absent from the two most recent crawls,
+        even when it had a meaningful site shortly before expiry.  Sampling the
+        same fixed request count across the newest eight collections preserves
+        Common Crawl politeness and runtime cost while making that free signal
+        materially more useful for expired domains.
+        """
         if limit < 1 or limit > 5:
             raise ValueError("Common Crawl index limit must be between 1 and 5")
         with httpx.Client(
@@ -59,11 +70,17 @@ class CommonCrawlClient:
             value = str(item.get("id") or "").strip()
             if value.startswith("CC-MAIN-"):
                 indexes.append(value)
-            if len(indexes) >= limit:
-                break
         if not indexes:
             raise CommonCrawlError("Common Crawl returned no usable crawl indexes")
-        return indexes
+        if len(indexes) <= limit or limit == 1:
+            return indexes[:limit]
+
+        window = indexes[: min(len(indexes), HISTORICAL_SAMPLE_WINDOW)]
+        last_position = len(window) - 1
+        positions = {
+            round(position * last_position / (limit - 1)) for position in range(limit)
+        }
+        return [index_id for position, index_id in enumerate(window) if position in positions]
 
     def _index_has_capture(self, client: httpx.Client, index_id: str, domain: str) -> bool:
         response = client.get(

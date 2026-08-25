@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -122,6 +124,38 @@ def test_youtube_client_uses_quota_efficient_batched_inventory_endpoints(monkeyp
     assert batch_call == {"part": "id,statistics", "id": "video-1"}
 
 
+def test_granular_statistics_fetch_uses_a_bounded_parallel_worker_pool(monkeypatch) -> None:
+    client = YouTubeClient("test-key", statistics_workers=4)
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        nonlocal active, peak
+        assert path == "videos:batchGetStats"
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.02)
+        with lock:
+            active -= 1
+        return {
+            "items": [
+                {"id": video_id, "statistics": {"viewCount": "42"}}
+                for video_id in params["id"].split(",")
+            ]
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    statistics = client.fetch_video_statistics_batch(
+        [f"statistics-video-{index}" for index in range(200)]
+    )
+
+    assert peak == 4
+    assert [item.id for item in statistics] == [
+        f"statistics-video-{index}" for index in range(200)
+    ]
 class FakeFanoutClient:
     def __init__(self) -> None:
         self.playlist_tokens: list[str | None] = []
