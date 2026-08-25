@@ -11,6 +11,7 @@ import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, Lock, Thread
 from typing import Literal
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -128,24 +129,50 @@ templates.env.filters["dashboard_time"] = _dashboard_time
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global scheduler
-    Base.metadata.create_all(bind=engine)
-    ensure_runtime_schema(engine)
-    with SessionLocal() as db:
-        if storage_guard_allows_writes(db, settings, "startup_maintenance"):
-            ensure_seed_data(db)
-            regraded = regrade_existing_web_opportunities(
-                db,
-                _score_opportunity,
-                limit=250,
-            )
-            logger.info("Traffic-first Web Hunter regraded %s existing opportunities", regraded)
-    if settings.scheduler_enabled:
-        scheduler = build_scheduler(settings)
-        scheduler.start()
-        logger.info("Background crawler scheduler started")
+    scheduler = None
+    runtime_stopping = Event()
+    scheduler_lock = Lock()
+
+    def prepare_runtime() -> None:
+        """Keep idempotent database work out of the HTTP health-check path."""
+        global scheduler
+        try:
+            Base.metadata.create_all(bind=engine)
+            ensure_runtime_schema(engine)
+            with SessionLocal() as db:
+                if storage_guard_allows_writes(db, settings, "startup_maintenance"):
+                    ensure_seed_data(db)
+                    regraded = regrade_existing_web_opportunities(
+                        db,
+                        _score_opportunity,
+                        limit=250,
+                    )
+                    logger.info(
+                        "Traffic-first Web Hunter regraded %s existing opportunities",
+                        regraded,
+                    )
+            if settings.scheduler_enabled:
+                with scheduler_lock:
+                    if runtime_stopping.is_set():
+                        return
+                    scheduler = build_scheduler(settings)
+                    scheduler.start()
+                    logger.info("Background crawler scheduler started")
+        except Exception:
+            logger.exception("Background crawler startup maintenance failed")
+
+    startup_thread = Thread(
+        target=prepare_runtime,
+        name="crawler-startup-maintenance",
+        daemon=True,
+    )
+    startup_thread.start()
     yield
-    if scheduler:
-        scheduler.shutdown(wait=False)
+    runtime_stopping.set()
+    startup_thread.join(timeout=5)
+    with scheduler_lock:
+        if scheduler:
+            scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title=settings.app_name, version="0.4.0", lifespan=lifespan)
