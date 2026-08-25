@@ -5,7 +5,7 @@ name: Railway CLI Deploy
 # Link Hunter paid mode is intentionally optional at deploy time; its separate
 # guarded batch workflow verifies the flag before any provider call.
 # Web Hunter deep-proof/source-focus production deployment trigger.
-# Redeploy marker: non-blocking crawler startup health path, 2026-08-25.
+# Redeploy marker: restore clean crawler job module, 2026-08-25.
 on:
   push:
     branches:
