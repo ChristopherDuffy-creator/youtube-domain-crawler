@@ -35,8 +35,6 @@ jobs:
 
           main = "app/main.py"
           template = "app/templates/dashboard.html"
-          deploy = ".github/workflows/pilot-live-deploy.yml"
-          validate = ".github/workflows/pilot-site-test.yml"
 
           replace_once(
               main,
@@ -103,16 +101,6 @@ jobs:
               '''            <tr><td colspan="8" class="empty">No {{ decision_filter if decision_filter else ('new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'open ranked')) }} YouTube candidates yet.</td></tr>\n''',
           )
 
-          for workflow in (deploy, validate):
-              p = Path(workflow)
-              text = p.read_text()
-              anchor = "      - app/pilot_sites.py\n"
-              if "      - app/main.py\n" not in text:
-                  if anchor not in text:
-                      raise SystemExit(f"{workflow}: deploy path anchor missing")
-                  text = text.replace(anchor, anchor + "      - app/main.py\n      - app/templates/dashboard.html\n", 1)
-              p.write_text(text)
-
           print("PATCH_OK")
           PY
           code=$?
@@ -123,7 +111,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/main.py app/templates/dashboard.html .github/workflows/pilot-live-deploy.yml .github/workflows/pilot-site-test.yml
+          git add app/main.py app/templates/dashboard.html
           git commit -m "Separate YouTube dashboard decision buckets"
           commit_code=$?
           if [ "$commit_code" -ne 0 ]; then
