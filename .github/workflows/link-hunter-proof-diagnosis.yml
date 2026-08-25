@@ -1,0 +1,28 @@
+name: Link Hunter Proof Diagnosis
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/link-hunter-proof-diagnosis.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - name: Install PostgreSQL client
+        run: python -m pip install --disable-pip-version-check 'psycopg[binary]>=3.2,<4'
+      - name: Read latest Link Hunter proof outcome only
+        run: >-
+          npx -y @railway/cli@latest run
+          --project 31fbe878-aa83-4b74-9820-e9f0d13b984c
+          --environment production
+          --service youtube-domain-crawler
+          python -c "import os, re, psycopg; connection=psycopg.connect(os.environ['DATABASE_URL']); cursor=connection.cursor(); cursor.execute('SET TRANSACTION READ ONLY'); cursor.execute(\\"SELECT status, COALESCE(error, ''), COALESCE(counters::text, ''), started_at, finished_at FROM run_logs WHERE job = 'link_hunter_proof' ORDER BY started_at DESC LIMIT 3\\"); rows=cursor.fetchall(); [print({'status': row[0], 'error_present': bool(row[1]), 'error_type': re.split(r'[:\\n]', row[1], maxsplit=1)[0][:160], 'counter_keys': sorted(re.findall(r'\\\\"([^\\\\"]+)\\\\"\\s*:', row[2]))[:30], 'started_at': str(row[3]), 'finished_at': str(row[4])}) for row in rows]; connection.close()"
