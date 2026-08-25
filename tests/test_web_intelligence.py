@@ -28,9 +28,11 @@ from app.models import (
     WebScreening,
 )
 from app.web_intelligence import (
+    EconomicProjection,
     assess_dropped_domain,
     backfill_existing_web_intelligence,
     project_opportunity_economics,
+    save_opportunity_economics,
     screen_dropped_domains,
 )
 
@@ -389,3 +391,53 @@ def test_due_link_refresh_fetches_multiple_pages_concurrently(monkeypatch) -> No
         }
         assert len(calls) == 3
         assert len(db.scalars(select(LinkObservation)).all()) == 3
+
+
+def test_opportunity_economics_upsert_keeps_one_row_per_domain() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    first_projection = EconomicProjection(
+        buy_score=44.0,
+        expected_clicks_monthly=12,
+        monthly_revenue_low_usd=3.0,
+        monthly_revenue_high_usd=9.0,
+        max_purchase_price_usd=20.0,
+        estimated_payback_months=3.0,
+        confidence=0.4,
+        risk_score=18.0,
+        monetization_route="content_restore",
+        rationale=["initial"],
+        safety_flags=[],
+    )
+    updated_projection = EconomicProjection(
+        buy_score=77.0,
+        expected_clicks_monthly=80,
+        monthly_revenue_low_usd=20.0,
+        monthly_revenue_high_usd=60.0,
+        max_purchase_price_usd=100.0,
+        estimated_payback_months=2.0,
+        confidence=0.8,
+        risk_score=8.0,
+        monetization_route="affiliate_landing",
+        rationale=["updated"],
+        safety_flags=[],
+    )
+
+    with Session(engine) as db:
+        domain = Domain(name="upsert-safe.example")
+        db.add(domain)
+        db.commit()
+
+        save_opportunity_economics(db, domain, first_projection)
+        db.flush()
+        save_opportunity_economics(db, domain, updated_projection)
+        db.commit()
+
+        rows = db.scalars(
+            select(OpportunityEconomics).where(OpportunityEconomics.domain_id == domain.id)
+        ).all()
+
+    assert len(rows) == 1
+    assert rows[0].buy_score == 77.0
+    assert rows[0].monthly_revenue_high_usd == 60.0
+    assert rows[0].monetization_route == "affiliate_landing"

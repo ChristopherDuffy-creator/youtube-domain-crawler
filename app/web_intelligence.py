@@ -7,6 +7,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -417,25 +419,54 @@ def save_opportunity_economics(
     domain: Domain,
     projection: EconomicProjection,
 ) -> OpportunityEconomics:
+    """Persist one economic case per domain, safely across concurrent jobs."""
+    values = {
+        "buy_score": projection.buy_score,
+        "expected_clicks_monthly": projection.expected_clicks_monthly,
+        "monthly_revenue_low_usd": projection.monthly_revenue_low_usd,
+        "monthly_revenue_high_usd": projection.monthly_revenue_high_usd,
+        "max_purchase_price_usd": projection.max_purchase_price_usd,
+        "estimated_payback_months": projection.estimated_payback_months,
+        "confidence": projection.confidence,
+        "risk_score": projection.risk_score,
+        "monetization_route": projection.monetization_route,
+        "rationale": projection.rationale,
+        "safety_flags": projection.safety_flags,
+        "updated_at": datetime.now(UTC),
+    }
     economics = db.scalar(
         select(OpportunityEconomics).where(OpportunityEconomics.domain_id == domain.id)
     )
-    if economics is None:
-        economics = OpportunityEconomics(domain_id=domain.id)
+    if economics is not None:
+        for field, value in values.items():
+            setattr(economics, field, value)
+        return economics
+
+    dialect = db.bind.dialect.name if db.bind is not None else ""
+    if dialect == "postgresql":
+        statement = postgresql_insert(OpportunityEconomics).values(
+            domain_id=domain.id, **values
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[OpportunityEconomics.domain_id],
+            set_=values,
+        )
+        db.execute(statement)
+    elif dialect == "sqlite":
+        statement = sqlite_insert(OpportunityEconomics).values(domain_id=domain.id, **values)
+        statement = statement.on_conflict_do_update(
+            index_elements=[OpportunityEconomics.domain_id],
+            set_=values,
+        )
+        db.execute(statement)
+    else:
+        economics = OpportunityEconomics(domain_id=domain.id, **values)
         db.add(economics)
-    economics.buy_score = projection.buy_score
-    economics.expected_clicks_monthly = projection.expected_clicks_monthly
-    economics.monthly_revenue_low_usd = projection.monthly_revenue_low_usd
-    economics.monthly_revenue_high_usd = projection.monthly_revenue_high_usd
-    economics.max_purchase_price_usd = projection.max_purchase_price_usd
-    economics.estimated_payback_months = projection.estimated_payback_months
-    economics.confidence = projection.confidence
-    economics.risk_score = projection.risk_score
-    economics.monetization_route = projection.monetization_route
-    economics.rationale = projection.rationale
-    economics.safety_flags = projection.safety_flags
-    economics.updated_at = datetime.now(UTC)
-    return economics
+        return economics
+
+    return db.scalar(
+        select(OpportunityEconomics).where(OpportunityEconomics.domain_id == domain.id)
+    )
 
 
 def backfill_existing_web_intelligence(
