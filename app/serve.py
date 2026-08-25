@@ -15,6 +15,7 @@ from sqlalchemy import distinct, func, select
 from app.boot import app
 import app.main as main_module
 from app.database import SessionLocal, engine
+from app.models import Domain, YouTubeDomainSignal
 from app.pilot_sites import (
     PILOT_SESSION_COOKIE,
     PILOT_SESSION_SECONDS,
@@ -255,6 +256,32 @@ def _parse_report_since(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _crawler_prediction(db, domain_name: str) -> dict[str, object] | None:
+    domain_row = db.scalar(select(Domain).where(Domain.name == domain_name).limit(1))
+    if domain_row is None:
+        return None
+    signal = db.get(YouTubeDomainSignal, domain_row.id)
+    if signal is None:
+        return {
+            "registrar_price_usd": domain_row.registrar_price_usd,
+            "youtube_signal": None,
+        }
+    return {
+        "registrar_price_usd": domain_row.registrar_price_usd,
+        "youtube_signal": {
+            "monthly_exposure": int(signal.monthly_linked_video_exposure or 0),
+            "expected_clicks_monthly": int(signal.expected_clicks_monthly or 0),
+            "monthly_revenue_low_usd": float(signal.monthly_revenue_low_usd or 0.0),
+            "monthly_revenue_high_usd": float(signal.monthly_revenue_high_usd or 0.0),
+            "buy_score": float(signal.buy_score or 0.0),
+            "monetization_route": signal.monetization_route,
+            "observation_days": float(signal.observation_days or 0.0),
+            "traffic_confidence": signal.traffic_confidence,
+            "updated_at": signal.updated_at.isoformat() if signal.updated_at else None,
+        },
+    }
+
+
 @app.get("/ops/pilot-metrics")
 def pilot_metrics(
     since: str | None = Query(default=None),
@@ -339,6 +366,7 @@ def pilot_metrics(
                 "clicks_per_session": round(clicks / sessions, 4) if sessions else 0.0,
                 "top_paths": top_paths,
                 "last_event": last_event.isoformat() if last_event else None,
+                "crawler_prediction": _crawler_prediction(db, domain),
             }
     result["domains"] = domains
     return result
