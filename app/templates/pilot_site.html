@@ -13,23 +13,27 @@
     a { color:inherit; }
     .shell { min-height:100vh; display:flex; flex-direction:column; }
     header { max-width:1120px; width:100%; margin:0 auto; padding:28px 24px; display:flex; align-items:center; justify-content:space-between; }
-    .brand { font-weight:800; letter-spacing:-.03em; font-size:20px; }
-    .tag { font-size:12px; letter-spacing:.14em; font-weight:700; opacity:.58; }
-    main { width:100%; max-width:1120px; margin:auto; padding:48px 24px 80px; }
-    .hero { max-width:790px; }
-    .eyebrow { font-size:13px; font-weight:800; letter-spacing:.16em; opacity:.55; margin-bottom:22px; }
-    h1 { margin:0; font-size:clamp(44px, 8vw, 88px); line-height:.96; letter-spacing:-.055em; max-width:950px; }
-    .lede { font-size:clamp(18px, 2.5vw, 25px); line-height:1.5; max-width:760px; margin:30px 0 34px; color:#444; }
-    .cta { display:inline-flex; text-decoration:none; align-items:center; justify-content:center; min-height:58px; padding:0 27px; border-radius:999px; background:#171717; color:#fff; font-weight:750; font-size:16px; box-shadow:0 10px 30px rgba(0,0,0,.10); }
-    .cta:hover { transform:translateY(-1px); }
-    .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:70px; }
-    .card { background:#fff; border:1px solid rgba(0,0,0,.07); border-radius:22px; padding:25px; min-height:165px; }
-    .card strong { display:block; font-size:19px; margin-bottom:10px; }
-    .card p { margin:0; line-height:1.55; color:#5b5b5b; }
-    .disclosure { margin-top:34px; max-width:760px; padding:16px 18px; border-radius:14px; border:1px solid rgba(0,0,0,.10); background:rgba(255,255,255,.55); font-size:13px; line-height:1.5; color:#555; }
+    .brand { font-weight:850; letter-spacing:-.035em; font-size:21px; }
+    .tag { font-size:11px; letter-spacing:.16em; font-weight:800; opacity:.52; }
+    main { width:100%; max-width:1120px; margin:auto; padding:44px 24px 84px; }
+    .hero { max-width:900px; }
+    .eyebrow { font-size:12px; font-weight:850; letter-spacing:.17em; opacity:.55; margin-bottom:22px; }
+    h1 { margin:0; font-size:clamp(44px, 7.5vw, 84px); line-height:.98; letter-spacing:-.055em; max-width:1000px; }
+    .lede { font-size:clamp(18px, 2.35vw, 24px); line-height:1.52; max-width:790px; margin:30px 0 34px; color:#444; }
+    .cta { display:inline-flex; text-decoration:none; align-items:center; justify-content:center; min-height:58px; padding:0 27px; border-radius:999px; background:#171717; color:#fff; font-weight:780; font-size:16px; box-shadow:0 10px 30px rgba(0,0,0,.10); transition:transform .15s ease, box-shadow .15s ease; }
+    .cta:hover { transform:translateY(-2px); box-shadow:0 14px 34px rgba(0,0,0,.14); }
+    .intro { margin-top:70px; max-width:820px; padding:30px 32px; background:rgba(255,255,255,.68); border:1px solid rgba(0,0,0,.07); border-radius:24px; }
+    .intro h2 { margin:0 0 10px; font-size:clamp(25px,3vw,36px); letter-spacing:-.035em; }
+    .intro p { margin:0; font-size:17px; line-height:1.65; color:#555; }
+    .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:22px; }
+    .card { background:#fff; border:1px solid rgba(0,0,0,.07); border-radius:22px; padding:27px; min-height:190px; }
+    .card strong { display:block; font-size:20px; letter-spacing:-.02em; margin-bottom:11px; }
+    .card p { margin:0; line-height:1.6; color:#5b5b5b; }
+    .disclosure { margin-top:28px; max-width:790px; padding:16px 18px; border-radius:14px; border:1px solid rgba(0,0,0,.10); background:rgba(255,255,255,.55); font-size:13px; line-height:1.55; color:#555; }
+    .micro { margin-top:14px; font-size:12px; color:#777; }
     footer { max-width:1120px; width:100%; margin:0 auto; padding:24px; display:flex; justify-content:space-between; gap:20px; font-size:13px; color:#666; border-top:1px solid rgba(0,0,0,.08); }
     footer a { text-decoration:none; }
-    @media (max-width:760px) { .cards { grid-template-columns:1fr; } header { padding-top:20px; } main { padding-top:26px; } footer { flex-direction:column; } }
+    @media (max-width:760px) { .cards { grid-template-columns:1fr; } header { padding-top:20px; } main { padding-top:26px; } .intro { padding:24px; } footer { flex-direction:column; } }
   </style>
 </head>
 <body>
@@ -44,13 +48,19 @@
       <h1>{{ site.headline }}</h1>
       <p class="lede">{{ site.subheadline }}</p>
       <a class="cta" href="/go/main">{{ site.primary_cta }} →</a>
+      <div class="micro">Recommendations may include commercial links when suitable offers are activated.</div>
       {% if site.disclosure %}<div class="disclosure">{{ site.disclosure }}</div>{% endif %}
     </section>
 
+    <section class="intro">
+      <h2>{{ site.intro_title }}</h2>
+      <p>{{ site.intro_text }}</p>
+    </section>
+
     <section class="cards" aria-label="What you will find here">
-      <article class="card"><strong>Useful, not bloated</strong><p>Resources selected around the reason people arrive here, without pages of filler.</p></article>
-      <article class="card"><strong>Independent choices</strong><p>Recommendations are presented as alternatives and resources, not as the previous operator of this domain.</p></article>
-      <article class="card"><strong>Built around intent</strong><p>We keep the landing experience relevant to the original topic so visitors can quickly find what they came looking for.</p></article>
+      {% for title, text in site.feature_cards %}
+      <article class="card"><strong>{{ title }}</strong><p>{{ text }}</p></article>
+      {% endfor %}
     </section>
   </main>
   <footer>
