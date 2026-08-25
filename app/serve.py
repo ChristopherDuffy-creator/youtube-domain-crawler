@@ -8,8 +8,9 @@ import traceback
 from datetime import UTC, datetime
 from threading import Lock
 
-from fastapi import Query, Request
+from fastapi import Depends, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy import distinct, func, select
 
 from app.boot import app
 import app.main as main_module
@@ -17,9 +18,11 @@ from app.database import SessionLocal, engine
 from app.pilot_sites import (
     PILOT_SESSION_COOKIE,
     PILOT_SESSION_SECONDS,
+    PILOT_SITES,
     ensure_pilot_schema,
     get_pilot_site,
     offer_url,
+    pilot_site_events,
     pilot_sites_enabled,
     record_pilot_event,
     safe_offer_id,
@@ -219,6 +222,104 @@ def _safe_failure(exc: Exception) -> JSONResponse:
             "trace": [line[:300] for line in frames[-12:]],
         },
     )
+
+
+def _parse_report_since(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+@app.get("/ops/pilot-metrics")
+def pilot_metrics(
+    since: str | None = Query(default=None),
+    _: None = Depends(main_module.require_admin_token),
+) -> dict[str, object] | JSONResponse:
+    """Return aggregate pilot metrics from inside Railway's private network.
+
+    The endpoint is admin-token protected and deliberately returns no IP data,
+    cookies, raw referrers, or individual session identifiers.
+    """
+    try:
+        since_dt = _parse_report_since(since)
+    except ValueError:
+        return JSONResponse({"error": "Invalid since timestamp"}, status_code=400)
+
+    _ensure_pilot_schema()
+    result: dict[str, object] = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "since": since_dt.isoformat() if since_dt else None,
+        "domains": {},
+    }
+    domains: dict[str, object] = {}
+
+    with SessionLocal() as db:
+        for domain in PILOT_SITES:
+            filters = [pilot_site_events.c.domain == domain]
+            if since_dt is not None:
+                filters.append(pilot_site_events.c.created_at >= since_dt)
+
+            pageviews = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(pilot_site_events)
+                    .where(*filters, pilot_site_events.c.event_type == "pageview")
+                )
+                or 0
+            )
+            sessions = int(
+                db.scalar(
+                    select(func.count(distinct(pilot_site_events.c.session_id)))
+                    .select_from(pilot_site_events)
+                    .where(*filters, pilot_site_events.c.event_type == "pageview")
+                )
+                or 0
+            )
+            interest_clicks = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(pilot_site_events)
+                    .where(*filters, pilot_site_events.c.event_type == "interest_click")
+                )
+                or 0
+            )
+            outbound_clicks = int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(pilot_site_events)
+                    .where(*filters, pilot_site_events.c.event_type == "outbound_click")
+                )
+                or 0
+            )
+            clicks = interest_clicks + outbound_clicks
+            top_paths = [
+                {"path": path, "pageviews": int(count)}
+                for path, count in db.execute(
+                    select(pilot_site_events.c.path, func.count().label("n"))
+                    .where(*filters, pilot_site_events.c.event_type == "pageview")
+                    .group_by(pilot_site_events.c.path)
+                    .order_by(func.count().desc())
+                    .limit(10)
+                ).all()
+            ]
+            last_event = db.scalar(
+                select(func.max(pilot_site_events.c.created_at)).where(*filters)
+            )
+            domains[domain] = {
+                "pageviews": pageviews,
+                "unique_sessions": sessions,
+                "interest_clicks": interest_clicks,
+                "outbound_clicks": outbound_clicks,
+                "all_cta_clicks": clicks,
+                "clicks_per_session": round(clicks / sessions, 4) if sessions else 0.0,
+                "top_paths": top_paths,
+                "last_event": last_event.isoformat() if last_event else None,
+            }
+    result["domains"] = domains
+    return result
 
 
 @app.get("/ops/dashboard-smoke")
