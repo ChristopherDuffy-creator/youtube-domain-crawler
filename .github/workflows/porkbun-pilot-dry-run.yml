@@ -1,0 +1,54 @@
+name: Porkbun 3-Site Pilot Dry Run
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - app/acquisition.py
+      - scripts/pilot_acquisition.py
+      - tests/test_acquisition.py
+      - .github/workflows/porkbun-pilot-dry-run.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: porkbun-three-site-pilot-dry-run
+  cancel-in-progress: true
+
+jobs:
+  test-and-dry-run:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run acquisition unit tests
+        run: pytest -q tests/test_acquisition.py tests/test_availability.py
+
+      - name: Require project-scoped Railway token
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "RAILWAY_TOKEN repository secret is not configured"
+            exit 1
+          fi
+
+      - name: Dry-run approved domains using production registrar credentials
+        run: >-
+          npx -y @railway/cli@latest run
+          --project 31fbe878-aa83-4b74-9820-e9f0d13b984c
+          --environment production
+          --service youtube-domain-crawler
+          --no-local
+          python scripts/pilot_acquisition.py --mode dry-run
