@@ -256,9 +256,7 @@ class DroppedDomain(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     source: Mapped[str] = mapped_column(Text, default="manual")
-    first_seen_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, index=True
-    )
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     youtube_searched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -406,13 +404,6 @@ class ProviderQuery(Base):
     __tablename__ = "provider_queries"
     __table_args__ = (
         Index("ix_provider_queries_target_endpoint", "target", "endpoint"),
-        Index(
-            "ix_provider_queries_provider_endpoint_status_target",
-            "provider",
-            "endpoint",
-            "status",
-            "target",
-        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
