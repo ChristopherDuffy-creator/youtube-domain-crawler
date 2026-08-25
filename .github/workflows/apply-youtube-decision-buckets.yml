@@ -1,0 +1,138 @@
+name: Apply YouTube Decision Buckets
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/apply-youtube-decision-buckets.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: pilot/three-site-validation
+          fetch-depth: 0
+      - name: Patch dashboard decision buckets
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}: {old[:100]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          main = "app/main.py"
+          template = "app/templates/dashboard.html"
+          deploy = ".github/workflows/pilot-live-deploy.yml"
+          validate = ".github/workflows/pilot-site-test.yml"
+
+          replace_once(
+              main,
+              '    tier: ResultTier = "all",\n    _: str = Depends(require_dashboard_auth),',
+              '    tier: ResultTier = "all",\n    decision: DecisionStatus | None = None,\n    _: str = Depends(require_dashboard_auth),',
+          )
+
+          replace_once(
+              main,
+              '''            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)\n            .where(\n                Candidate.tier != "rejected",\n                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),\n                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),\n            )\n        )\n        if tier == "new":\n            candidate_statement = candidate_statement.where(Candidate.updated_at >= new_since)\n        elif tier == "measured":\n            candidate_statement = candidate_statement.join(\n                YouTubeDomainSignal,\n                YouTubeDomainSignal.domain_id == Domain.id,\n            ).where(\n                YouTubeDomainSignal.measured_15d.is_(True),\n                YouTubeDomainSignal.verified_30d.is_(False),\n            )\n        elif tier != "all":\n            candidate_statement = candidate_statement.where(Candidate.tier == tier)\n''',
+              '''            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)\n            .outerjoin(\n                DashboardDecision,\n                (DashboardDecision.domain_id == Domain.id)\n                & (DashboardDecision.system == "youtube"),\n            )\n            .where(\n                Candidate.tier != "rejected",\n                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),\n                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),\n            )\n        )\n        if decision is not None:\n            candidate_statement = candidate_statement.where(\n                DashboardDecision.status == decision\n            )\n        else:\n            candidate_statement = candidate_statement.where(DashboardDecision.id.is_(None))\n            if tier == "new":\n                candidate_statement = candidate_statement.where(\n                    Candidate.updated_at >= new_since\n                )\n            elif tier == "measured":\n                candidate_statement = candidate_statement.join(\n                    YouTubeDomainSignal,\n                    YouTubeDomainSignal.domain_id == Domain.id,\n                ).where(\n                    YouTubeDomainSignal.measured_15d.is_(True),\n                    YouTubeDomainSignal.verified_30d.is_(False),\n                )\n            elif tier != "all":\n                candidate_statement = candidate_statement.where(Candidate.tier == tier)\n''',
+          )
+
+          replace_once(
+              main,
+              '''    web_tier_counts = {\n''',
+              '''    youtube_open_tier_counts = {\n        tier_name: int(count)\n        for tier_name, count in db.execute(\n            select(Candidate.tier, func.count())\n            .join(Domain, Domain.id == Candidate.domain_id)\n            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)\n            .outerjoin(\n                DashboardDecision,\n                (DashboardDecision.domain_id == Domain.id)\n                & (DashboardDecision.system == "youtube"),\n            )\n            .where(\n                Candidate.tier != "rejected",\n                DashboardDecision.id.is_(None),\n                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),\n                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),\n            )\n            .group_by(Candidate.tier)\n        ).all()\n    }\n    web_tier_counts = {\n''',
+          )
+
+          replace_once(
+              main,
+              '''            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)\n            .where(\n                Candidate.tier != "rejected",\n                Candidate.updated_at >= new_since,\n                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),\n''',
+              '''            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)\n            .outerjoin(\n                DashboardDecision,\n                (DashboardDecision.domain_id == Domain.id)\n                & (DashboardDecision.system == "youtube"),\n            )\n            .where(\n                Candidate.tier != "rejected",\n                DashboardDecision.id.is_(None),\n                Candidate.updated_at >= new_since,\n                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),\n''',
+          )
+
+          replace_once(
+              main,
+              '''            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)\n            .where(\n                Candidate.tier != "rejected",\n                YouTubeDomainSignal.measured_15d.is_(True),\n''',
+              '''            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)\n            .outerjoin(\n                DashboardDecision,\n                (DashboardDecision.domain_id == Domain.id)\n                & (DashboardDecision.system == "youtube"),\n            )\n            .where(\n                Candidate.tier != "rejected",\n                DashboardDecision.id.is_(None),\n                YouTubeDomainSignal.measured_15d.is_(True),\n''',
+          )
+
+          replace_once(
+              main,
+              '''    youtube_results = sum(\n        youtube_tier_counts.get(tier_name, 0)\n        for tier_name in ("priority", "qualified", "watchlist", "pending")\n    )\n''',
+              '''    youtube_results = sum(\n        youtube_open_tier_counts.get(tier_name, 0)\n        for tier_name in ("priority", "qualified", "watchlist", "pending")\n    )\n''',
+          )
+
+          replace_once(
+              main,
+              '''            "result_tier": tier,\n            "candidate_rows": candidate_rows,\n''',
+              '''            "result_tier": tier,\n            "decision_filter": decision,\n            "candidate_rows": candidate_rows,\n''',
+          )
+          replace_once(
+              main,
+              '''            "youtube_tier_counts": youtube_tier_counts,\n            "web_tier_counts": web_tier_counts,\n''',
+              '''            "youtube_tier_counts": youtube_tier_counts,\n            "youtube_open_tier_counts": youtube_open_tier_counts,\n            "web_tier_counts": web_tier_counts,\n''',
+          )
+
+          replace_once(
+              template,
+              '''      <a class="stat-card priority{% if result_tier == 'priority' %} active{% endif %}" href="/?view=youtube&amp;tier=priority"><span>{{ "{:,}".format(youtube_tier_counts.get('priority', 0)) }}</span><small>Priority — click to view</small></a>\n      <a class="stat-card qualified{% if result_tier == 'qualified' %} active{% endif %}" href="/?view=youtube&amp;tier=qualified"><span>{{ "{:,}".format(youtube_tier_counts.get('qualified', 0)) }}</span><small>Qualified — click to view</small></a>\n      <a class="stat-card watchlist{% if result_tier == 'watchlist' %} active{% endif %}" href="/?view=youtube&amp;tier=watchlist"><span>{{ "{:,}".format(youtube_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — click to view</small></a>\n      <a class="stat-card pending{% if result_tier == 'pending' %} active{% endif %}" href="/?view=youtube&amp;tier=pending"><span>{{ "{:,}".format(youtube_tier_counts.get('pending', 0)) }}</span><small>Pending — click to view</small></a>\n''',
+              '''      <a class="stat-card priority{% if result_tier == 'priority' and not decision_filter %} active{% endif %}" href="/?view=youtube&amp;tier=priority"><span>{{ "{:,}".format(youtube_open_tier_counts.get('priority', 0)) }}</span><small>Priority — open</small></a>\n      <a class="stat-card qualified{% if result_tier == 'qualified' and not decision_filter %} active{% endif %}" href="/?view=youtube&amp;tier=qualified"><span>{{ "{:,}".format(youtube_open_tier_counts.get('qualified', 0)) }}</span><small>Qualified — open</small></a>\n      <a class="stat-card watchlist{% if result_tier == 'watchlist' and not decision_filter %} active{% endif %}" href="/?view=youtube&amp;tier=watchlist"><span>{{ "{:,}".format(youtube_open_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — uncategorised</small></a>\n      <a class="stat-card pending{% if result_tier == 'pending' and not decision_filter %} active{% endif %}" href="/?view=youtube&amp;tier=pending"><span>{{ "{:,}".format(youtube_open_tier_counts.get('pending', 0)) }}</span><small>Pending — open</small></a>\n      <a class="stat-card new{% if decision_filter == 'shortlisted' %} active{% endif %}" href="/?view=youtube&amp;decision=shortlisted"><span>{{ decision_counts.get('shortlisted', 0) }}</span><small>Shortlisted — click to view</small></a>\n      <a class="stat-card qualified{% if decision_filter == 'bought' %} active{% endif %}" href="/?view=youtube&amp;decision=bought"><span>{{ decision_counts.get('bought', 0) }}</span><small>Bought — click to view</small></a>\n      <a class="stat-card pending{% if decision_filter == 'ignored' %} active{% endif %}" href="/?view=youtube&amp;decision=ignored"><span>{{ decision_counts.get('ignored', 0) }}</span><small>Ignored — click to view</small></a>\n''',
+          )
+
+          replace_once(
+              template,
+              '''          {% if result_tier != 'all' %}<p class="filter-summary">Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> only · <a href="/?view=youtube">Show all results</a></p>{% endif %}\n''',
+              '''          {% if decision_filter %}<p class="filter-summary">Showing <strong>{{ decision_filter }}</strong> only · <a href="/?view=youtube&amp;tier=watchlist">Back to uncategorised Watchlist</a></p>{% elif result_tier != 'all' %}<p class="filter-summary">Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> only · <a href="/?view=youtube">Show all open results</a></p>{% endif %}\n''',
+          )
+
+          replace_once(
+              template,
+              '''            <tr><td colspan="8" class="empty">No {{ 'new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'ranked') }} YouTube candidates yet.</td></tr>\n''',
+              '''            <tr><td colspan="8" class="empty">No {{ decision_filter if decision_filter else ('new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'open ranked')) }} YouTube candidates yet.</td></tr>\n''',
+          )
+
+          for workflow in (deploy, validate):
+              p = Path(workflow)
+              text = p.read_text()
+              anchor = "      - app/pilot_sites.py\n"
+              if "      - app/main.py\n" not in text:
+                  if anchor not in text:
+                      raise SystemExit(f"{workflow}: deploy path anchor missing")
+                  text = text.replace(anchor, anchor + "      - app/main.py\n      - app/templates/dashboard.html\n", 1)
+              p.write_text(text)
+
+          print("PATCH_OK")
+          PY
+          code=$?
+          if [ "$code" -ne 0 ]; then
+            echo "::warning::YouTube decision bucket patch did not apply cleanly (exit $code)."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/main.py app/templates/dashboard.html .github/workflows/pilot-live-deploy.yml .github/workflows/pilot-site-test.yml
+          git commit -m "Separate YouTube dashboard decision buckets"
+          commit_code=$?
+          if [ "$commit_code" -ne 0 ]; then
+            echo "::warning::No dashboard patch commit was created."
+            exit 0
+          fi
+          git push origin HEAD:pilot/three-site-validation
+          push_code=$?
+          if [ "$push_code" -ne 0 ]; then
+            echo "::warning::Dashboard patch commit could not be pushed."
+          fi
+          exit 0
