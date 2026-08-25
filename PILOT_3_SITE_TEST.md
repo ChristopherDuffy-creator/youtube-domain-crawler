@@ -35,4 +35,5 @@ Key rules:
 - Preserve `/woodworkingplans` as a relevant landing path or semantically correct internal redirect.
 - Freeze current crawler exposure/click/revenue/buy-score metrics at acquisition.
 
-Immediate next action: verify live registrar availability/price for all three, user completes checkout/payment, then configure DNS and deploy the shared lightweight pilot framework.
+## Purchase gate
+The user manually buys the three selected domains. After confirmation of purchase, configure DNS and deploy the shared lightweight pilot framework. Do not substitute another domain without returning it to the user.
