@@ -33,12 +33,11 @@ def load_candidate_lanes(
     """Load small newest and oldest eligible pools without materialising history."""
     pool_size = max(64, limit * 8)
     statement = select(DroppedDomain).where(*eligibility)
-    newest = db.scalars(
-        statement.order_by(DroppedDomain.first_seen_at.desc(), DroppedDomain.id.desc()).limit(pool_size)
-    ).all()
-    oldest = db.scalars(
-        statement.order_by(DroppedDomain.first_seen_at.asc(), DroppedDomain.id.asc()).limit(pool_size)
-    ).all()
+    # Dropped IDs are insertion-ordered and already backed by the primary-key
+    # index. Do not add a startup migration that can exhaust a full production
+    # PostgreSQL volume while the crawler is recovering.
+    newest = db.scalars(statement.order_by(DroppedDomain.id.desc()).limit(pool_size)).all()
+    oldest = db.scalars(statement.order_by(DroppedDomain.id.asc()).limit(pool_size)).all()
     return newest, oldest
 
 

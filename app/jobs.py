@@ -2331,19 +2331,21 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
     )
     scheduler.add_job(
         run_commoncrawl_prefilter_job,
-        CronTrigger(hour="1,13", minute=17, timezone="UTC"),
+        # Sequential requests with the client's 0.75s inter-request delay;
+        # four evenly spaced batches improve backlog coverage without bursts.
+        CronTrigger(hour="1,7,13,19", minute=17, timezone="UTC"),
         id="commoncrawl_prefilter",
         replace_existing=True,
     )
     scheduler.add_job(
         run_stackexchange_prefilter_job,
-        CronTrigger(hour="2,14", minute=27, timezone="UTC"),
+        CronTrigger(hour="2,8,14,20", minute=27, timezone="UTC"),
         id="stackexchange_prefilter",
         replace_existing=True,
     )
     scheduler.add_job(
         run_hackernews_prefilter_job,
-        CronTrigger(hour="3,15", minute=37, timezone="UTC"),
+        CronTrigger(hour="3,9,15,21", minute=37, timezone="UTC"),
         id="hackernews_prefilter",
         replace_existing=True,
     )
