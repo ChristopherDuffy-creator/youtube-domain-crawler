@@ -2,6 +2,8 @@ name: Railway CLI Deploy
 
 # Direct source upload fallback for Railway GitHub snapshot failures.
 # Verify health plus direct live-data rendering for both dashboard views.
+# Link Hunter paid mode is intentionally optional at deploy time; its separate
+# guarded batch workflow verifies the flag before any provider call.
 # Web Hunter deep-proof/source-focus production deployment trigger.
 # Redeploy marker: crawler throughput and resilience phases, 2026-08-25.
 on:
@@ -58,7 +60,7 @@ jobs:
             health_ok=0
             youtube_ok=0
             web_ok=0
-            if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("database") == "ok"; assert p.get("link_hunter_enabled") is True' 2>/dev/null; then health_ok=1; fi
+            if BODY="$body" python -c 'import json, os; p=json.loads(os.environ["BODY"]); assert p.get("status") == "ok"; assert p.get("database") == "ok"' 2>/dev/null; then health_ok=1; fi
             if DIAG="$youtube" python -c 'import json, os; p=json.loads(os.environ["DIAG"]); assert p.get("ok") is True; assert p.get("status_code") == 200; assert p.get("auth_validator") == "passed"' 2>/dev/null; then youtube_ok=1; fi
             if DIAG="$web" python -c 'import json, os; p=json.loads(os.environ["DIAG"]); assert p.get("ok") is True; assert p.get("status_code") == 200; assert p.get("auth_validator") == "passed"' 2>/dev/null; then web_ok=1; fi
             if [ "$health_ok" = "1" ] && [ "$youtube_ok" = "1" ] && [ "$web_ok" = "1" ]; then

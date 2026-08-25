@@ -48,6 +48,13 @@ _BIGINT_COLUMNS = (
     ("youtube_domain_signals", "expected_clicks_monthly"),
 )
 
+_RUNTIME_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS ix_dropped_domains_first_seen_at "
+    "ON dropped_domains (first_seen_at)",
+    "CREATE INDEX IF NOT EXISTS ix_provider_queries_provider_endpoint_status_target "
+    "ON provider_queries (provider, endpoint, status, target)",
+)
+
 
 def ensure_runtime_schema(bind: Engine = engine) -> None:
     """Apply safe additive/widening migrations missed by ``create_all``."""
@@ -63,6 +70,8 @@ def ensure_runtime_schema(bind: Engine = engine) -> None:
         """
     )
     with bind.begin() as connection:
+        for statement in _RUNTIME_INDEXES:
+            connection.execute(text(statement))
         for table_name, column_name in _BIGINT_COLUMNS:
             data_type = connection.execute(
                 type_query,

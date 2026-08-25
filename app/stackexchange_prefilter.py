@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlparse
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.free_source_candidates import (
+    completed_target_exists,
+    load_candidate_lanes,
+    select_fair_candidates,
+)
 from app.models import (
     Domain,
     DroppedDomain,
@@ -197,31 +201,38 @@ def _save_question_links(
     return saved, created
 
 
-def _completed_sites(db: Session) -> dict[str, set[str]]:
+def _completed_sites(db: Session, targets: set[str] | None = None) -> dict[str, set[str]]:
     completed: dict[str, set[str]] = defaultdict(set)
-    rows = db.execute(
-        select(ProviderQuery.target, ProviderQuery.endpoint).where(
-            ProviderQuery.provider == "stackexchange",
-            ProviderQuery.status == "complete",
-            ProviderQuery.endpoint.like("url_search:%"),
-        )
-    ).all()
+    statement = select(ProviderQuery.target, ProviderQuery.endpoint).where(
+        ProviderQuery.provider == "stackexchange",
+        ProviderQuery.status == "complete",
+        ProviderQuery.endpoint.like("url_search:%"),
+    )
+    if targets:
+        statement = statement.where(ProviderQuery.target.in_(targets))
+    rows = db.execute(statement).all()
     for target, endpoint in rows:
         completed[target].add(endpoint.split(":", 1)[-1])
     return completed
 
 
 def _candidate_drops(db: Session, sites: tuple[str, ...], limit: int) -> list[DroppedDomain]:
-    done_sites = _completed_sites(db)
-    paid_done = set(
-        db.scalars(
-            select(ProviderQuery.target).where(
-                ProviderQuery.provider == "dataforseo",
-                ProviderQuery.endpoint == "bulk_backlink_summary",
-                ProviderQuery.status == "complete",
-            )
-        ).all()
+    newest, oldest = load_candidate_lanes(
+        db,
+        limit=limit,
+        eligibility=(
+            ~completed_target_exists(provider="dataforseo", endpoint="bulk_backlink_summary"),
+            or_(
+                *(
+                    ~completed_target_exists(
+                        provider="stackexchange", endpoint=f"url_search:{site}"
+                    )
+                    for site in sites
+                )
+            ),
+        ),
     )
+    candidate_names = {item.name for item in (*newest, *oldest)}
     commoncrawl_hits = {
         target: int(row_count or 0)
         for target, row_count in db.execute(
@@ -229,29 +240,20 @@ def _candidate_drops(db: Session, sites: tuple[str, ...], limit: int) -> list[Dr
                 ProviderQuery.provider == "commoncrawl",
                 ProviderQuery.endpoint == "url_index",
                 ProviderQuery.status == "complete",
+                ProviderQuery.target.in_(candidate_names),
             )
         ).all()
     }
-    recent = db.scalars(
-        select(DroppedDomain).order_by(DroppedDomain.first_seen_at.desc()).limit(300)
-    ).all()
-    required = set(sites)
-    eligible = [
-        item
-        for item in recent
-        if item.name not in paid_done and not required.issubset(done_sites.get(item.name, set()))
-    ]
-    eligible.sort(
-        key=lambda item: (
+    return select_fair_candidates(
+        newest,
+        oldest,
+        limit=limit,
+        rank_key=lambda item: (
             0 if commoncrawl_hits.get(item.name, 0) > 0 else 1,
             0 if item.name.endswith(".com") else 1,
             len(item.name),
-            -item.first_seen_at.replace(tzinfo=UTC).timestamp()
-            if item.first_seen_at.tzinfo is None
-            else -item.first_seen_at.timestamp(),
-        )
+        ),
     )
-    return eligible[:limit]
 
 
 def run_stackexchange_prefilter(
@@ -269,7 +271,7 @@ def run_stackexchange_prefilter(
         raise ValueError("Stack Exchange sites must contain between 1 and 5 entries")
 
     candidates = _candidate_drops(db, sites, batch_size)
-    done_sites = _completed_sites(db)
+    done_sites = _completed_sites(db, {item.name for item in candidates})
     counters: dict[str, Any] = {
         "candidates": len(candidates),
         "queries": 0,

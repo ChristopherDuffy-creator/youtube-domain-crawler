@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.commoncrawl import CommonCrawlPresence
-from app.commoncrawl_prefilter import run_commoncrawl_prefilter
+from app.commoncrawl_prefilter import _candidate_drops, run_commoncrawl_prefilter
 from app.database import Base
 from app.models import DroppedDomain, ProviderQuery
 
@@ -94,3 +94,28 @@ def test_prefilter_skips_completed_targets_and_caches_zero_cost_signals() -> Non
         ("longername.com", 0, 0.0, "complete"),
         ("b.net", 1, 0.0, "complete"),
     ]
+
+
+def test_candidate_selection_reserves_a_slot_for_the_oldest_unchecked_drop() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
+
+    with Session(engine) as db:
+        db.add(DroppedDomain(name="backlog.com", source="test", first_seen_at=now - timedelta(days=7)))
+        db.add_all(
+            [
+                DroppedDomain(
+                    name=f"fresh-{index:03}.com",
+                    source="test",
+                    first_seen_at=now - timedelta(minutes=index),
+                )
+                for index in range(400)
+            ]
+        )
+        db.commit()
+
+        candidates = _candidate_drops(db, limit=3)
+
+    assert len(candidates) == 3
+    assert "backlog.com" in [candidate.name for candidate in candidates]

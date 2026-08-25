@@ -2,48 +2,35 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.commoncrawl import CommonCrawlClient
+from app.free_source_candidates import (
+    completed_target_exists,
+    load_candidate_lanes,
+    select_fair_candidates,
+)
 from app.models import DroppedDomain, ProviderQuery, utcnow
 
 
 def _candidate_drops(db: Session, limit: int) -> list[DroppedDomain]:
-    commoncrawl_done = set(
-        db.scalars(
-            select(ProviderQuery.target).where(
-                ProviderQuery.provider == "commoncrawl",
-                ProviderQuery.endpoint == "url_index",
-                ProviderQuery.status == "complete",
-            )
-        ).all()
+    newest, oldest = load_candidate_lanes(
+        db,
+        limit=limit,
+        eligibility=(
+            ~completed_target_exists(provider="commoncrawl", endpoint="url_index"),
+            ~completed_target_exists(provider="dataforseo", endpoint="bulk_backlink_summary"),
+        ),
     )
-    dataforseo_done = set(
-        db.scalars(
-            select(ProviderQuery.target).where(
-                ProviderQuery.provider == "dataforseo",
-                ProviderQuery.endpoint == "bulk_backlink_summary",
-                ProviderQuery.status == "complete",
-            )
-        ).all()
-    )
-    recent = db.scalars(
-        select(DroppedDomain).order_by(DroppedDomain.first_seen_at.desc()).limit(250)
-    ).all()
-    eligible = [
-        item
-        for item in recent
-        if item.name not in commoncrawl_done and item.name not in dataforseo_done
-    ]
-    eligible.sort(
-        key=lambda item: (
+    return select_fair_candidates(
+        newest,
+        oldest,
+        limit=limit,
+        rank_key=lambda item: (
             0 if item.name.endswith(".com") else 1,
             len(item.name),
-            -item.first_seen_at.timestamp(),
-        )
+        ),
     )
-    return eligible[:limit]
 
 
 def run_commoncrawl_prefilter(
