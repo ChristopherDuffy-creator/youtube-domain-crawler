@@ -1,0 +1,33 @@
+name: Attach Remaining Pilot Domains
+
+on:
+  push:
+    branches:
+      - pilot/three-site-validation
+    paths:
+      - .github/workflows/pilot-attach-remaining-domains.yml
+
+permissions:
+  contents: read
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Attach remaining domains to existing service
+        shell: bash
+        run: |
+          set +e
+          for domain in satvic.yoga teamgerardiperformance.com; do
+            echo "=== $domain ==="
+            npx -y @railway/cli@latest domain "$domain" \
+              --port 8080 \
+              --service youtube-domain-crawler \
+              --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
+              --environment production \
+              --json || true
+          done
+          exit 0
