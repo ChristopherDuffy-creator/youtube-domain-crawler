@@ -10,19 +10,28 @@ from app.config import get_settings
 
 
 BASE_URL = "https://youtube-domain-crawler-production.up.railway.app"
+DEFAULT_BASELINE_UTC = "2026-08-25T22:49:00Z"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--since",
-        default=None,
-        help="ISO-8601 UTC baseline; excludes earlier smoke-test traffic",
+        default=DEFAULT_BASELINE_UTC,
+        help=(
+            "ISO-8601 UTC baseline. Defaults to the frozen clean pilot launch "
+            f"baseline: {DEFAULT_BASELINE_UTC}"
+        ),
+    )
+    parser.add_argument(
+        "--all-time",
+        action="store_true",
+        help="Include pre-baseline setup, smoke-test and scanner traffic.",
     )
     args = parser.parse_args()
     settings = get_settings()
 
-    params = {"since": args.since} if args.since else {}
+    params = {} if args.all_time else {"since": args.since}
     last_error: Exception | None = None
     for attempt in range(12):
         try:
