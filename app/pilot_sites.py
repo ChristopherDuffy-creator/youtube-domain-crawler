@@ -39,6 +39,9 @@ class PilotSite:
     primary_cta: str
     offer_env: str
     category: str
+    feature_cards: tuple[tuple[str, str], ...]
+    intro_title: str
+    intro_text: str
     disclosure: str = ""
     legacy_paths: tuple[str, ...] = ()
 
@@ -47,15 +50,35 @@ PILOT_SITES: dict[str, PilotSite] = {
     "craftsheaven.club": PilotSite(
         domain="craftsheaven.club",
         site_name="Crafts Heaven",
-        eyebrow="WOODWORKING & DIY",
-        headline="Woodworking Plans for Your Next Project",
+        eyebrow="WOODWORKING • PLANS • DIY",
+        headline="Find a Woodworking Project Worth Building",
         subheadline=(
-            "Practical project ideas, plan resources and woodworking guides for makers "
-            "who would rather build something than scroll past it."
+            "A practical starting point for makers looking for woodworking plans, project "
+            "ideas and useful build resources — from simple weekend jobs to more ambitious pieces."
         ),
         primary_cta="See Recommended Woodworking Plans",
         offer_env="CRAFTSHEAVEN_OFFER_URL",
         category="woodworking",
+        feature_cards=(
+            (
+                "Plans you can actually use",
+                "Focus on clear project ideas, sensible dimensions and build resources rather than endless inspiration with no next step.",
+            ),
+            (
+                "Pick the right difficulty",
+                "Start with projects that match your tools, available time and current skill level, then work upwards.",
+            ),
+            (
+                "Build, finish, improve",
+                "Useful guidance should help with the whole job: planning, materials, assembly, sanding, finishing and the next project.",
+            ),
+        ),
+        intro_title="You came here to make something",
+        intro_text=(
+            "The old links to this domain were associated with woodworking-plan intent, including "
+            "the /woodworkingplans path. We preserve that topic so a visitor following an old link "
+            "still lands somewhere useful instead of on an unrelated page."
+        ),
         legacy_paths=("/woodworkingplans", "/woodworking-plans"),
     ),
     "satvic.yoga": PilotSite(
@@ -65,11 +88,30 @@ PILOT_SITES: dict[str, PilotSite] = {
         headline="A Simpler Path Into Satvic Yoga",
         subheadline=(
             "Independent guides and carefully selected resources for yoga, breathwork, "
-            "mindful movement and a more balanced daily practice."
+            "mindful movement and a calmer, more balanced daily practice."
         ),
         primary_cta="Explore Recommended Yoga Resources",
         offer_env="SATVIC_YOGA_OFFER_URL",
         category="yoga",
+        feature_cards=(
+            (
+                "Practice, not perfection",
+                "Build a routine you can repeat. Consistency, comfortable progression and awareness matter more than chasing difficult poses.",
+            ),
+            (
+                "Breath and movement together",
+                "Explore resources that treat breathing, mobility and mindful movement as parts of one practice rather than separate tricks.",
+            ),
+            (
+                "Bring it into daily life",
+                "A satvic approach can extend beyond the mat through rest, attention, food choices and habits that support steadiness and clarity.",
+            ),
+        ),
+        intro_title="A broad tradition, approached independently",
+        intro_text=(
+            "Satvic or sattvic is a longstanding yogic concept. This site is an independent guide "
+            "to the topic and is not presented as the website of any particular yoga school, teacher or movement."
+        ),
     ),
     "teamgerardiperformance.com": PilotSite(
         domain="teamgerardiperformance.com",
@@ -77,12 +119,31 @@ PILOT_SITES: dict[str, PilotSite] = {
         eyebrow="ONLINE PERSONAL TRAINING",
         headline="Looking for an Online Personal Training Program?",
         subheadline=(
-            "Compare current online coaching and training options designed around "
-            "strength, consistency and measurable progress."
+            "Compare current online coaching and training options around strength, consistency, "
+            "accountability and measurable progress — then choose what fits you."
         ),
         primary_cta="Compare Training Options",
         offer_env="TEAM_GERARDI_OFFER_URL",
         category="fitness",
+        feature_cards=(
+            (
+                "Compare coaching styles",
+                "Some programs are highly hands-on; others are app-led or template-based. Match the level of support to what you will actually use.",
+            ),
+            (
+                "Know what you are paying for",
+                "Look at programming, check-ins, nutrition support, progress reviews, cancellation terms and whether coaching is genuinely personalised.",
+            ),
+            (
+                "Choose around your goal",
+                "Strength, fat loss, general fitness and athletic performance can require very different programming. Start with the outcome, not the brand name.",
+            ),
+        ),
+        intro_title="An independent comparison starting point",
+        intro_text=(
+            "This domain previously pointed visitors toward a specific online-training offer. The current site "
+            "does not continue or represent that business; it provides independent information and alternative options."
+        ),
         disclosure=(
             "Independent site. Not affiliated with, endorsed by, or operated by Gerardi "
             "Performance or any previous operator of this domain."
