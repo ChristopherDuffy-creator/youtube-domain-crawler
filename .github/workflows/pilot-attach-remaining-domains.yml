@@ -1,5 +1,6 @@
 name: Attach Remaining Pilot Domains
 
+# One-shot attachment after successful Porkbun registration.
 on:
   push:
     branches:
