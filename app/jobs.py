@@ -62,7 +62,7 @@ from app.models import (
 from app.scoring import ScoreInputs, calculate_score, determine_tier
 from app.stackexchange_prefilter import run_stackexchange_prefilter as run_stackexchange_prefilter_batch
 from app.web_intelligence import backfill_existing_web_intelligence, screen_dropped_domains
-from app.youtube import YouTubeClient, YouTubeVideo, exact_domain_in_description
+from app.youtube import YouTubeClient, YouTubeError, YouTubeVideo, exact_domain_in_description
 from app.youtube_intelligence import (
     backfill_youtube_intelligence,
     consume_youtube_quota,
@@ -487,6 +487,13 @@ def _next_search_state(db: Session) -> SearchState | None:
     )
 
 
+def _is_expired_search_cursor(error: YouTubeError) -> bool:
+    message = str(error).lower().replace("pagetoken", "page token")
+    return "page token" in message and any(
+        marker in message for marker in ("expired", "invalid", "not valid")
+    )
+
+
 def run_discovery() -> None:
     settings = get_settings()
     with SessionLocal() as db:
@@ -501,6 +508,8 @@ def run_discovery() -> None:
             "new_domains": 0,
             "new_links": 0,
             "quota_exhausted": 0,
+            "api_errors": 0,
+            "cursor_resets": 0,
             "invalid_videos": 0,
             "error_details": [],
         }
@@ -522,30 +531,48 @@ def run_discovery() -> None:
                 ):
                     counters["quota_exhausted"] = 1
                     break
-                page = client.search_videos(
-                    state.query,
-                    published_before=published_before,
-                    page_token=state.page_token,
-                )
                 counters["search_calls"] += 1
-                counters["videos_returned"] += len(page.video_ids)
-                known_video_ids = set(
-                    db.scalars(select(Video.id).where(Video.id.in_(page.video_ids))).all()
-                )
-                new_video_ids = [
-                    video_id for video_id in page.video_ids if video_id not in known_video_ids
-                ]
-                counters["known_videos_skipped"] += len(page.video_ids) - len(new_video_ids)
-                detail_calls = (len(new_video_ids) + 49) // 50
-                if detail_calls and not consume_youtube_quota(
-                    db,
-                    settings,
-                    data_units=detail_calls,
-                ):
-                    counters["quota_exhausted"] = 1
-                    break
-                videos = client.fetch_videos(new_video_ids) if new_video_ids else []
-                counters["video_detail_calls"] += detail_calls
+                try:
+                    page = client.search_videos(
+                        state.query,
+                        published_before=published_before,
+                        page_token=state.page_token,
+                    )
+                    counters["videos_returned"] += len(page.video_ids)
+                    known_video_ids = set(
+                        db.scalars(select(Video.id).where(Video.id.in_(page.video_ids))).all()
+                    )
+                    new_video_ids = [
+                        video_id
+                        for video_id in page.video_ids
+                        if video_id not in known_video_ids
+                    ]
+                    counters["known_videos_skipped"] += len(page.video_ids) - len(new_video_ids)
+                    detail_calls = (len(new_video_ids) + 49) // 50
+                    if detail_calls and not consume_youtube_quota(
+                        db,
+                        settings,
+                        data_units=detail_calls,
+                    ):
+                        counters["quota_exhausted"] = 1
+                        break
+                    counters["video_detail_calls"] += detail_calls
+                    videos = client.fetch_videos(new_video_ids) if new_video_ids else []
+                except YouTubeError as exc:
+                    counters["api_errors"] += 1
+                    if len(counters["error_details"]) < 20:
+                        counters["error_details"].append(f"{state.query}: {exc}"[:500])
+                    # Do not discard a cursor after a transient YouTube failure, but
+                    # move this query behind the remaining states so one bad page
+                    # cannot cancel the rest of the discovery batch.
+                    if _is_expired_search_cursor(exc):
+                        state.page_token = None
+                        state.pages_scanned = 0
+                        counters["cursor_resets"] += 1
+                    state.last_run_at = utcnow()
+                    db.commit()
+                    continue
+
                 seed_youtube_channels(db, videos, count_as_search_seed=True)
                 for video in videos:
                     result, error = _process_video_isolated(
@@ -579,7 +606,9 @@ def run_discovery() -> None:
             _finish_run(
                 db,
                 run,
-                "partial" if counters["invalid_videos"] else "complete",
+                "partial"
+                if counters["invalid_videos"] or counters["api_errors"]
+                else "complete",
                 counters,
             )
         except Exception as exc:
