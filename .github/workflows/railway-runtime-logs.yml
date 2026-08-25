@@ -8,6 +8,8 @@ on:
       - .github/workflows/railway-runtime-logs.yml
   workflow_dispatch:
 
+# Runtime diagnostic marker: proof-log-trace-2026-08-25.
+
 permissions:
   contents: read
 
