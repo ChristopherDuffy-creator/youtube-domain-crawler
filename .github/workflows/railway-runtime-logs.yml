@@ -8,7 +8,6 @@ on:
       - .github/workflows/railway-runtime-logs.yml
   workflow_dispatch:
 
-# Runtime diagnostic marker: prior-deployment-proof-log-trace-2026-08-25.
 
 permissions:
   contents: read
@@ -29,12 +28,7 @@ jobs:
             --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
             --environment production \
             --service youtube-domain-crawler
-          npx -y @railway/cli@latest logs --latest --lines 1000 \
-            --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
-            --environment production \
-            --service youtube-domain-crawler
-          # Read-only capture from the immediately prior removed deployment.
-          npx -y @railway/cli@latest logs --deployment 0c676ad0-9d29-41cb-8758-6c0efc55f817 --lines 1000 \
+          npx -y @railway/cli@latest logs --latest --lines 300 \
             --project 31fbe878-aa83-4b74-9820-e9f0d13b984c \
             --environment production \
             --service youtube-domain-crawler
