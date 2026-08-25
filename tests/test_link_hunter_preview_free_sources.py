@@ -11,6 +11,7 @@ from app.models import (
     Domain,
     DroppedDomain,
     FetchVerification,
+    LinkObservation,
     ProviderQuery,
     SourceLink,
     SourcePage,
@@ -124,6 +125,85 @@ def test_verified_links_and_independent_sites_drive_free_ranking() -> None:
     assert signals["independent_sites"] == 3
     assert signals["exact_links"] == 3
     assert preview["target_free_scores"]["strong.example"] > 0
+
+
+def test_latest_clickable_link_observation_outranks_stale_provider_evidence() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 8, 19, 6, 0, tzinfo=UTC)
+    settings = Settings(link_hunter_summary_batch_size=2, link_hunter_proof_batch_size=1)
+
+    with Session(engine) as db:
+        for name in ("clickable.example", "stale.example"):
+            domain = Domain(name=name)
+            site = SourceSite(hostname=f"{name}.publisher", source_type="web")
+            db.add_all([domain, site])
+            db.flush()
+            page = SourcePage(site_id=site.id, url=f"https://{site.hostname}/article")
+            db.add(page)
+            db.flush()
+            link = SourceLink(
+                source_page_id=page.id,
+                domain_id=domain.id,
+                target_url=f"https://{name}/offer",
+                provider_live=True,
+            )
+            db.add(link)
+            db.flush()
+            db.add(FetchVerification(source_link_id=link.id, link_present=True, http_status=200))
+            if name == "clickable.example":
+                db.add(
+                    LinkObservation(
+                        source_link_id=link.id,
+                        observed_at=now,
+                        link_present=True,
+                        clickable=True,
+                        clickability_score=88.0,
+                        survival_days=30.0,
+                    )
+                )
+            else:
+                db.add_all(
+                    [
+                        LinkObservation(
+                            source_link_id=link.id,
+                            observed_at=now - timedelta(days=1),
+                            link_present=True,
+                            clickable=True,
+                            survival_days=20.0,
+                        ),
+                        LinkObservation(
+                            source_link_id=link.id,
+                            observed_at=now,
+                            link_present=False,
+                            clickable=False,
+                            survival_days=0.0,
+                        ),
+                    ]
+                )
+        db.add_all(
+            [
+                DroppedDomain(
+                    name="stale.example",
+                    source="test",
+                    first_seen_at=now,
+                ),
+                DroppedDomain(
+                    name="clickable.example",
+                    source="test",
+                    first_seen_at=now - timedelta(minutes=1),
+                ),
+            ]
+        )
+        db.commit()
+        preview = build_provider_proof_preview(db, settings)
+
+    assert preview["targets"] == ["clickable.example", "stale.example"]
+    signals = preview["target_free_rank_signals"]
+    assert signals["clickable.example"]["clickable_live_links"] == 1
+    assert signals["clickable.example"]["max_observed_survival_days"] == 30.0
+    assert signals["stale.example"]["observed_live_links"] == 0
+    assert signals["stale.example"]["clickable_live_links"] == 0
 
 
 def test_youtube_overlap_is_a_free_ranking_signal() -> None:

@@ -14,6 +14,7 @@ from app.models import (
     Domain,
     DroppedDomain,
     FetchVerification,
+    LinkObservation,
     ProviderQuery,
     SourceLink,
     SourcePage,
@@ -196,6 +197,61 @@ def _free_verified_link_signals(db: Session) -> dict[str, int]:
     return {name: int(count or 0) for name, count in rows}
 
 
+def _latest_live_observation_signals(db: Session) -> dict[str, dict[str, int | float]]:
+    """Return only each link's newest direct observation.
+
+    Historic positive fetches are useful audit evidence, but they must not keep
+    winning paid proof priority after a newer observation has shown the link is
+    gone.  This is intentionally a cached/local signal: it adds no external
+    requests to the summary funnel.
+    """
+    latest_per_link = (
+        select(
+            LinkObservation.source_link_id.label("source_link_id"),
+            func.max(LinkObservation.observed_at).label("observed_at"),
+        )
+        .group_by(LinkObservation.source_link_id)
+        .subquery()
+    )
+    rows = db.execute(
+        select(
+            Domain.name,
+            LinkObservation.link_present,
+            LinkObservation.clickable,
+            LinkObservation.survival_days,
+        )
+        .join(SourceLink, SourceLink.domain_id == Domain.id)
+        .join(
+            latest_per_link,
+            latest_per_link.c.source_link_id == SourceLink.id,
+        )
+        .join(
+            LinkObservation,
+            (LinkObservation.source_link_id == latest_per_link.c.source_link_id)
+            & (LinkObservation.observed_at == latest_per_link.c.observed_at),
+        )
+    ).all()
+    signals: dict[str, dict[str, int | float]] = {}
+    for name, link_present, clickable, survival_days in rows:
+        row = signals.setdefault(
+            str(name),
+            {
+                "observed_live_links": 0,
+                "clickable_live_links": 0,
+                "max_observed_survival_days": 0.0,
+            },
+        )
+        if link_present:
+            row["observed_live_links"] = int(row["observed_live_links"]) + 1
+            row["max_observed_survival_days"] = max(
+                float(row["max_observed_survival_days"]),
+                max(0.0, float(survival_days or 0.0)),
+            )
+        if link_present and clickable:
+            row["clickable_live_links"] = int(row["clickable_live_links"]) + 1
+    return signals
+
+
 def _youtube_signals(db: Session) -> dict[str, dict[str, int]]:
     rows = db.execute(
         select(
@@ -250,6 +306,7 @@ def _free_rank_context(db: Session) -> dict[str, Any]:
         "exact_links": _free_exact_link_signals(db),
         "independent_sites": _free_independent_site_signals(db),
         "verified_links": _free_verified_link_signals(db),
+        "observations": _latest_live_observation_signals(db),
         "youtube": _youtube_signals(db),
         "availability": _availability_signals(db),
         "screening": _screening_signals(db),
@@ -263,6 +320,9 @@ def _free_preproof_score(
     exact_links: int,
     independent_sites: int,
     verified_links: int,
+    observed_live_links: int,
+    clickable_live_links: int,
+    max_observed_survival_days: float,
     commoncrawl_hits: int,
     youtube_monthly_views: int,
     youtube_video_count: int,
@@ -277,6 +337,9 @@ def _free_preproof_score(
     verified_points = 0.0
     if verified_links > 0:
         verified_points = min(25.0, 20.0 + 2.5 * math.log2(max(1, verified_links)))
+    observed_points = min(8.0, 3.0 * math.log2(1 + max(0, observed_live_links)))
+    clickable_points = min(12.0, 5.0 * math.log2(1 + max(0, clickable_live_links)))
+    survival_points = min(5.0, math.log2(1 + max(0.0, max_observed_survival_days)))
     commoncrawl_points = min(15.0, 4.0 * math.log2(1 + max(0, commoncrawl_hits)))
     youtube_points = min(
         12.0,
@@ -296,6 +359,9 @@ def _free_preproof_score(
         exact_points
         + site_points
         + verified_points
+        + observed_points
+        + clickable_points
+        + survival_points
         + commoncrawl_points
         + youtube_points
         + availability_points
@@ -308,12 +374,18 @@ def _free_preproof_score(
 def _free_signal_row(name: str, context: dict[str, Any]) -> dict[str, int | float | str]:
     yt = context["youtube"].get(name, {})
     free_screen = context["screening"].get(name, {})
+    observations = context["observations"].get(name, {})
     summary_signal = context.get("cached_summary", {}).get(name, {})
     focus_signal = context.get("source_focus", {}).get(name, {})
     return {
         "exact_links": int(context["exact_links"].get(name, 0) or 0),
         "independent_sites": int(context["independent_sites"].get(name, 0) or 0),
         "verified_links": int(context["verified_links"].get(name, 0) or 0),
+        "observed_live_links": int(observations.get("observed_live_links", 0) or 0),
+        "clickable_live_links": int(observations.get("clickable_live_links", 0) or 0),
+        "max_observed_survival_days": float(
+            observations.get("max_observed_survival_days", 0.0) or 0.0
+        ),
         "commoncrawl_hits": int(context["commoncrawl"].get(name, 0) or 0),
         "youtube_monthly_views": int(yt.get("monthly_views", 0) or 0),
         "youtube_video_count": int(yt.get("video_count", 0) or 0),
@@ -346,6 +418,9 @@ def _free_score_for_name(name: str, context: dict[str, Any]) -> tuple[float, dic
         exact_links=int(row["exact_links"]),
         independent_sites=int(row["independent_sites"]),
         verified_links=int(row["verified_links"]),
+        observed_live_links=int(row["observed_live_links"]),
+        clickable_live_links=int(row["clickable_live_links"]),
+        max_observed_survival_days=float(row["max_observed_survival_days"]),
         commoncrawl_hits=int(row["commoncrawl_hits"]),
         youtube_monthly_views=int(row["youtube_monthly_views"]),
         youtube_video_count=int(row["youtube_video_count"]),
@@ -383,6 +458,9 @@ def _rank_free_candidates(
             -float(signals[drop.name]["summary_rescue_points"]),
             -float(signals[drop.name]["source_focus_bonus"]),
             -int(signals[drop.name]["verified_links"]),
+            -int(signals[drop.name]["clickable_live_links"]),
+            -int(signals[drop.name]["observed_live_links"]),
+            -float(signals[drop.name]["max_observed_survival_days"]),
             -int(signals[drop.name]["independent_sites"]),
             -int(signals[drop.name]["exact_links"]),
             -int(signals[drop.name]["commoncrawl_hits"]),
@@ -401,6 +479,11 @@ def _priority_candidate_names(context: dict[str, Any]) -> set[str]:
     }
     names.update(
         name for name, count in context["verified_links"].items() if int(count or 0) > 0
+    )
+    names.update(
+        name
+        for name, values in context["observations"].items()
+        if int(values.get("observed_live_links", 0) or 0) > 0
     )
     names.update(
         name for name, count in context["commoncrawl"].items() if int(count or 0) > 0
@@ -675,6 +758,8 @@ def _has_meaningful_free_signal(signal: dict[str, int | float | str]) -> bool:
             "exact_links",
             "independent_sites",
             "verified_links",
+            "observed_live_links",
+            "clickable_live_links",
             "commoncrawl_hits",
             "youtube_monthly_views",
         )
