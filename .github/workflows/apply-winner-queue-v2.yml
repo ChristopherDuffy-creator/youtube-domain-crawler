@@ -1,0 +1,49 @@
+name: Apply Winner Queue V2
+
+on:
+  push:
+    branches: [winner-queue-v2]
+    paths:
+      - scripts/apply_winner_queue_v2.py
+      - .github/workflows/apply-winner-queue-v2.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-winner-queue-v2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: winner-queue-v2
+          fetch-depth: 0
+
+      - name: Apply deterministic patches
+        run: python scripts/apply_winner_queue_v2.py
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run winner queue regression tests
+        run: pytest -q tests/test_winner_queue.py tests/test_link_hunter_preview.py tests/test_dataforseo_client.py
+
+      - name: Run full test suite
+        run: pytest -q
+
+      - name: Commit generated implementation
+        run: |
+          rm -f scripts/apply_winner_queue_v2.py .github/workflows/apply-winner-queue-v2.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "Add continuous winner queue and revenue bands"
+          git push origin HEAD:winner-queue-v2
