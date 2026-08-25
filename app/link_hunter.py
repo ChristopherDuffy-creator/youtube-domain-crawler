@@ -40,10 +40,14 @@ from app.models import (
     utcnow,
 )
 from app.provider_budget import (
+    acquire_provider_proof_lease,
+    effective_provider_run_limit_usd,
     finalize_provider_daily_budget,
     provider_daily_budget_snapshot,
+    release_provider_proof_lease,
     reserve_provider_daily_budget,
 )
+from app.web_hunter_upgrade import apply_source_focus_bonus, enforce_money_tier
 from app.web_intelligence import project_opportunity_economics, save_opportunity_economics
 
 MAX_VERIFY_BYTES = 2_000_000
@@ -635,6 +639,20 @@ def _score_opportunity(
         opportunity.tier = "watchlist"
     else:
         opportunity.tier = "pending"
+    apply_source_focus_bonus(
+        db,
+        opportunity,
+        domain,
+        saved_links,
+        traffic=traffic,
+        verified=verified,
+    )
+    enforce_money_tier(
+        db,
+        opportunity,
+        traffic=traffic,
+        verified=verified,
+    )
     opportunity.updated_at = utcnow()
 
 
@@ -714,10 +732,10 @@ def _save_summary_opportunity(
     opportunity.link_strength = max(float(opportunity.link_strength or 0.0), record.rank)
     if not opportunity.verified_live_link:
         opportunity.score = round(
-            min(64.0, max(float(opportunity.score or 0.0), combined_score)),
+            min(39.9, max(float(opportunity.score or 0.0), combined_score)),
             1,
         )
-        opportunity.tier = "watchlist" if opportunity.score >= 45 else "pending"
+        opportunity.tier = "pending"
     opportunity.updated_at = utcnow()
     return opportunity
 
@@ -914,6 +932,7 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
     if not settings.dataforseo_enabled:
         raise DataForSEOError("DataForSEO credentials are not configured")
 
+    run_cost_cap = effective_provider_run_limit_usd(settings)
     targets, free_scores, free_signals, _, _ = select_provider_summary_targets_with_ranking(
         db, settings
     )
@@ -1055,7 +1074,7 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
         client = DataForSEOClient(settings)
 
     for target in deep_targets:
-        if counters["provider_cost_usd"] >= settings.link_hunter_proof_max_cost_usd:
+        if counters["provider_cost_usd"] >= run_cost_cap:
             counters["cost_cap_hit"] = True
             break
         summary = _cached_summary_payload(db, target)
@@ -1119,7 +1138,7 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
         }
     )
     traffic_map: dict[str, int] = {}
-    if page_urls and counters["provider_cost_usd"] < settings.link_hunter_proof_max_cost_usd:
+    if page_urls and counters["provider_cost_usd"] < run_cost_cap:
         try:
             traffic_response = _provider_call(
                 db,
@@ -1231,37 +1250,52 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
 
 
 def run_provider_proof_job() -> dict[str, Any]:
-    """Run Phase B manually and record it in the shared operational run ledger."""
+    """Run one externally-triggered paid proof with a durable single-flight guard."""
     settings = get_settings()
     with SessionLocal() as db:
-        reservation = reserve_provider_daily_budget(db, settings)
-        if reservation is None:
+        lease = acquire_provider_proof_lease(db)
+        if lease is None:
             budget = provider_daily_budget_snapshot(db, settings)
-            counters = {
+            return {
                 "targets": 0,
                 "summary_screened": 0,
                 "deep_proof_target_count": 0,
                 "provider_cost_usd": 0.0,
                 "errors": 0,
-                "daily_budget_skipped": True,
+                "daily_budget_skipped": False,
+                "run_in_progress": True,
                 "daily_budget": budget,
             }
-            run = RunLog(
-                job="link_hunter_proof",
-                started_at=utcnow(),
-                finished_at=utcnow(),
-                status="skipped",
-                counters=counters,
-            )
+
+        run: RunLog | None = None
+        try:
+            reservation = reserve_provider_daily_budget(db, settings)
+            if reservation is None:
+                budget = provider_daily_budget_snapshot(db, settings)
+                counters = {
+                    "targets": 0,
+                    "summary_screened": 0,
+                    "deep_proof_target_count": 0,
+                    "provider_cost_usd": 0.0,
+                    "errors": 0,
+                    "daily_budget_skipped": True,
+                    "daily_budget": budget,
+                }
+                run = RunLog(
+                    job="link_hunter_proof",
+                    started_at=utcnow(),
+                    finished_at=utcnow(),
+                    status="skipped",
+                    counters=counters,
+                )
+                db.add(run)
+                db.commit()
+                return counters
+
+            run = RunLog(job="link_hunter_proof", started_at=utcnow(), status="running", counters={})
             db.add(run)
             db.commit()
-            return counters
-
-        run = RunLog(job="link_hunter_proof", started_at=utcnow(), status="running", counters={})
-        db.add(run)
-        db.commit()
-        db.refresh(run)
-        try:
+            db.refresh(run)
             counters = run_provider_proof(db, settings)
             release_unused = not bool(counters.get("errors"))
             finalize_provider_daily_budget(
@@ -1279,10 +1313,13 @@ def run_provider_proof_job() -> dict[str, Any]:
             return counters
         except Exception as exc:
             db.rollback()
-            run = db.get(RunLog, run.id)
             if run is not None:
-                run.status = "failed"
-                run.error = str(exc)[:2000]
-                run.finished_at = utcnow()
-                db.commit()
+                run = db.get(RunLog, run.id)
+                if run is not None:
+                    run.status = "failed"
+                    run.error = str(exc)[:2000]
+                    run.finished_at = utcnow()
+                    db.commit()
             raise
+        finally:
+            release_provider_proof_lease(db, lease)

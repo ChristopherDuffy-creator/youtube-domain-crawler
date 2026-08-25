@@ -3,7 +3,6 @@ name: Link Hunter Post-Proof Audit
 on:
   workflow_run:
     workflows:
-      - Controlled Link Hunter Proof
       - Production Link Hunter Batch
     types:
       - completed
@@ -41,7 +40,7 @@ jobs:
             echo "workflow_name=manual" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Verify paid-run statuses and production safe state
+      - name: Verify paid-run status and production readiness
         id: audit
         shell: bash
         env:
@@ -75,25 +74,11 @@ jobs:
               latest.setdefault(context, str(row.get("state") or ""))
 
           workflow_name = os.environ.get("WORKFLOW_NAME") or ""
-          if workflow_name == "Production Link Hunter Batch":
-              assert latest.get("link-hunter/production-batch") == "success"
-              assert latest.get("link-hunter/production-disabled") == "success"
-          elif workflow_name == "Controlled Link Hunter Proof":
-              assert latest.get("link-hunter/paid-proof") == "success"
-              assert latest.get("link-hunter/proof-disabled") == "success"
-          else:
-              proof_ok = (
-                  latest.get("link-hunter/paid-proof") == "success"
-                  and latest.get("link-hunter/proof-disabled") == "success"
-              )
-              production_ok = (
-                  latest.get("link-hunter/production-batch") == "success"
-                  and latest.get("link-hunter/production-disabled") == "success"
-              )
-              assert proof_ok or production_ok
+          assert workflow_name in {"Production Link Hunter Batch", "manual"}
+          assert latest.get("link-hunter/production-batch") == "success"
           PY
           if [ $? -ne 0 ]; then
-            echo "description=Paid run or cleanup status is not successful" >> "$GITHUB_OUTPUT"
+            echo "description=Paid run status is not successful" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -107,7 +92,7 @@ jobs:
           payload = json.loads(os.environ.get("BODY", ""))
           assert payload.get("database") == "ok"
           assert payload.get("dataforseo_configured") is True
-          assert payload.get("link_hunter_enabled") is False
+          assert payload.get("link_hunter_enabled") is True
           PY
             if [ $? -eq 0 ]; then
               healthy=true
@@ -117,12 +102,12 @@ jobs:
           done
 
           if [ "$healthy" != true ]; then
-            echo "description=Production did not return to healthy safe/off state" >> "$GITHUB_OUTPUT"
+            echo "description=Production did not remain healthy with the explicit proof flag enabled" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           echo "state=success" >> "$GITHUB_OUTPUT"
-          echo "description=Paid run succeeded and production is healthy with paid calls disabled" >> "$GITHUB_OUTPUT"
+          echo "description=Paid run succeeded and guarded proof endpoint remains explicitly enabled" >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Publish post-run audit status

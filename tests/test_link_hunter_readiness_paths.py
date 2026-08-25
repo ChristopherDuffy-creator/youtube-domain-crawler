@@ -10,6 +10,6 @@ def test_readiness_audit_covers_all_link_hunter_production_paths() -> None:
     assert ".github/workflows/controlled-link-hunter-proof.yml" in text
     assert ".github/workflows/link-hunter-production-batch.yml" in text
     assert ".github/workflows/link-hunter-post-proof-audit.yml" in text
-    assert 'payload.get("link_hunter_enabled") is False' in text
-    assert "Link Hunter paid calls currently disabled" in text
-    assert "remains disabled before live proof" not in text
+    assert 'payload.get("link_hunter_enabled") is True' in text
+    assert "Link Hunter guarded proof endpoint explicitly enabled" in text
+    assert "Link Hunter paid calls currently disabled" not in text

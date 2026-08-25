@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import math
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
@@ -24,6 +25,8 @@ from app.models import (
 
 _PACIFIC = ZoneInfo("America/Los_Angeles")
 _BLOCKED_AVAILABILITY = {"registered", "premium", "aftermarket", "reserved"}
+_SIGNAL_DOMAIN_CHUNK = 5
+_SIGNAL_UNSCOPED_LIMIT = 25
 
 
 def _chunks(values: list[int], size: int = 5_000) -> Iterable[list[int]]:
@@ -198,7 +201,7 @@ def _monetization_route(domain: Domain, links: list[VideoDomain]) -> str:
     return "content_restore"
 
 
-def refresh_youtube_domain_signals(
+def _refresh_youtube_domain_signal_chunk(
     db: Session,
     settings: Settings,
     domain_ids: set[int] | None = None,
@@ -333,6 +336,54 @@ def refresh_youtube_domain_signals(
         signal.updated_at = now
         updated += 1
     db.commit()
+    return updated
+
+
+def _release_signal_orm_memory(db: Session) -> None:
+    try:
+        db.expire_all()
+    finally:
+        gc.collect()
+
+
+def refresh_youtube_domain_signals(
+    db: Session,
+    settings: Settings,
+    domain_ids: set[int] | None = None,
+    *,
+    limit: int | None = None,
+) -> int:
+    """Refresh signal graphs in bounded chunks and enforce display consistency."""
+    from app.data_hygiene import enforce_candidate_signal_consistency
+
+    if domain_ids is not None:
+        ids = sorted(int(value) for value in domain_ids)
+        updated = 0
+        for start in range(0, len(ids), _SIGNAL_DOMAIN_CHUNK):
+            chunk = set(ids[start : start + _SIGNAL_DOMAIN_CHUNK])
+            updated += _refresh_youtube_domain_signal_chunk(
+                db,
+                settings,
+                chunk,
+                limit=None,
+            )
+            enforce_candidate_signal_consistency(db, settings, chunk)
+            _release_signal_orm_memory(db)
+        return updated
+
+    effective_limit = (
+        _SIGNAL_UNSCOPED_LIMIT
+        if limit is None
+        else min(max(0, int(limit)), _SIGNAL_UNSCOPED_LIMIT)
+    )
+    updated = _refresh_youtube_domain_signal_chunk(
+        db,
+        settings,
+        None,
+        limit=effective_limit,
+    )
+    enforce_candidate_signal_consistency(db, settings)
+    _release_signal_orm_memory(db)
     return updated
 
 

@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings
+from app.provider_budget import effective_provider_run_limit_usd
 
 # Current DataForSEO public pricing checked 2026-08-19. The proof uses these
 # conservative per-request/per-row ceilings to refuse an oversized batch before
@@ -155,10 +156,11 @@ class DataForSEOClient:
             deep_domain_count,
             self.settings.link_hunter_backlinks_per_domain,
         )
-        if estimated_max > self.settings.link_hunter_proof_max_cost_usd:
+        approved_cap = effective_provider_run_limit_usd(self.settings)
+        if estimated_max > approved_cap:
             raise DataForSEOError(
                 f"Proof worst-case provider estimate ${estimated_max:.4f} exceeds configured "
-                f"cap ${self.settings.link_hunter_proof_max_cost_usd:.4f}"
+                f"cap ${approved_cap:.4f}"
             )
 
         return self._post(

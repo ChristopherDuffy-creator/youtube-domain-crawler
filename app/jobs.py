@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 import math
 from collections.abc import Callable
@@ -8,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+from apscheduler.executors.pool import ThreadPoolExecutor as APSchedulerThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
@@ -19,7 +21,7 @@ from app.availability import AvailabilityResult, check_domain
 from app.commoncrawl_prefilter import run_commoncrawl_prefilter as run_commoncrawl_prefilter_batch
 from app.config import EVERGREEN_QUERIES, MANUAL_CHECKPOINTS, Settings, get_settings
 from app.database import SessionLocal
-from app.domain_tools import extract_domain_names, extract_links
+from app.domain_tools import extract_domain_names, extract_links, sanitize_external_text
 from app.emailer import (
     DailyDigest,
     EmailCandidate,
@@ -215,7 +217,13 @@ def seed_youtube_channels(
     count_as_search_seed: bool,
 ) -> int:
     """Persist channel seeds in batches so search results become crawl inventories."""
-    by_id = {video.channel_id: video.channel_title for video in videos if video.channel_id}
+    by_id: dict[str, str] = {}
+    for video in videos:
+        channel_id = sanitize_external_text(video.channel_id)
+        if not channel_id or len(channel_id) > 64:
+            logger.warning("Skipped invalid YouTube channel seed %r", channel_id[:80])
+            continue
+        by_id[channel_id] = sanitize_external_text(video.channel_title)
     if not by_id:
         return 0
 
@@ -299,6 +307,16 @@ def process_video(
     discovery_route: str,
     affected_domain_ids: set[int] | None = None,
 ) -> dict[str, int]:
+    video_id = sanitize_external_text(item.id)
+    channel_id = sanitize_external_text(item.channel_id)
+    title = sanitize_external_text(item.title)
+    channel_title = sanitize_external_text(item.channel_title)
+    description = sanitize_external_text(item.description)
+    if not video_id or len(video_id) > 20:
+        raise ValueError("Invalid YouTube video identifier")
+    if len(channel_id) > 64:
+        raise ValueError("Invalid YouTube channel identifier")
+
     now = utcnow()
     counters = {
         "new_videos": 0,
@@ -307,15 +325,15 @@ def process_video(
         "snapshots": 0,
         "external_links": 0,
     }
-    video = db.get(Video, item.id)
+    video = db.get(Video, video_id)
     if video is None:
-        video = Video(id=item.id)
+        video = Video(id=video_id)
         db.add(video)
         counters["new_videos"] += 1
-    video.title = item.title
-    video.channel_id = item.channel_id
-    video.channel_title = item.channel_title
-    video.description = item.description
+    video.title = title
+    video.channel_id = channel_id
+    video.channel_title = channel_title
+    video.description = description
     video.published_at = item.published_at
     video.lifetime_views = item.view_count
     video.discovery_query = video.discovery_query or discovery_query
@@ -333,7 +351,7 @@ def process_video(
             affected_domain_ids.add(link.domain_id)
         link.active = False
 
-    extracted_links = extract_links(item.description)
+    extracted_links = extract_links(description)
     counters["external_links"] = len(extracted_links)
     for extracted in extracted_links:
         domain = db.scalar(select(Domain).where(Domain.name == extracted.domain))
@@ -372,6 +390,32 @@ def process_video(
     return counters
 
 
+def _process_video_isolated(
+    db: Session,
+    item: YouTubeVideo,
+    discovery_query: str,
+    discovery_route: str,
+    affected_domain_ids: set[int] | None = None,
+) -> tuple[dict[str, int] | None, str | None]:
+    """Rollback a single malformed video while keeping the page transaction alive."""
+    try:
+        with db.begin_nested():
+            result = process_video(
+                db,
+                item,
+                discovery_query,
+                discovery_route,
+                affected_domain_ids,
+            )
+            db.flush()
+        return result, None
+    except Exception as exc:
+        video_id = sanitize_external_text(item.id)[:80] or "<missing-id>"
+        message = f"{video_id}: {exc}"[:500]
+        logger.warning("Skipped malformed YouTube video %s", message)
+        return None, message
+
+
 def seed_manual_checkpoint() -> None:
     settings = get_settings()
     if not settings.youtube_api_key:
@@ -384,6 +428,8 @@ def seed_manual_checkpoint() -> None:
             "videos_found": 0,
             "new_domains": 0,
             "quota_exhausted": 0,
+            "invalid_videos": 0,
+            "error_details": [],
         }
         try:
             client = YouTubeClient(settings.youtube_api_key)
@@ -401,17 +447,27 @@ def seed_manual_checkpoint() -> None:
                     exact_domain, video.description
                 ):
                     logger.info("Manual checkpoint link no longer appears in %s", video.id)
-                result = process_video(
+                result, error = _process_video_isolated(
                     db,
                     video,
                     "legacy manual checkpoint",
                     "manual_checkpoint",
                     affected_domain_ids,
                 )
+                if error:
+                    counters["invalid_videos"] += 1
+                    counters["error_details"].append(error)
+                    continue
+                assert result is not None
                 counters["new_domains"] += result["new_domains"]
             db.commit()
             refresh_candidates(db, affected_domain_ids)
-            _finish_run(db, run, "complete", counters)
+            _finish_run(
+                db,
+                run,
+                "partial" if counters["invalid_videos"] else "complete",
+                counters,
+            )
         except Exception as exc:
             db.rollback()
             run = db.get(RunLog, run.id)
@@ -443,6 +499,8 @@ def run_discovery() -> None:
             "new_domains": 0,
             "new_links": 0,
             "quota_exhausted": 0,
+            "invalid_videos": 0,
+            "error_details": [],
         }
         try:
             client = YouTubeClient(settings.youtube_api_key)
@@ -480,13 +538,19 @@ def run_discovery() -> None:
                 videos = client.fetch_videos(page.video_ids)
                 seed_youtube_channels(db, videos, count_as_search_seed=True)
                 for video in videos:
-                    result = process_video(
+                    result, error = _process_video_isolated(
                         db,
                         video,
                         state.query,
                         "youtube_first",
                         affected_domain_ids,
                     )
+                    if error:
+                        counters["invalid_videos"] += 1
+                        if len(counters["error_details"]) < 20:
+                            counters["error_details"].append(error)
+                        continue
+                    assert result is not None
                     for key in ("new_videos", "new_domains", "new_links"):
                         counters[key] += result[key]
                 state.page_token = page.next_page_token
@@ -502,7 +566,12 @@ def run_discovery() -> None:
             refresh_local_dropped_matches(db, domain_ids=affected_domain_ids)
             counters["quota"] = youtube_quota_snapshot(db, settings)
             counters["failure_stage"] = None
-            _finish_run(db, run, "complete", counters)
+            _finish_run(
+                db,
+                run,
+                "partial" if counters["invalid_videos"] else "complete",
+                counters,
+            )
         except Exception as exc:
             db.rollback()
             run = db.get(RunLog, run.id)
@@ -556,8 +625,13 @@ def _resolve_channel_upload_playlists(
             channel.last_error = "YouTube channel or uploads playlist was not returned"
             errors += 1
             continue
-        channel.title = detail.title or channel.title
-        channel.uploads_playlist_id = detail.uploads_playlist_id
+        uploads_playlist_id = sanitize_external_text(detail.uploads_playlist_id)
+        if not uploads_playlist_id or len(uploads_playlist_id) > 64:
+            channel.last_error = "Invalid YouTube uploads playlist identifier"
+            errors += 1
+            continue
+        channel.title = sanitize_external_text(detail.title) or channel.title
+        channel.uploads_playlist_id = uploads_playlist_id
         channel.last_error = None
         resolved += 1
     db.commit()
@@ -726,13 +800,19 @@ def run_channel_fanout_batch(
             linked_videos = 0
             external_links = 0
             for video in videos:
-                result = process_video(
+                result, error = _process_video_isolated(
                     db,
                     video,
                     channel.title,
                     "channel_fanout",
                     affected_domain_ids,
                 )
+                if error:
+                    counters["errors"] += 1
+                    if len(counters["error_details"]) < 20:
+                        counters["error_details"].append(error)
+                    continue
+                assert result is not None
                 for key in ("new_videos", "new_domains", "new_links"):
                     counters[key] += result[key]
                 external_links += result["external_links"]
@@ -974,6 +1054,10 @@ def run_view_snapshots() -> None:
 def _domains_due_for_check(db: Session, limit: int) -> list[Domain]:
     now = utcnow()
     one_day = now - timedelta(days=1)
+    # A shared RDAP endpoint has already told us to slow down. Repeating the
+    # same name the next day only creates another rate-limit wave, so retain a
+    # short, database-backed negative cache across process restarts.
+    rate_limited_retry = now - timedelta(days=3)
     seven_days = now - timedelta(days=7)
     return db.scalars(
         select(Domain)
@@ -982,8 +1066,18 @@ def _domains_due_for_check(db: Session, limit: int) -> list[Domain]:
             or_(
                 Domain.last_checked_at.is_(None),
                 and_(
-                    Domain.availability_status.in_(["unknown", "likely_available", "conflicting"]),
+                    Domain.availability_status.in_(["likely_available", "conflicting"]),
                     Domain.last_checked_at < one_day,
+                ),
+                and_(
+                    Domain.availability_status == "unknown",
+                    Domain.rdap_status.notin_(["rate_limited"]),
+                    Domain.last_checked_at < one_day,
+                ),
+                and_(
+                    Domain.availability_status == "unknown",
+                    Domain.rdap_status == "rate_limited",
+                    Domain.last_checked_at < rate_limited_retry,
                 ),
                 and_(Domain.availability_status == "available", Domain.last_checked_at < one_day),
                 and_(
@@ -1104,9 +1198,12 @@ def _best_link_for_video(links: list[VideoDomain]) -> VideoDomain:
     )
 
 
-def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
+_CANDIDATE_DOMAIN_CHUNK = 5
+
+
+def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
     settings = get_settings()
-    if domain_ids is not None and not domain_ids:
+    if not domain_ids:
         return 0
     active_domain_ids = (
         select(VideoDomain.domain_id)
@@ -1117,8 +1214,7 @@ def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
         Candidate.domain_id.not_in(active_domain_ids),
         Candidate.tier != "rejected",
     )
-    if domain_ids is not None:
-        stale_candidates = stale_candidates.where(Candidate.domain_id.in_(domain_ids))
+    stale_candidates = stale_candidates.where(Candidate.domain_id.in_(domain_ids))
     db.execute(
         stale_candidates.values(
             tier="rejected",
@@ -1133,8 +1229,7 @@ def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
         )
     )
     statement = select(Domain).where(Domain.video_links.any(VideoDomain.active.is_(True)))
-    if domain_ids is not None:
-        statement = statement.where(Domain.id.in_(domain_ids))
+    statement = statement.where(Domain.id.in_(domain_ids))
     domains = db.scalars(
         statement.options(
             selectinload(Domain.video_links)
@@ -1208,6 +1303,35 @@ def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
         updated += 1
     db.commit()
     refresh_youtube_domain_signals(db, settings, domain_ids)
+    return updated
+
+
+def _release_orm_memory(db: Session) -> None:
+    """Drop loaded relationship graphs between bounded processing chunks."""
+    try:
+        db.expire_all()
+    finally:
+        gc.collect()
+
+
+def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
+    """Refresh candidates in small ORM graph chunks without reducing input throughput."""
+    if domain_ids is None:
+        candidate_ids = db.scalars(select(Candidate.domain_id)).all()
+        active_ids = db.scalars(
+            select(VideoDomain.domain_id)
+            .where(VideoDomain.active.is_(True))
+            .distinct()
+        ).all()
+        ids = sorted({int(value) for value in [*candidate_ids, *active_ids]})
+    else:
+        ids = sorted(int(value) for value in domain_ids)
+
+    updated = 0
+    for start in range(0, len(ids), _CANDIDATE_DOMAIN_CHUNK):
+        chunk = set(ids[start : start + _CANDIDATE_DOMAIN_CHUNK])
+        updated += _refresh_candidate_chunk(db, chunk)
+        _release_orm_memory(db)
     return updated
 
 
@@ -1324,6 +1448,8 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
             "new_domains": 0,
             "new_links": 0,
             "quota_exhausted": 0,
+            "invalid_videos": 0,
+            "error_details": [],
         }
         try:
             affected_domain_ids: set[int] = set()
@@ -1360,13 +1486,19 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
                 ]
                 seed_youtube_channels(db, matched_videos, count_as_search_seed=True)
                 for video in matched_videos:
-                    result = process_video(
+                    result, error = _process_video_isolated(
                         db,
                         video,
                         dropped.name,
                         "dropped_first",
                         affected_domain_ids,
                     )
+                    if error:
+                        counters["invalid_videos"] += 1
+                        if len(counters["error_details"]) < 20:
+                            counters["error_details"].append(error)
+                        continue
+                    assert result is not None
                     for key in ("new_videos", "new_domains", "new_links"):
                         counters[key] += result[key]
                     counters["exact_matches"] += 1
@@ -1378,7 +1510,12 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
             refresh_local_dropped_matches(db, domain_ids=affected_domain_ids)
             counters["quota"] = youtube_quota_snapshot(db, settings)
             counters["failure_stage"] = None
-            _finish_run(db, run, "complete", counters)
+            _finish_run(
+                db,
+                run,
+                "partial" if counters["invalid_videos"] else "complete",
+                counters,
+            )
         except Exception as exc:
             db.rollback()
             run = db.get(RunLog, run.id)
@@ -1899,6 +2036,38 @@ def run_daily_digest() -> None:
             logger.exception("Daily digest failed")
 
 
+def _run_daily_digest_catchup() -> None:
+    """Send today's digest if the normal 08:00 UTC run was missed or failed."""
+    settings = get_settings()
+    now = datetime.now(UTC)
+    due_at = now.replace(hour=8, minute=0, second=0, microsecond=0)
+    if now < due_at:
+        return
+
+    with SessionLocal() as db:
+        runs = db.scalars(
+            select(RunLog)
+            .where(
+                RunLog.job == "daily_digest",
+                RunLog.started_at >= due_at,
+            )
+            .order_by(RunLog.started_at.desc())
+            .limit(5)
+        ).all()
+        for run in runs:
+            counters = run.counters if isinstance(run.counters, dict) else {}
+            if run.status == "complete" and (
+                not settings.email_enabled
+                or int(counters.get("emailed", 0) or 0) >= 1
+            ):
+                return
+            if run.status == "running":
+                return
+
+    logger.warning("Daily digest missing after 08:00 UTC; running catch-up now")
+    run_daily_digest()
+
+
 def run_commoncrawl_prefilter_job() -> None:
     """Cache free historical-domain signals inside Railway's private network."""
     with SessionLocal() as db:
@@ -2004,7 +2173,12 @@ JOB_FUNCTIONS: dict[str, Callable[[], None]] = {
 
 def build_scheduler(settings: Settings) -> BackgroundScheduler:
     scheduler = BackgroundScheduler(
-        timezone="UTC", job_defaults={"coalesce": True, "max_instances": 1}
+        timezone="UTC",
+        job_defaults={"coalesce": True, "max_instances": 1},
+        executors={
+            "default": APSchedulerThreadPoolExecutor(max_workers=1),
+            "email": APSchedulerThreadPoolExecutor(max_workers=1),
+        },
     )
     start = datetime.now(UTC)
     scheduler.add_job(
@@ -2129,5 +2303,15 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         CronTrigger(hour=8, minute=0, timezone="UTC"),
         id="daily_digest",
         replace_existing=True,
+        executor="email",
+        misfire_grace_time=6 * 60 * 60,
+    )
+    scheduler.add_job(
+        _run_daily_digest_catchup,
+        IntervalTrigger(hours=1, start_date=start + timedelta(minutes=2)),
+        id="daily_digest_catchup",
+        replace_existing=True,
+        executor="email",
+        misfire_grace_time=6 * 60 * 60,
     )
     return scheduler

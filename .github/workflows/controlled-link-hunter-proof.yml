@@ -4,235 +4,83 @@ on:
   workflow_dispatch:
     inputs:
       approval:
-        description: "Type APPROVE_MAX_0.18_USD to run one paid proof"
+        description: "Type APPROVE_MAX_0.18_USD to request one paid proof"
         required: true
         type: string
 
 permissions:
   contents: read
+  actions: write
   statuses: write
 
 concurrency:
-  group: link-hunter-paid-proof
+  group: link-hunter-paid-proof-request
   cancel-in-progress: false
 
 jobs:
-  proof:
+  request:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-      PROJECT_ID: 31fbe878-aa83-4b74-9820-e9f0d13b984c
-      ENVIRONMENT_ID: 9f670e7a-1b3d-4ccc-b450-092a70403ee9
-      SERVICE_ID: 8aa9b741-7a20-4aef-8baf-c25ac82f6fce
-      PUBLIC_URL: https://youtube-domain-crawler-production.up.railway.app
+    timeout-minutes: 5
     steps:
-      - name: Run one guarded proof and always disable afterwards
-        id: proof
+      - name: Dispatch the single guarded production endpoint path
+        id: request
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           APPROVAL: ${{ inputs.approval }}
         run: |
           set +e
-          echo "proof_state=error" >> "$GITHUB_OUTPUT"
-          echo "cleanup_state=error" >> "$GITHUB_OUTPUT"
-          echo "failure_stage=unknown" >> "$GITHUB_OUTPUT"
-          echo "description=Controlled proof did not run" >> "$GITHUB_OUTPUT"
-
-          fail() {
-            echo "failure_stage=$1" >> "$GITHUB_OUTPUT"
-            echo "description=$2" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-
-          cleanup() {
-            npx -y @railway/cli@latest variable set \
-              LINK_HUNTER_ENABLED=false \
-              --service "$SERVICE_ID" \
-              --environment "$ENVIRONMENT_ID" \
-              >/tmp/link-hunter-disable.out 2>/tmp/link-hunter-disable.err
-            disable_code=$?
-            disabled=false
-            if [ $disable_code -eq 0 ]; then
-              for attempt in $(seq 1 45); do
-                body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
-                BODY="$body" python -c 'import json,os; p=json.loads(os.environ.get("BODY","")); assert p.get("database")=="ok"; assert p.get("link_hunter_enabled") is False' 2>/dev/null
-                if [ $? -eq 0 ]; then disabled=true; break; fi
-                sleep 10
-              done
-            fi
-            if [ "$disabled" = true ]; then
-              echo "cleanup_state=success" >> "$GITHUB_OUTPUT"
-            else
-              echo "cleanup_state=error" >> "$GITHUB_OUTPUT"
-            fi
-            rm -f /tmp/link-hunter-disable.out /tmp/link-hunter-disable.err
-          }
-          trap cleanup EXIT
+          echo "state=error" >> "$GITHUB_OUTPUT"
+          echo "description=Controlled proof was not requested" >> "$GITHUB_OUTPUT"
 
           if [ "$APPROVAL" != "APPROVE_MAX_0.18_USD" ]; then
-            fail "approval" "Approval phrase did not match; zero paid calls made"
+            echo "description=Approval phrase did not match; zero paid calls made" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
-          BODY="$body" python - <<'PY'
-          import json, os
-          payload = json.loads(os.environ["BODY"])
-          assert payload.get("database") == "ok"
-          assert payload.get("dataforseo_configured") is True
-          assert payload.get("link_hunter_enabled") is False
-          PY
-          if [ $? -ne 0 ]; then
-            fail "readiness" "Production readiness guard failed; zero paid calls made"
-          fi
-
-          admin_token_present="$(
-            npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
-              python -c 'import os; print("yes" if os.getenv("ADMIN_TOKEN") else "")' 2>/dev/null
-          )"
-          if [ "$admin_token_present" != "yes" ]; then
-            fail "admin-token" "Admin control token unavailable; zero paid calls made"
-          fi
-
-          dashboard_password="$(
-            npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
-              python -c 'import os; print(os.getenv("DASHBOARD_PASSWORD", ""))' 2>/dev/null
-          )"
-          if [ -z "$dashboard_password" ]; then
-            fail "preview-auth" "Dashboard preview credential unavailable; zero paid calls made"
-          fi
-
-          preflight_cookie_jar="$(mktemp)"
-          login_code="$(
-            curl -sS -o /dev/null -w '%{http_code}' \
-              --cookie-jar "$preflight_cookie_jar" \
-              --data-urlencode "username=admin" \
-              --data-urlencode "password=$dashboard_password" \
-              --data-urlencode "next=/admin/link-hunter/proof-preview" \
-              "$PUBLIC_URL/login"
-          )"
-          unset dashboard_password
-          if [ "$login_code" != "303" ]; then
-            rm -f "$preflight_cookie_jar"
-            fail "preview-auth" "Dashboard preview login failed; zero paid calls made"
-          fi
-
-          curl -fsS --cookie "$preflight_cookie_jar" \
-            "$PUBLIC_URL/admin/link-hunter/proof-preview" \
-            >/tmp/link-hunter-preflight.json 2>/tmp/link-hunter-preflight.err
-          preflight_code=$?
-          rm -f "$preflight_cookie_jar"
-          if [ $preflight_code -ne 0 ]; then
-            rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
-            fail "preflight-http" "Zero-cost production preview request failed"
-          fi
-
-          python - <<'PY'
+          python - <<'PY' >/tmp/dispatch.json
           import json
-          with open('/tmp/link-hunter-preflight.json', encoding='utf-8') as stream:
-              payload = json.load(stream)
-          preview = payload.get('preview') or {}
-          cost = float(preview.get('estimated_max_cost_usd') or 0.0)
-          summary_count = int(preview.get('summary_target_count') or 0)
-          deep_count = int(preview.get('deep_proof_target_count') or 0)
-          assert payload.get('provider_calls_made') == 0
-          assert preview.get('paid_requests_made') == 0
-          assert preview.get('ready_for_controlled_proof') is True
-          assert int(preview.get('target_count') or 0) == summary_count
-          assert 0 < summary_count <= 100
-          assert 0 < deep_count <= 5
-          assert deep_count <= summary_count
-          assert preview.get('within_cost_cap') is True
-          assert cost <= 0.18
-          assert preview.get('credentials_exposed') is False
+          print(json.dumps({
+              "ref": "main",
+              "inputs": {"approval": "APPROVE_MAX_0.18_USD"},
+          }))
           PY
-          preflight_code=$?
-          if [ $preflight_code -ne 0 ]; then
-            summary="$(python - <<'PY'
-          import json
-          try:
-              with open('/tmp/link-hunter-preflight.json', encoding='utf-8') as stream:
-                  payload=json.load(stream)
-          except Exception:
-              print('preview unavailable')
-          else:
-              preview=payload.get('preview') or {}
-              blockers=','.join(preview.get('activation_blockers') or []) or 'none'
-              print(f"ready={preview.get('ready_for_controlled_proof')}; targets={preview.get('target_count')}; max=${float(preview.get('estimated_max_cost_usd') or 0):.4f}; blockers={blockers}")
-          PY
-            )"
-            rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
-            fail "preflight-preview" "Preflight blocked: ${summary:0:118}"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/link-hunter-production-batch.yml/dispatches" \
+            --data-binary @/tmp/dispatch.json
+          dispatch_code=$?
+          rm -f /tmp/dispatch.json
+          if [ $dispatch_code -ne 0 ]; then
+            echo "description=Production proof dispatch failed; zero paid calls made" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          rm -f /tmp/link-hunter-preflight.json /tmp/link-hunter-preflight.err
+          echo "state=success" >> "$GITHUB_OUTPUT"
+          echo "description=Dispatched the guarded $0.18 proof endpoint" >> "$GITHUB_OUTPUT"
 
-          npx -y @railway/cli@latest variable set LINK_HUNTER_ENABLED=true LINK_HUNTER_PROOF_MAX_COST_USD=0.18 LINK_HUNTER_SUMMARY_BATCH_SIZE=100 LINK_HUNTER_PROOF_BATCH_SIZE=5 LINK_HUNTER_BACKLINKS_PER_DOMAIN=25 --service "$SERVICE_ID" --environment "$ENVIRONMENT_ID" >/tmp/link-hunter-enable.out 2>/tmp/link-hunter-enable.err
-          if [ $? -ne 0 ]; then
-            fail "activation" "Feature activation failed before paid proof"
-          fi
-          rm -f /tmp/link-hunter-enable.out /tmp/link-hunter-enable.err
-
-          enabled=false
-          for attempt in $(seq 1 45); do
-            body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
-            BODY="$body" python -c 'import json,os; p=json.loads(os.environ.get("BODY","")); assert p.get("database")=="ok"; assert p.get("dataforseo_configured") is True; assert p.get("link_hunter_enabled") is True' 2>/dev/null
-            if [ $? -eq 0 ]; then enabled=true; break; fi
-            sleep 10
-          done
-          if [ "$enabled" != true ]; then
-            fail "activation-health" "Feature did not become ready; proof not called"
-          fi
-
-          npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
-            python -c 'import os,urllib.request; req=urllib.request.Request(os.environ["PUBLIC_URL"]+"/api/link-hunter/proof",method="POST",headers={"X-Admin-Token":os.environ["ADMIN_TOKEN"]}); print(urllib.request.urlopen(req,timeout=420).read().decode())' \
-            >/tmp/link-hunter-proof.json 2>/tmp/link-hunter-proof.err
-          proof_code=$?
-          if [ $proof_code -ne 0 ]; then
-            rm -f /tmp/link-hunter-proof.json /tmp/link-hunter-proof.err
-            fail "provider-call" "Paid proof returned an error; cleanup is running"
-          fi
-
-          python - <<'PY'
-          import json, os
-          with open("/tmp/link-hunter-proof.json", encoding="utf-8") as stream:
-              payload=json.load(stream)
-          counters=payload.get("counters") or {}
-          cost=float(counters.get("provider_cost_usd") or 0.0)
-          errors=int(counters.get("errors") or 0)
-          if payload.get("status") != "complete": raise SystemExit("proof response was not complete")
-          if errors > 0: raise SystemExit("proof reported item/provider errors")
-          if cost > 0.18: raise SystemExit("provider cost exceeded approved ceiling")
-          description=(f"Proof complete: ${cost:.4f}; {int(counters.get('summary_screened') or 0)} screened; {int(counters.get('deep_proof_target_count') or 0)} deep; {int(counters.get('source_links_verified') or 0)} verified")[:140]
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-              stream.write("proof_state=success\n")
-              stream.write("failure_stage=none\n")
-              stream.write(f"description={description}\n")
-          PY
-          if [ $? -ne 0 ]; then
-            rm -f /tmp/link-hunter-proof.json /tmp/link-hunter-proof.err
-            fail "response-guard" "Proof response failed the spend/result guard; cleanup is running"
-          fi
-          rm -f /tmp/link-hunter-proof.json /tmp/link-hunter-proof.err
-          exit 0
-
-      - name: Publish controlled-proof statuses without email-spam failure
+      - name: Publish request status
         if: always()
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PROOF_STATE: ${{ steps.proof.outputs.proof_state }}
-          CLEANUP_STATE: ${{ steps.proof.outputs.cleanup_state }}
-          FAILURE_STAGE: ${{ steps.proof.outputs.failure_stage }}
-          DESCRIPTION: ${{ steps.proof.outputs.description }}
+          STATE: ${{ steps.request.outputs.state }}
+          DESCRIPTION: ${{ steps.request.outputs.description }}
         run: |
-          publish() {
-            python - "$1" "$2" "$3" <<'PY' >/tmp/status.json
-          import json, sys
-          print(json.dumps({"state": sys.argv[1], "context": sys.argv[2], "description": sys.argv[3][:140]}))
+          python - <<'PY' >/tmp/status.json
+          import json
+          import os
+
+          print(json.dumps({
+              "state": os.environ.get("STATE") or "error",
+              "context": "link-hunter/paid-proof-request",
+              "description": (os.environ.get("DESCRIPTION") or "Proof request did not complete")[:140],
+          }))
           PY
-            curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" --data-binary @/tmp/status.json >/dev/null
-          }
-          publish "$PROOF_STATE" "link-hunter/paid-proof" "$DESCRIPTION"
-          if [ "$PROOF_STATE" != "success" ] && [ -n "$FAILURE_STAGE" ]; then
-            publish "error" "link-hunter/failure-$FAILURE_STAGE" "$DESCRIPTION"
-          fi
-          publish "$CLEANUP_STATE" "link-hunter/proof-disabled" "Link Hunter disabled after one-shot proof"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data-binary @/tmp/status.json >/dev/null

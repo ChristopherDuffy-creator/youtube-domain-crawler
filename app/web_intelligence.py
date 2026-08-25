@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -82,6 +82,71 @@ class EconomicProjection:
     monetization_route: str
     rationale: list[str]
     safety_flags: list[str]
+
+
+def apply_traffic_first_buy_score(
+    projection: EconomicProjection,
+    domain: Domain,
+    *,
+    traffic: int,
+    verified: bool,
+    evidence_score: float,
+    clickability_score: float = 0.0,
+) -> EconomicProjection:
+    """Apply the traffic-first score and hard money gates to one projection.
+
+    This is deliberately pure: it only transforms already-computed economic
+    evidence and never queries the database or a provider.  Keeping the gates
+    here means every normal projection path, including backfills, receives the
+    same protection against backlink-only candidates.
+    """
+    traffic = max(0, int(traffic or 0))
+    clicks = max(0, int(projection.expected_clicks_monthly or 0))
+    revenue_high = max(0.0, float(projection.monthly_revenue_high_usd or 0.0))
+    risk = max(0.0, min(100.0, float(projection.risk_score or 0.0)))
+
+    traffic_points = min(28.0, 7.5 * math.log10(traffic + 1))
+    click_points = min(22.0, 10.0 * math.log10(clicks + 1))
+    revenue_points = min(22.0, 10.0 * math.log10(revenue_high + 1.0))
+    evidence_bonus = min(10.0, max(0.0, evidence_score) * 0.10)
+    verified_points = 10.0 if verified else 0.0
+    clickability_points = (
+        min(5.0, max(0.0, min(100.0, clickability_score)) / 20.0)
+        if verified
+        else 0.0
+    )
+    availability_points = {
+        "available": 3.0,
+        "likely_available": 2.0,
+        "conflicting": 0.5,
+    }.get(str(domain.availability_status or "unknown"), 0.0)
+    confidence_points = min(5.0, max(0.0, float(projection.confidence or 0.0)) * 5.0)
+    risk_penalty = risk * 0.10
+
+    buy_score = max(
+        0.0,
+        min(
+            100.0,
+            traffic_points
+            + click_points
+            + revenue_points
+            + evidence_bonus
+            + verified_points
+            + clickability_points
+            + availability_points
+            + confidence_points
+            - risk_penalty,
+        ),
+    )
+
+    # A backlink asset can still be interesting SEO evidence, but it is not a
+    # traffic-buy candidate until at least one monetisable click is modelled.
+    if traffic <= 0 or clicks <= 0 or revenue_high <= 0:
+        buy_score = min(buy_score, 24.9)
+    if not verified:
+        buy_score = min(buy_score, 39.9)
+
+    return replace(projection, buy_score=round(buy_score, 1))
 
 
 def _domain_parts(name: str) -> tuple[str, str]:
@@ -324,7 +389,7 @@ def project_opportunity_economics(
     ]
     if opportunity.commercial_intent >= 0.5:
         rationale.append("strong commercial call-to-action context")
-    return EconomicProjection(
+    projection = EconomicProjection(
         buy_score=buy_score,
         expected_clicks_monthly=clicks,
         monthly_revenue_low_usd=revenue_low,
@@ -336,6 +401,14 @@ def project_opportunity_economics(
         monetization_route=route,
         rationale=rationale,
         safety_flags=safety_flags,
+    )
+    return apply_traffic_first_buy_score(
+        projection,
+        domain,
+        traffic=traffic,
+        verified=verified,
+        evidence_score=evidence_score,
+        clickability_score=clickability_score,
     )
 
 

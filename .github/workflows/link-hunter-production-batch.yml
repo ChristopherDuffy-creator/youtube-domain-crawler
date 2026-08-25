@@ -28,16 +28,14 @@ jobs:
       PUBLIC_URL: https://youtube-domain-crawler-production.up.railway.app
       RUN_CAP_USD: "0.18"
     steps:
-      - name: Run one guarded production batch and always disable afterwards
+      - name: Call the already-running guarded proof endpoint
         id: batch
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
           APPROVAL: ${{ inputs.approval }}
         run: |
           set +e
           echo "batch_state=error" >> "$GITHUB_OUTPUT"
-          echo "cleanup_state=error" >> "$GITHUB_OUTPUT"
           echo "description=Production batch did not run" >> "$GITHUB_OUTPUT"
 
           finish() {
@@ -46,36 +44,8 @@ jobs:
             exit 0
           }
 
-          cleanup() {
-            npx -y @railway/cli@latest variable set \
-              LINK_HUNTER_ENABLED=false \
-              --service "$SERVICE_ID" \
-              --environment "$ENVIRONMENT_ID" \
-              >/tmp/link-hunter-production-disable.out 2>/tmp/link-hunter-production-disable.err
-            disable_code=$?
-            disabled=false
-            if [ $disable_code -eq 0 ]; then
-              for attempt in $(seq 1 45); do
-                body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
-                BODY="$body" python -c 'import json,os; p=json.loads(os.environ.get("BODY","")); assert p.get("database")=="ok"; assert p.get("link_hunter_enabled") is False' 2>/dev/null
-                if [ $? -eq 0 ]; then
-                  disabled=true
-                  break
-                fi
-                sleep 10
-              done
-            fi
-            if [ "$disabled" = true ]; then
-              echo "cleanup_state=success" >> "$GITHUB_OUTPUT"
-            else
-              echo "cleanup_state=error" >> "$GITHUB_OUTPUT"
-            fi
-            rm -f /tmp/link-hunter-production-disable.out /tmp/link-hunter-production-disable.err
-          }
-          trap cleanup EXIT
-
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$APPROVAL" != "APPROVE_MAX_0.18_USD" ]; then
-            finish "error" "Manual approval phrase did not match; zero paid calls made"
+          if [ "$APPROVAL" != "APPROVE_MAX_0.18_USD" ]; then
+            finish "error" "Approval phrase did not match; zero paid calls made"
           fi
 
           body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
@@ -86,186 +56,55 @@ jobs:
           payload = json.loads(os.environ["BODY"])
           assert payload.get("database") == "ok"
           assert payload.get("dataforseo_configured") is True
-          assert payload.get("link_hunter_enabled") is False
+          assert payload.get("link_hunter_enabled") is True
           PY
           if [ $? -ne 0 ]; then
-            finish "error" "Production readiness guard failed; zero paid calls made"
+            finish "error" "Feature flag or production readiness guard failed; zero paid calls made"
           fi
 
-          admin_token_present="$(
-            npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
-              python -c 'import os; print("yes" if os.getenv("ADMIN_TOKEN") else "")' 2>/dev/null
-          )"
-          if [ "$admin_token_present" != "yes" ]; then
-            finish "error" "Admin control token unavailable; zero paid calls made"
-          fi
-
-          dashboard_password="$(
-            npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
-              python -c 'import os; print(os.getenv("DASHBOARD_PASSWORD", ""))' 2>/dev/null
-          )"
-          if [ -z "$dashboard_password" ]; then
-            finish "error" "Dashboard preview credential unavailable; zero paid calls made"
-          fi
-
-          preview_cookie_jar="$(mktemp)"
-          login_code="$(
-            curl -sS -o /dev/null -w '%{http_code}' \
-              --cookie-jar "$preview_cookie_jar" \
-              --data-urlencode "username=admin" \
-              --data-urlencode "password=$dashboard_password" \
-              --data-urlencode "next=/admin/link-hunter/proof-preview" \
-              "$PUBLIC_URL/login"
-          )"
-          unset dashboard_password
-          if [ "$login_code" != "303" ]; then
-            rm -f "$preview_cookie_jar"
-            finish "error" "Dashboard preview login failed; zero paid calls made"
-          fi
-
-          curl -fsS --cookie "$preview_cookie_jar" \
-            "$PUBLIC_URL/admin/link-hunter/proof-preview" \
-            >/tmp/link-hunter-production-preview.json 2>/tmp/link-hunter-production-preview.err
-          preview_code=$?
-          rm -f "$preview_cookie_jar"
-          if [ $preview_code -ne 0 ]; then
-            rm -f /tmp/link-hunter-production-preview.json /tmp/link-hunter-production-preview.err
-            finish "error" "Zero-cost production preview request failed"
-          fi
-
-          preview_summary="$(python - <<'PY'
-          import json
-          with open('/tmp/link-hunter-production-preview.json', encoding='utf-8') as stream:
-              payload = json.load(stream)
-          preview = payload.get('preview') or {}
-          cost = float(preview.get('estimated_max_cost_usd') or 0.0)
-          target_count = int(preview.get('target_count') or 0)
-          summary_count = int(preview.get('summary_target_count') or 0)
-          deep_count = int(preview.get('deep_proof_target_count') or 0)
-          cached_count = int(preview.get('cached_deep_target_count') or 0)
-          work_count = int(preview.get('work_available_count') or 0)
-          daily_cap = float(preview.get('daily_cost_cap_usd') or 0.0)
-          base_ok = (
-              payload.get('provider_calls_made') == 0
-              and preview.get('paid_requests_made') == 0
-              and preview.get('credentials_exposed') is False
-              and preview.get('within_cost_cap') is True
-              and target_count == summary_count
-              and 0 <= summary_count <= 100
-              and 0 <= deep_count <= 5
-              and deep_count <= work_count
-              and cost <= 0.18
-              and daily_cap == 2.16
-          )
-          ready = preview.get('ready_for_controlled_proof') is True
-          print(json.dumps({
-              'base_ok': base_ok,
-              'ready': ready,
-              'target_count': target_count,
-              'summary_count': summary_count,
-              'deep_count': deep_count,
-              'cached_count': cached_count,
-              'work_count': work_count,
-              'cost': cost,
-              'daily_cap': daily_cap,
-              'blockers': preview.get('activation_blockers') or [],
-          }))
-          PY
-          )"
-          rm -f /tmp/link-hunter-production-preview.json /tmp/link-hunter-production-preview.err
-
-          PREVIEW="$preview_summary" python - <<'PY'
-          import json
-          import os
-          payload = json.loads(os.environ['PREVIEW'])
-          assert payload['base_ok'] is True
-          PY
-          if [ $? -ne 0 ]; then
-            finish "error" "Preview failed zero-cost or spend-cap guards"
-          fi
-
-          work_count="$(PREVIEW="$preview_summary" python -c 'import json,os; print(int(json.loads(os.environ["PREVIEW"])["work_count"]))')"
-          if [ "$work_count" -eq 0 ]; then
-            finish "success" "No winner-queue work queued; zero paid calls made"
-          fi
-
-          daily_exhausted="$(PREVIEW="$preview_summary" python -c 'import json,os; p=json.loads(os.environ["PREVIEW"]); print("yes" if "daily_budget_exhausted" in p.get("blockers", []) else "no")')"
-          if [ "$daily_exhausted" = "yes" ]; then
-            finish "success" "Daily $2.16 cap reached; winner queue paused until UTC reset"
-          fi
-
-          PREVIEW="$preview_summary" python - <<'PY'
-          import json
-          import os
-          payload = json.loads(os.environ['PREVIEW'])
-          assert payload['ready'] is True
-          PY
-          if [ $? -ne 0 ]; then
-            finish "error" "Preview has activation blockers; zero paid calls made"
-          fi
-
-          npx -y @railway/cli@latest variable set \
-            LINK_HUNTER_ENABLED=true \
-            LINK_HUNTER_PROOF_MAX_COST_USD="$RUN_CAP_USD" \
-            LINK_HUNTER_DAILY_MAX_COST_USD=2.16 \
-            LINK_HUNTER_SUMMARY_BATCH_SIZE=100 \
-            LINK_HUNTER_PROOF_BATCH_SIZE=5 \
-            LINK_HUNTER_BACKLINKS_PER_DOMAIN=25 \
-            --service "$SERVICE_ID" \
-            --environment "$ENVIRONMENT_ID" \
-            >/tmp/link-hunter-production-enable.out 2>/tmp/link-hunter-production-enable.err
-          if [ $? -ne 0 ]; then
-            rm -f /tmp/link-hunter-production-enable.out /tmp/link-hunter-production-enable.err
-            finish "error" "Feature activation failed before paid batch"
-          fi
-          rm -f /tmp/link-hunter-production-enable.out /tmp/link-hunter-production-enable.err
-
-          enabled=false
-          for attempt in $(seq 1 45); do
-            body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
-            BODY="$body" python -c 'import json,os; p=json.loads(os.environ.get("BODY","")); assert p.get("database")=="ok"; assert p.get("dataforseo_configured") is True; assert p.get("link_hunter_enabled") is True' 2>/dev/null
-            if [ $? -eq 0 ]; then
-              enabled=true
-              break
-            fi
-            sleep 10
-          done
-          if [ "$enabled" != true ]; then
-            finish "error" "Feature did not become ready; paid batch not called"
-          fi
-
+          # This only obtains the configured secret inside Railway in order to
+          # authenticate a request to the already-running public application.
+          # It never writes Railway variables, so it cannot cause a redeploy.
           npx -y @railway/cli@latest run --project "$PROJECT_ID" --environment "$ENVIRONMENT_ID" --service "$SERVICE_ID" \
-            python -c 'import os,urllib.request; req=urllib.request.Request(os.environ["PUBLIC_URL"]+"/api/link-hunter/proof",method="POST",headers={"X-Admin-Token":os.environ["ADMIN_TOKEN"]}); print(urllib.request.urlopen(req,timeout=420).read().decode())' \
-            >/tmp/link-hunter-production-result.json 2>/tmp/link-hunter-production-result.err
+            python - <<'PY' >/tmp/link-hunter-production-result.json 2>/tmp/link-hunter-production-result.err
+          import os
+          import urllib.request
+
+          request = urllib.request.Request(
+              os.environ["PUBLIC_URL"] + "/api/link-hunter/proof",
+              method="POST",
+              headers={"X-Admin-Token": os.environ["ADMIN_TOKEN"]},
+          )
+          print(urllib.request.urlopen(request, timeout=420).read().decode())
+          PY
           result_code=$?
           if [ $result_code -ne 0 ]; then
             rm -f /tmp/link-hunter-production-result.json /tmp/link-hunter-production-result.err
-            finish "error" "Paid production batch returned an error; cleanup is running"
+            finish "error" "Guarded production endpoint returned an error"
           fi
 
           python - <<'PY'
           import json
           import os
 
-          with open('/tmp/link-hunter-production-result.json', encoding='utf-8') as stream:
+          with open("/tmp/link-hunter-production-result.json", encoding="utf-8") as stream:
               payload = json.load(stream)
-          counters = payload.get('counters') or {}
-          cost = float(counters.get('provider_cost_usd') or 0.0)
-          errors = int(counters.get('errors') or 0)
-          daily_budget = counters.get('daily_budget') or {}
-          daily_limit = float(daily_budget.get('limit_usd') or 0.0)
-          daily_committed = float(daily_budget.get('spent_usd') or 0.0) + float(
-              daily_budget.get('reserved_usd') or 0.0
-          )
-          if payload.get('status') != 'complete':
-              raise SystemExit('production batch response was not complete')
-          if errors > 0:
-              raise SystemExit('production batch reported item/provider errors')
-          if cost > 0.18:
-              raise SystemExit('provider cost exceeded hard per-run ceiling')
-          if daily_limit != 2.16 or daily_committed > 2.160001:
-              raise SystemExit('daily provider spend ledger exceeded the approved ceiling')
-          if counters.get('daily_budget_skipped') is True:
+          counters = payload.get("counters") or {}
+          cost = float(counters.get("provider_cost_usd") or 0.0)
+          errors = int(counters.get("errors") or 0)
+          budget = counters.get("daily_budget") or {}
+          committed = float(budget.get("spent_usd") or 0.0) + float(budget.get("reserved_usd") or 0.0)
+          if payload.get("status") == "skipped" and counters.get("run_in_progress") is True:
+              description = "Proof already running; duplicate request safely skipped"
+          elif payload.get("status") != "complete":
+              raise SystemExit("production batch response was not complete")
+          elif errors > 0:
+              raise SystemExit("production batch reported item/provider errors")
+          elif cost > 0.18:
+              raise SystemExit("provider cost exceeded hard per-run ceiling")
+          elif float(budget.get("limit_usd") or 0.0) != 2.16 or committed > 2.160001:
+              raise SystemExit("daily provider spend ledger exceeded the approved ceiling")
+          elif counters.get("daily_budget_skipped") is True:
               description = "Daily $2.16 provider cap reached; zero paid calls made"
           else:
               description = (
@@ -274,99 +113,32 @@ jobs:
                   f"{int(counters.get('deep_proof_target_count') or 0)} deep; "
                   f"{int(counters.get('source_links_verified') or 0)} verified"
               )[:140]
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
-              stream.write('batch_state=success\n')
-              stream.write(f'description={description}\n')
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write("batch_state=success\\n")
+              stream.write(f"description={description}\\n")
           PY
           guard_code=$?
           rm -f /tmp/link-hunter-production-result.json /tmp/link-hunter-production-result.err
           if [ $guard_code -ne 0 ]; then
-            finish "error" "Production batch failed the spend/result guard; cleanup is running"
+            finish "error" "Production batch failed the spend/result guard"
           fi
-          exit 0
 
-      - name: Publish production batch statuses
+      - name: Publish production batch status
         if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           BATCH_STATE: ${{ steps.batch.outputs.batch_state }}
-          CLEANUP_STATE: ${{ steps.batch.outputs.cleanup_state }}
           DESCRIPTION: ${{ steps.batch.outputs.description }}
         run: |
-          publish() {
-            python - "$1" "$2" "$3" <<'PY' >/tmp/status.json
-          import json
-          import sys
-          print(json.dumps({"state": sys.argv[1], "context": sys.argv[2], "description": sys.argv[3][:140]}))
-          PY
-            curl -fsS -X POST \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-              --data-binary @/tmp/status.json >/dev/null
-          }
-          publish "$BATCH_STATE" "link-hunter/production-batch" "$DESCRIPTION"
-          publish "$CLEANUP_STATE" "link-hunter/production-disabled" "Link Hunter disabled after production batch"
-
-      - name: Audit production safe state after cleanup
-        if: always()
-        id: audit
-        shell: bash
-        env:
-          BATCH_STATE: ${{ steps.batch.outputs.batch_state }}
-          CLEANUP_STATE: ${{ steps.batch.outputs.cleanup_state }}
-        run: |
-          set +e
-          audit_state=error
-          description="Production post-run audit did not pass"
-
-          if [ "$BATCH_STATE" != "success" ]; then
-            description="Production batch status is not successful"
-          elif [ "$CLEANUP_STATE" != "success" ]; then
-            description="Production cleanup status is not successful"
-          else
-            for attempt in $(seq 1 18); do
-              body="$(curl -fsS "$PUBLIC_URL/health" 2>/dev/null)"
-              BODY="$body" python - <<'PY' 2>/dev/null
-          import json
-          import os
-
-          payload = json.loads(os.environ.get("BODY", ""))
-          assert payload.get("database") == "ok"
-          assert payload.get("dataforseo_configured") is True
-          assert payload.get("link_hunter_enabled") is False
-          PY
-              if [ $? -eq 0 ]; then
-                audit_state=success
-                description="Batch succeeded and production is healthy with paid calls disabled"
-                break
-              fi
-              sleep 10
-            done
-          fi
-
-          echo "state=$audit_state" >> "$GITHUB_OUTPUT"
-          echo "description=$description" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Publish production post-run audit status
-        if: always()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          AUDIT_STATE: ${{ steps.audit.outputs.state }}
-          DESCRIPTION: ${{ steps.audit.outputs.description }}
-        run: |
-          python - <<'PY' >/tmp/post-run-status.json
+          python - <<'PY' >/tmp/status.json
           import json
           import os
 
           print(json.dumps({
-              "state": os.environ.get("AUDIT_STATE") or "error",
-              "context": "link-hunter/post-run-audit",
-              "description": (os.environ.get("DESCRIPTION") or "Production post-run audit did not complete")[:140],
+              "state": os.environ.get("BATCH_STATE") or "error",
+              "context": "link-hunter/production-batch",
+              "description": (os.environ.get("DESCRIPTION") or "Production batch did not complete")[:140],
           }))
           PY
           curl -fsS -X POST \
@@ -374,4 +146,4 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            --data-binary @/tmp/post-run-status.json >/dev/null
+            --data-binary @/tmp/status.json >/dev/null

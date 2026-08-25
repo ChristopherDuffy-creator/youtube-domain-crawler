@@ -101,6 +101,25 @@ def test_proof_spend_cap_is_enforced_before_first_http_call(monkeypatch) -> None
     assert FakeHTTPClient.calls == []
 
 
+def test_raised_configuration_cannot_bypass_the_approved_run_cap(monkeypatch) -> None:
+    _reset_fake()
+    monkeypatch.setattr(httpx, "Client", FakeHTTPClient)
+    settings = Settings(
+        dataforseo_login="api-login",
+        dataforseo_password="api-password",
+        link_hunter_proof_batch_size=6,
+        link_hunter_backlinks_per_domain=25,
+        link_hunter_proof_max_cost_usd=1.0,
+    )
+    client = DataForSEOClient(settings)
+
+    with pytest.raises(DataForSEOError, match=r"cap \$0.1800"):
+        client.bulk_backlink_summaries([f"proof-{i}.example" for i in range(100)])
+
+    assert FakeHTTPClient.instances == []
+    assert FakeHTTPClient.calls == []
+
+
 def test_proof_rejects_source_page_volume_that_exceeds_one_traffic_batch(monkeypatch) -> None:
     _reset_fake()
     monkeypatch.setattr(httpx, "Client", FakeHTTPClient)

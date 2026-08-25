@@ -50,8 +50,8 @@ def test_preview_selects_next_unchecked_drops_without_paid_calls() -> None:
     assert preview["provisional_deep_targets"] == preview["targets"]
     assert preview["backlinks_per_domain"] == 25
     assert preview["max_source_pages"] == 75
-    assert 0 < preview["estimated_max_cost_usd"] <= 0.50
-    assert preview["configured_cost_cap_usd"] == 0.50
+    assert 0 < preview["estimated_max_cost_usd"] <= 0.18
+    assert preview["configured_cost_cap_usd"] == 0.18
     assert preview["daily_cost_cap_usd"] == 2.16
     assert preview["daily_budget"]["remaining_usd"] == 2.16
     assert preview["within_cost_cap"] is True

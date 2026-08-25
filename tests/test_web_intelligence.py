@@ -146,6 +146,48 @@ def test_profit_projection_rewards_verified_commercial_evidence() -> None:
     assert "not_an_ordinary_registration" not in projection.safety_flags
 
 
+def test_profit_projection_applies_traffic_first_gates_without_bootstrap_patch() -> None:
+    domain = Domain(id=1, name="usefulsoftware.com", availability_status="available")
+    opportunity = Opportunity(
+        domain_id=1,
+        independent_site_count=8,
+        commercial_intent=1.0,
+        niche="software",
+    )
+    links = [
+        SourceLink(
+            source_page_id=1,
+            domain_id=1,
+            target_url="https://usefulsoftware.com/download",
+            anchor_text="Download the software",
+            semantic_location="article",
+            spam_score=0,
+        )
+    ]
+
+    unverified = project_opportunity_economics(
+        opportunity,
+        domain,
+        links,
+        traffic=50_000,
+        verified=False,
+        evidence_score=100,
+        clickability_score=100,
+    )
+    no_traffic = project_opportunity_economics(
+        opportunity,
+        domain,
+        links,
+        traffic=0,
+        verified=True,
+        evidence_score=100,
+        clickability_score=100,
+    )
+
+    assert unverified.buy_score <= 39.9
+    assert no_traffic.buy_score <= 24.9
+
+
 def test_historical_web_evidence_is_backfilled_without_provider_calls() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)

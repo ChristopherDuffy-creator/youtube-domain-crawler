@@ -1,4 +1,9 @@
-from app.domain_tools import extract_domain_names, extract_links, registrable_domain
+from app.domain_tools import (
+    extract_domain_names,
+    extract_links,
+    registrable_domain,
+    sanitize_external_text,
+)
 from app.youtube import exact_domain_in_description
 
 
@@ -51,6 +56,15 @@ def test_handles_multilevel_public_suffix() -> None:
 def test_dropped_text_accepts_bare_domains_and_deduplicates() -> None:
     text = "example.com\nhttps://example.com/path, seconddomain.net\nexample.com"
     assert extract_domain_names(text) == ["example.com", "seconddomain.net"]
+
+
+def test_external_text_sanitization_and_domain_validation_reject_malformed_hosts() -> None:
+    assert sanitize_external_text("good\x00 title\x1f\nnext") == "good title\nnext"
+    assert registrable_domain("-bit.ly") is None
+    assert registrable_domain("example-.com") is None
+    assert extract_domain_names("-bit.ly, -example.com, valid-example.com") == [
+        "valid-example.com"
+    ]
 
 
 def test_exact_domain_match_has_boundaries() -> None:
