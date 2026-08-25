@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ site.guide_title }} · {{ site.site_name }}</title>
+  {% if not site.indexable %}<meta name="robots" content="noindex,follow">{% endif %}
+  <style>
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#171717; background:#f6f5f0; }
+    .wrap { max-width:900px; margin:0 auto; padding:32px 24px 70px; }
+    .brand { font-weight:850; letter-spacing:-.035em; font-size:20px; margin-bottom:70px; }
+    .back { display:inline-block; margin-bottom:22px; text-decoration:none; color:#666; font-size:14px; }
+    h1 { margin:0; font-size:clamp(38px,6vw,66px); line-height:1.02; letter-spacing:-.05em; }
+    .lede { font-size:20px; line-height:1.6; color:#4c4c4c; max-width:760px; margin:25px 0 40px; }
+    .grid { display:grid; gap:15px; }
+    .item { background:#fff; border:1px solid rgba(0,0,0,.07); border-radius:20px; padding:25px 27px; }
+    .item strong { display:block; font-size:20px; margin-bottom:8px; letter-spacing:-.02em; }
+    .item p { margin:0; color:#555; line-height:1.6; }
+    .note { margin-top:28px; padding:18px 20px; border-radius:16px; background:rgba(255,255,255,.55); border:1px solid rgba(0,0,0,.08); line-height:1.55; color:#555; font-size:14px; }
+    .disclosure { margin-top:15px; font-size:12px; color:#777; line-height:1.5; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="brand">{{ site.site_name }}</div>
+    <a class="back" href="/">← Back to the guide</a>
+    <h1>{{ site.guide_title }}</h1>
+    <p class="lede">{{ site.guide_intro }}</p>
+    <section class="grid">
+      {% for title, text in site.feature_cards %}
+      <article class="item"><strong>{{ loop.index }}. {{ title }}</strong><p>{{ text }}</p></article>
+      {% endfor %}
+    </section>
+    <div class="note">We are evaluating current commercial options against these criteria. When a suitable tracked recommendation is activated, this page will send interested visitors to it without changing the purpose of the guide.</div>
+    {% if site.disclosure %}<div class="disclosure">{{ site.disclosure }}</div>{% endif %}
+  </main>
+</body>
+</html>
