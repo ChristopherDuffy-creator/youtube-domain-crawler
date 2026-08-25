@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ site.site_name }}</title>
+  <meta name="description" content="{{ site.subheadline }}">
+  <link rel="canonical" href="https://{{ site.domain }}/">
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:#171717; background:#f6f5f0; }
+    a { color:inherit; }
+    .shell { min-height:100vh; display:flex; flex-direction:column; }
+    header { max-width:1120px; width:100%; margin:0 auto; padding:28px 24px; display:flex; align-items:center; justify-content:space-between; }
+    .brand { font-weight:800; letter-spacing:-.03em; font-size:20px; }
+    .tag { font-size:12px; letter-spacing:.14em; font-weight:700; opacity:.58; }
+    main { width:100%; max-width:1120px; margin:auto; padding:48px 24px 80px; }
+    .hero { max-width:790px; }
+    .eyebrow { font-size:13px; font-weight:800; letter-spacing:.16em; opacity:.55; margin-bottom:22px; }
+    h1 { margin:0; font-size:clamp(44px, 8vw, 88px); line-height:.96; letter-spacing:-.055em; max-width:950px; }
+    .lede { font-size:clamp(18px, 2.5vw, 25px); line-height:1.5; max-width:760px; margin:30px 0 34px; color:#444; }
+    .cta { display:inline-flex; text-decoration:none; align-items:center; justify-content:center; min-height:58px; padding:0 27px; border-radius:999px; background:#171717; color:#fff; font-weight:750; font-size:16px; box-shadow:0 10px 30px rgba(0,0,0,.10); }
+    .cta:hover { transform:translateY(-1px); }
+    .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:70px; }
+    .card { background:#fff; border:1px solid rgba(0,0,0,.07); border-radius:22px; padding:25px; min-height:165px; }
+    .card strong { display:block; font-size:19px; margin-bottom:10px; }
+    .card p { margin:0; line-height:1.55; color:#5b5b5b; }
+    .disclosure { margin-top:34px; max-width:760px; padding:16px 18px; border-radius:14px; border:1px solid rgba(0,0,0,.10); background:rgba(255,255,255,.55); font-size:13px; line-height:1.5; color:#555; }
+    footer { max-width:1120px; width:100%; margin:0 auto; padding:24px; display:flex; justify-content:space-between; gap:20px; font-size:13px; color:#666; border-top:1px solid rgba(0,0,0,.08); }
+    footer a { text-decoration:none; }
+    @media (max-width:760px) { .cards { grid-template-columns:1fr; } header { padding-top:20px; } main { padding-top:26px; } footer { flex-direction:column; } }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="brand">{{ site.site_name }}</div>
+    <div class="tag">INDEPENDENT GUIDE</div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="eyebrow">{{ site.eyebrow }}</div>
+      <h1>{{ site.headline }}</h1>
+      <p class="lede">{{ site.subheadline }}</p>
+      <a class="cta" href="/go/main">{{ site.primary_cta }} →</a>
+      {% if site.disclosure %}<div class="disclosure">{{ site.disclosure }}</div>{% endif %}
+    </section>
+
+    <section class="cards" aria-label="What you will find here">
+      <article class="card"><strong>Useful, not bloated</strong><p>Resources selected around the reason people arrive here, without pages of filler.</p></article>
+      <article class="card"><strong>Independent choices</strong><p>Recommendations are presented as alternatives and resources, not as the previous operator of this domain.</p></article>
+      <article class="card"><strong>Built around intent</strong><p>We keep the landing experience relevant to the original topic so visitors can quickly find what they came looking for.</p></article>
+    </section>
+  </main>
+  <footer>
+    <span>© {{ year }} {{ site.site_name }}</span>
+    <span><a href="/privacy">Privacy</a></span>
+  </footer>
+</div>
+</body>
+</html>
