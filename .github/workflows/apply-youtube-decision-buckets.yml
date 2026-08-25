@@ -40,8 +40,8 @@ jobs:
 
           replace_once(
               main,
-              '    tier: ResultTier = "all",\n    _: str = Depends(require_dashboard_auth),',
-              '    tier: ResultTier = "all",\n    decision: DecisionStatus | None = None,\n    _: str = Depends(require_dashboard_auth),',
+              '''@app.get("/", response_class=HTMLResponse)\ndef dashboard(\n    request: Request,\n    view: DashboardSystem = "web",\n    tier: ResultTier = "all",\n    _: str = Depends(require_dashboard_auth),\n''',
+              '''@app.get("/", response_class=HTMLResponse)\ndef dashboard(\n    request: Request,\n    view: DashboardSystem = "web",\n    tier: ResultTier = "all",\n    decision: DecisionStatus | None = None,\n    _: str = Depends(require_dashboard_auth),\n''',
           )
 
           replace_once(
