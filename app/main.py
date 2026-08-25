@@ -552,6 +552,12 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
             # candidate targets, source URLs, or provider errors.
             "latest_proof": {
                 "status": latest_proof.status,
+                # A safe error label keeps failed proof attempts diagnosable
+                # without exposing provider response bodies, targets, or credentials.
+                "failure_label": (
+                    str(latest_proof.error or "").split(":", 1)[0].splitlines()[0][:120]
+                    or None
+                ),
                 "summary_screened": int(proof_counters.get("summary_screened") or 0),
                 "deep_proof_target_count": int(
                     proof_counters.get("deep_proof_target_count") or 0
