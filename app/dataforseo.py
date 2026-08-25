@@ -42,18 +42,25 @@ def estimate_provider_proof_max_cost_usd(
     deliberately overestimates a normal proof so the configured spend cap is
     checked before the first paid call.
     """
-    if summary_domain_count <= 0:
-        if deep_domain_count != 0:
-            raise ValueError("deep_domain_count must be zero when no domains are screened")
-        return 0.0
+    if summary_domain_count < 0:
+        raise ValueError("summary_domain_count cannot be negative")
     if summary_domain_count > MAX_BULK_SUMMARY_DOMAINS:
         raise ValueError(f"proof cost estimate supports at most {MAX_BULK_SUMMARY_DOMAINS} domains")
-    if deep_domain_count < 0 or deep_domain_count > summary_domain_count:
-        raise ValueError("deep_domain_count must be between 0 and summary_domain_count")
+    if deep_domain_count < 0:
+        raise ValueError("deep_domain_count cannot be negative")
     if backlinks_per_domain <= 0 or backlinks_per_domain > 1000:
         raise ValueError("backlinks_per_domain must be between 1 and 1000")
+    if summary_domain_count == 0 and deep_domain_count == 0:
+        return 0.0
 
-    summary_cost = BACKLINK_REQUEST_USD + BACKLINK_ROW_USD * summary_domain_count
+    # A deep-proof target may already have a permanent BacklinkSummary from an
+    # earlier batch. In that case we deliberately pay no new summary cost and
+    # spend the run only on the strongest cached winner candidates.
+    summary_cost = (
+        BACKLINK_REQUEST_USD + BACKLINK_ROW_USD * summary_domain_count
+        if summary_domain_count
+        else 0.0
+    )
     detailed_cost = deep_domain_count * (
         BACKLINK_REQUEST_USD + BACKLINK_ROW_USD * backlinks_per_domain
     )

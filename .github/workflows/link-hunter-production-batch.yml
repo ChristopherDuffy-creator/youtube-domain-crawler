@@ -142,6 +142,8 @@ jobs:
           target_count = int(preview.get('target_count') or 0)
           summary_count = int(preview.get('summary_target_count') or 0)
           deep_count = int(preview.get('deep_proof_target_count') or 0)
+          cached_count = int(preview.get('cached_deep_target_count') or 0)
+          work_count = int(preview.get('work_available_count') or 0)
           daily_cap = float(preview.get('daily_cost_cap_usd') or 0.0)
           base_ok = (
               payload.get('provider_calls_made') == 0
@@ -151,7 +153,7 @@ jobs:
               and target_count == summary_count
               and 0 <= summary_count <= 100
               and 0 <= deep_count <= 5
-              and deep_count <= summary_count
+              and deep_count <= work_count
               and cost <= 0.18
               and daily_cap == 2.16
           )
@@ -162,6 +164,8 @@ jobs:
               'target_count': target_count,
               'summary_count': summary_count,
               'deep_count': deep_count,
+              'cached_count': cached_count,
+              'work_count': work_count,
               'cost': cost,
               'daily_cap': daily_cap,
               'blockers': preview.get('activation_blockers') or [],
@@ -180,9 +184,14 @@ jobs:
             finish "error" "Preview failed zero-cost or spend-cap guards"
           fi
 
-          target_count="$(PREVIEW="$preview_summary" python -c 'import json,os; print(int(json.loads(os.environ["PREVIEW"])["target_count"]))')"
-          if [ "$target_count" -eq 0 ]; then
-            finish "success" "No unchecked targets queued; zero paid calls made"
+          work_count="$(PREVIEW="$preview_summary" python -c 'import json,os; print(int(json.loads(os.environ["PREVIEW"])["work_count"]))')"
+          if [ "$work_count" -eq 0 ]; then
+            finish "success" "No winner-queue work queued; zero paid calls made"
+          fi
+
+          daily_exhausted="$(PREVIEW="$preview_summary" python -c 'import json,os; p=json.loads(os.environ["PREVIEW"]); print("yes" if "daily_budget_exhausted" in p.get("blockers", []) else "no")')"
+          if [ "$daily_exhausted" = "yes" ]; then
+            finish "success" "Daily $2.16 cap reached; winner queue paused until UTC reset"
           fi
 
           PREVIEW="$preview_summary" python - <<'PY'

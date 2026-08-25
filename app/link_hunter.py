@@ -21,6 +21,7 @@ from app.database import SessionLocal
 from app.dataforseo import DataForSEOClient, DataForSEOError
 from app.link_hunter_preview import (
     rerank_summary_screen_targets,
+    select_cached_deep_proof_targets_with_ranking,
     select_provider_summary_targets_with_ranking,
 )
 from app.models import (
@@ -878,29 +879,52 @@ def refresh_web_link_observations(
     return counters
 
 
-def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
-    """Run the two-stage, cost-capped DataForSEO screening funnel.
+def _cached_summary_payload(db: Session, target: str) -> dict[str, Any]:
+    row = db.execute(
+        select(BacklinkSummary, Domain)
+        .join(Domain, Domain.id == BacklinkSummary.domain_id)
+        .where(
+            Domain.name == target,
+            BacklinkSummary.provider == "dataforseo",
+        )
+        .limit(1)
+    ).first()
+    if row is None:
+        return {}
+    summary, _ = row
+    payload = dict(summary.raw_summary or {})
+    payload.setdefault("backlinks", int(summary.backlinks or 0))
+    payload.setdefault("referring_pages", int(summary.referring_pages or 0))
+    payload.setdefault("referring_domains", int(summary.referring_domains or 0))
+    payload.setdefault("referring_main_domains", int(summary.referring_main_domains or 0))
+    payload.setdefault("rank", float(summary.rank or 0.0))
+    return payload
 
-    A large cheap bulk summary is reranked with cached/free evidence before only
-    a tiny set can trigger detailed backlinks, source traffic and direct verification.
+
+def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
+    """Run the cost-capped provider funnel with a permanent global winner queue.
+
+    New names receive the cheap 100-domain bulk summary. Every positive summary
+    remains eligible for later detailed proof until it has actually received a
+    completed backlinks call, so strong candidates can never be stranded simply
+    because four stronger names happened to be in their original batch.
     """
     if not settings.link_hunter_enabled:
         raise DataForSEOError("Link Hunter feature flag is disabled")
     if not settings.dataforseo_enabled:
         raise DataForSEOError("DataForSEO credentials are not configured")
 
-    # Use the exact same free/cached summary-screen selector shown by the
-    # zero-cost dashboard preview. Paid summary evidence chooses the actual
-    # deep-proof set, which cannot be known before the summary call completes.
     targets, free_scores, free_signals, _, _ = select_provider_summary_targets_with_ranking(
         db, settings
     )
-
     counters: dict[str, Any] = {
         "targets": len(targets),
         "summary_targets": len(targets),
         "free_dns_screened": 0,
         "free_dns_blocked": 0,
+        "winner_queue_candidates": 0,
+        "winner_queue_dns_screened": 0,
+        "winner_queue_dns_blocked": 0,
         "summary_screened": 0,
         "summary_domains_with_live_backlinks": 0,
         "deep_proof_target_count": 0,
@@ -920,84 +944,121 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
         "errors": 0,
         "error_details": [],
     }
-    if not targets:
-        return counters
 
-    original_target_count = len(targets)
-    targets, dns_blocked = _dns_prefilter_targets(db, targets)
-    counters["free_dns_screened"] = original_target_count
-    counters["free_dns_blocked"] = dns_blocked
-    counters["summary_targets"] = len(targets)
-    counters["registered_or_unavailable"] = dns_blocked
-    if not targets:
-        return counters
-
-    client = DataForSEOClient(settings)
+    client: DataForSEOClient | None = None
     domain_batches: list[tuple[Domain, Opportunity, list[SourceLink]]] = []
+    summary_map: dict[str, dict[str, Any]] = {}
 
-    try:
-        summary_response = _bulk_provider_call(
-            db,
-            endpoint="bulk_backlink_summary",
-            targets=targets,
-            callback=lambda: client.bulk_backlink_summaries(targets),
-        )
-        counters["summary_calls"] = 1
-        counters["provider_cost_usd"] += summary_response.task_cost_usd
-        summary_map = {
-            _normalize_host(str(item.get("url") or "")): item
-            for item in summary_response.result.get("items") or []
+    # Stage 1: only names never summarised before incur the cheap bulk call.
+    if targets:
+        original_target_count = len(targets)
+        targets, dns_blocked = _dns_prefilter_targets(db, targets)
+        counters["free_dns_screened"] = original_target_count
+        counters["free_dns_blocked"] = dns_blocked
+        counters["summary_targets"] = len(targets)
+        counters["registered_or_unavailable"] = dns_blocked
+
+    if targets:
+        client = DataForSEOClient(settings)
+        try:
+            summary_response = _bulk_provider_call(
+                db,
+                endpoint="bulk_backlink_summary",
+                targets=targets,
+                callback=lambda: client.bulk_backlink_summaries(targets),
+            )
+            counters["summary_calls"] = 1
+            counters["provider_cost_usd"] += summary_response.task_cost_usd
+            summary_map = {
+                _normalize_host(str(item.get("url") or "")): item
+                for item in summary_response.result.get("items") or []
+            }
+            counters["summary_screened"] = len(targets)
+            counters["summary_domains_with_live_backlinks"] = sum(
+                1
+                for target in targets
+                if int(summary_map.get(_normalize_host(target), {}).get("referring_pages") or 0) > 0
+            )
+        except Exception as exc:
+            counters["errors"] += 1
+            counters["error_details"].append(f"bulk summary: {exc}")
+            counters["provider_cost_usd"] = round(float(counters["provider_cost_usd"]), 6)
+            return counters
+
+        normalized_summaries = {
+            target: summary_map.get(_normalize_host(target), {}) for target in targets
         }
-        counters["summary_screened"] = len(targets)
-        counters["summary_domains_with_live_backlinks"] = sum(
-            1
-            for target in targets
-            if int(summary_map.get(_normalize_host(target), {}).get("referring_pages") or 0) > 0
+        _, combined_scores, _ = rerank_summary_screen_targets(
+            targets,
+            free_scores,
+            free_signals,
+            normalized_summaries,
+            0,
         )
-    except Exception as exc:
-        counters["errors"] += 1
-        counters["error_details"].append(f"bulk summary: {exc}")
+        for target in targets:
+            domain = _get_or_create_domain(db, target)
+            _save_summary_opportunity(
+                db,
+                domain,
+                normalized_summaries.get(target, {}),
+                combined_scores.get(target, 0.0),
+            )
+        db.commit()
+
+    # Stage 2: globally rerank every positive cached summary that has never had
+    # detailed proof. The queue survives across batches and restarts.
+    winner_targets, winner_scores, winner_summary_scores, winner_free_scores, _ = (
+        select_cached_deep_proof_targets_with_ranking(db, settings)
+    )
+    counters["winner_queue_candidates"] = len(winner_targets)
+    if not winner_targets:
         counters["provider_cost_usd"] = round(float(counters["provider_cost_usd"]), 6)
         return counters
 
-    normalized_summaries = {
-        target: summary_map.get(_normalize_host(target), {}) for target in targets
-    }
-    deep_targets, combined_scores, summary_scores = rerank_summary_screen_targets(
-        targets,
-        free_scores,
-        free_signals,
-        normalized_summaries,
-        settings.link_hunter_proof_batch_size,
-    )
+    # DNS is free. Look ahead far enough to keep all five paid slots full even
+    # when high-ranked cached names have since been registered.
+    deep_targets: list[str] = []
+    cursor = 0
+    dns_candidate_cap = min(len(winner_targets), max(100, settings.link_hunter_proof_batch_size * 20))
+    while len(deep_targets) < settings.link_hunter_proof_batch_size and cursor < dns_candidate_cap:
+        window_size = min(25, dns_candidate_cap - cursor)
+        window = winner_targets[cursor : cursor + window_size]
+        cursor += len(window)
+        if not window:
+            break
+        survivors, blocked = _dns_prefilter_targets(db, window)
+        counters["winner_queue_dns_screened"] += len(window)
+        counters["winner_queue_dns_blocked"] += blocked
+        counters["registered_or_unavailable"] += blocked
+        for target in survivors:
+            if target not in deep_targets:
+                deep_targets.append(target)
+            if len(deep_targets) >= settings.link_hunter_proof_batch_size:
+                break
+
+    deep_targets = deep_targets[: settings.link_hunter_proof_batch_size]
     counters["deep_proof_target_count"] = len(deep_targets)
     counters["deep_proof_targets"] = deep_targets
     counters["deep_proof_scores"] = {
         target: {
-            "free_preproof": free_scores.get(target, 0.0),
-            "bulk_summary": summary_scores.get(target, 0.0),
-            "combined": combined_scores.get(target, 0.0),
+            "cached_free_preproof": winner_free_scores.get(target, 0.0),
+            "cached_bulk_summary": winner_summary_scores.get(target, 0.0),
+            "global_combined": winner_scores.get(target, 0.0),
         }
         for target in deep_targets
     }
+    if not deep_targets:
+        counters["provider_cost_usd"] = round(float(counters["provider_cost_usd"]), 6)
+        return counters
 
-    # Keep the aggregate result for every screened name, not only the five
-    # names selected for detailed proof. This is the permanent reusable index.
-    for target in targets:
-        domain = _get_or_create_domain(db, target)
-        _save_summary_opportunity(
-            db,
-            domain,
-            normalized_summaries.get(target, {}),
-            combined_scores.get(target, 0.0),
-        )
-    db.commit()
+    if client is None:
+        client = DataForSEOClient(settings)
 
     for target in deep_targets:
         if counters["provider_cost_usd"] >= settings.link_hunter_proof_max_cost_usd:
             counters["cost_cap_hit"] = True
             break
-        summary = summary_map.get(_normalize_host(target), {})
+        summary = _cached_summary_payload(db, target)
         if int(summary.get("referring_pages") or 0) <= 0:
             continue
         counters["domains_with_live_backlinks"] += 1

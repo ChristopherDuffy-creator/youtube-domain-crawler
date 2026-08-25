@@ -19,7 +19,8 @@ def test_production_batch_is_dormant_capped_and_self_disabling() -> None:
     assert "if cost > 0.18" in text
     assert "if errors > 0" in text
     assert "production batch reported item/provider errors" in text
-    assert "No unchecked targets queued; zero paid calls made" in text
+    assert "No winner-queue work queued; zero paid calls made" in text
+    assert "daily_budget_exhausted" in text
     assert '"$PUBLIC_URL/login"' in text
     assert '--cookie-jar "$preview_cookie_jar"' in text
     assert '--cookie "$preview_cookie_jar"' in text
