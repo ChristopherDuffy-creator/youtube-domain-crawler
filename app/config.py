@@ -164,6 +164,7 @@ class Settings(BaseSettings):
     link_hunter_verify_timeout_seconds: float = Field(default=10.0, ge=3.0, le=30.0)
     link_hunter_verification_cache_hours: int = Field(default=24, ge=1, le=168)
     link_hunter_link_refresh_batch_size: int = Field(default=100, ge=1, le=1_000)
+    link_hunter_link_refresh_workers: int = Field(default=8, ge=1, le=16)
     link_hunter_free_screen_batch_size: int = Field(default=50_000, ge=100, le=1_000_000)
 
     # Free Q&A prefilter. Anonymous API calls are deliberately tiny, cached in

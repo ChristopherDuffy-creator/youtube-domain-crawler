@@ -21,6 +21,7 @@ def test_production_bootstrap_does_not_patch_canonical_crawler_functions(monkeyp
         "AVAILABILITY_BATCH_SIZE",
         "LINK_HUNTER_SUMMARY_BATCH_SIZE",
         "LINK_HUNTER_LINK_REFRESH_BATCH_SIZE",
+        "LINK_HUNTER_LINK_REFRESH_WORKERS",
         "LINK_HUNTER_FREE_SCREEN_BATCH_SIZE",
     )
     for name in batch_environment:
@@ -39,6 +40,13 @@ def test_production_bootstrap_does_not_patch_canonical_crawler_functions(monkeyp
         link_hunter.rerank_summary_screen_targets
         is link_hunter_preview.rerank_summary_screen_targets
     )
+
+
+def test_production_bootstrap_preserves_the_full_cheap_screen_and_bounded_refresh_pool() -> None:
+    boot = importlib.import_module("app.boot")
+
+    assert boot._BATCH_CAPS["LINK_HUNTER_SUMMARY_BATCH_SIZE"] == 100
+    assert boot._BATCH_CAPS["LINK_HUNTER_LINK_REFRESH_WORKERS"] == 8
 
 
 def test_summary_only_evidence_cannot_enter_a_ranked_web_tier() -> None:

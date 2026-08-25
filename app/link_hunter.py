@@ -63,6 +63,34 @@ class _AnchorEvidence:
     hidden: bool
 
 
+@dataclass(frozen=True)
+class _VerificationRequest:
+    """All data needed to fetch one public source page outside the ORM session."""
+
+    source_link_id: int
+    source_url: str
+    target_url: str
+    target_domain: str
+    first_seen_at: datetime
+
+
+@dataclass(frozen=True)
+class _VerificationFetchResult:
+    """Network-only result that is safe to hand back to the single DB writer."""
+
+    observed_at: datetime
+    http_status: int | None
+    final_url: str
+    content_hash: str | None
+    link_present: bool
+    clickability_score: float
+    clickable: bool
+    semantic_location: str
+    anchor_text: str
+    nofollow: bool
+    error: str | None
+
+
 class _HrefParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -740,6 +768,114 @@ def _save_summary_opportunity(
     return opportunity
 
 
+def _fetch_source_link_evidence(
+    request: _VerificationRequest,
+    timeout_seconds: float,
+) -> _VerificationFetchResult:
+    """Fetch and parse a source page without touching the SQLAlchemy session.
+
+    The refresh job can fan these requests out safely because the only work in
+    worker threads is bounded public HTTP I/O and HTML parsing.  Database
+    writes remain serialized by the caller, so the persistent evidence ledger
+    retains its existing transaction and deduplication behaviour.
+    """
+    observed_at = utcnow()
+    try:
+        status_code, final_url, content, text = _fetch_public_page(
+            request.source_url,
+            timeout_seconds,
+        )
+        parser = _HrefParser()
+        parser.feed(text)
+        matches = [
+            anchor
+            for anchor in parser.anchors
+            if _href_matches_provider_target(
+                urljoin(final_url, anchor.href),
+                request.target_url,
+                request.target_domain,
+            )
+        ]
+        best_anchor = max(matches, key=_anchor_clickability) if matches else None
+        link_present = bool(matches and 200 <= status_code < 400)
+        clickability_score = _anchor_clickability(best_anchor) if best_anchor else 0.0
+        return _VerificationFetchResult(
+            observed_at=observed_at,
+            http_status=status_code,
+            final_url=final_url,
+            content_hash=hashlib.sha256(content).hexdigest(),
+            link_present=link_present,
+            clickability_score=clickability_score,
+            clickable=bool(link_present and clickability_score > 0),
+            semantic_location=best_anchor.semantic_location if best_anchor else "missing",
+            anchor_text=best_anchor.text if best_anchor else "",
+            nofollow=best_anchor.nofollow if best_anchor else False,
+            error=None,
+        )
+    except Exception as exc:
+        return _VerificationFetchResult(
+            observed_at=observed_at,
+            http_status=None,
+            final_url=request.source_url,
+            content_hash=None,
+            link_present=False,
+            clickability_score=0.0,
+            clickable=False,
+            semantic_location="missing",
+            anchor_text="",
+            nofollow=False,
+            error=str(exc)[:2000],
+        )
+
+
+def _record_source_link_evidence(
+    db: Session,
+    link: SourceLink,
+    request: _VerificationRequest,
+    result: _VerificationFetchResult,
+) -> bool:
+    """Persist one completed fetch result in the canonical evidence ledger."""
+    verification = db.scalar(
+        select(FetchVerification).where(FetchVerification.source_link_id == link.id)
+    )
+    if verification is None:
+        verification = FetchVerification(source_link_id=link.id)
+        db.add(verification)
+
+    observation = LinkObservation(
+        source_link_id=link.id,
+        observed_at=result.observed_at,
+        final_url=result.final_url,
+    )
+    db.add(observation)
+    verification.fetched_at = result.observed_at
+    verification.http_status = result.http_status
+    verification.final_url = result.final_url
+    verification.content_hash = result.content_hash
+    verification.link_present = result.link_present
+    verification.error = result.error
+    observation.http_status = result.http_status
+    observation.final_url = result.final_url
+    observation.link_present = result.link_present
+    observation.clickability_score = result.clickability_score
+    observation.clickable = result.clickable
+    observation.semantic_location = result.semantic_location
+    observation.anchor_text = result.anchor_text
+    observation.nofollow = result.nofollow
+    observation.error = result.error
+
+    first_seen = request.first_seen_at
+    if first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=UTC)
+    observation.survival_days = round(
+        max(0.0, (result.observed_at - first_seen).total_seconds() / 86400),
+        2,
+    )
+    observation.content_hash = result.content_hash
+    db.commit()
+    return bool(observation.link_present and observation.clickable)
+
+
 def _verify_source_link(
     db: Session,
     link: SourceLink,
@@ -753,16 +889,13 @@ def _verify_source_link(
     verification = db.scalar(
         select(FetchVerification).where(FetchVerification.source_link_id == link.id)
     )
-    if verification is None:
-        verification = FetchVerification(source_link_id=link.id)
-        db.add(verification)
-
-    fetched_at = verification.fetched_at
+    fetched_at = verification.fetched_at if verification is not None else None
     if fetched_at is not None and fetched_at.tzinfo is None:
         fetched_at = fetched_at.replace(tzinfo=UTC)
     if (
         fetched_at is not None
         and fetched_at >= datetime.now(UTC) - timedelta(hours=cache_hours)
+        and verification is not None
         and verification.error is None
     ):
         latest = db.scalar(
@@ -771,68 +904,17 @@ def _verify_source_link(
             .order_by(LinkObservation.observed_at.desc())
             .limit(1)
         )
-        return bool(
-            verification.link_present
-            and (latest is None or latest.clickable)
-        )
+        return bool(verification.link_present and (latest is None or latest.clickable))
 
-    observed_at = utcnow()
-    verification.fetched_at = observed_at
-    observation = LinkObservation(
+    request = _VerificationRequest(
         source_link_id=link.id,
-        observed_at=observed_at,
-        final_url=page.url,
+        source_url=page.url,
+        target_url=link.target_url,
+        target_domain=target_domain,
+        first_seen_at=link.first_seen_at,
     )
-    db.add(observation)
-    try:
-        status_code, final_url, content, text = _fetch_public_page(page.url, timeout_seconds)
-        verification.http_status = status_code
-        verification.final_url = final_url
-        verification.content_hash = hashlib.sha256(content).hexdigest()
-        parser = _HrefParser()
-        parser.feed(text)
-        matches = [
-            anchor
-            for anchor in parser.anchors
-            if _href_matches_provider_target(
-                urljoin(final_url, anchor.href),
-                link.target_url,
-                target_domain,
-            )
-        ]
-        best_anchor = max(matches, key=_anchor_clickability) if matches else None
-        verification.link_present = bool(matches and 200 <= status_code < 400)
-        verification.error = None
-        observation.http_status = status_code
-        observation.final_url = final_url
-        observation.link_present = verification.link_present
-        observation.clickability_score = (
-            _anchor_clickability(best_anchor) if best_anchor is not None else 0.0
-        )
-        observation.clickable = bool(
-            verification.link_present and observation.clickability_score > 0
-        )
-        observation.semantic_location = (
-            best_anchor.semantic_location if best_anchor is not None else "missing"
-        )
-        observation.anchor_text = best_anchor.text if best_anchor is not None else ""
-        observation.nofollow = best_anchor.nofollow if best_anchor is not None else False
-        first_seen = link.first_seen_at
-        if first_seen.tzinfo is None:
-            first_seen = first_seen.replace(tzinfo=UTC)
-        observation.survival_days = round(
-            max(0.0, (observed_at - first_seen).total_seconds() / 86400),
-            2,
-        )
-        observation.content_hash = verification.content_hash
-    except Exception as exc:
-        verification.http_status = None
-        verification.final_url = page.url
-        verification.link_present = False
-        verification.error = str(exc)[:2000]
-        observation.error = verification.error
-    db.commit()
-    return bool(observation.link_present and observation.clickable)
+    result = _fetch_source_link_evidence(request, timeout_seconds)
+    return _record_source_link_evidence(db, link, request, result)
 
 
 def refresh_web_link_observations(
@@ -843,13 +925,14 @@ def refresh_web_link_observations(
     """Recheck due deep-proof links for free and extend their survival history."""
     cutoff = datetime.now(UTC) - timedelta(hours=settings.link_hunter_verification_cache_hours)
     rows = db.execute(
-        select(Opportunity, Domain, SourceLink, FetchVerification)
+        select(Opportunity, Domain, SourceLink, SourcePage, FetchVerification)
         .join(Domain, Domain.id == Opportunity.domain_id)
         .join(
             SourceLink,
             (SourceLink.domain_id == Domain.id)
             & (SourceLink.source_page_id == Opportunity.best_source_page_id),
         )
+        .join(SourcePage, SourcePage.id == SourceLink.source_page_id)
         .outerjoin(FetchVerification, FetchVerification.source_link_id == SourceLink.id)
         .where(
             (FetchVerification.id.is_(None))
@@ -859,15 +942,35 @@ def refresh_web_link_observations(
         .limit(batch_size)
     ).all()
     counters = {"due": len(rows), "refreshed": 0, "verified": 0, "missing": 0, "errors": 0}
-    for opportunity, domain, best_link, _ in rows:
-        try:
-            verified = _verify_source_link(
-                db,
-                best_link,
-                domain.name,
-                settings.link_hunter_verify_timeout_seconds,
-                settings.link_hunter_verification_cache_hours,
+    requests = [
+        _VerificationRequest(
+            source_link_id=best_link.id,
+            source_url=page.url,
+            target_url=best_link.target_url,
+            target_domain=domain.name,
+            first_seen_at=best_link.first_seen_at,
+        )
+        for _, domain, best_link, page, _ in rows
+    ]
+    fetched: dict[int, _VerificationFetchResult] = {}
+    if requests:
+        worker_count = min(settings.link_hunter_link_refresh_workers, len(requests))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            results = pool.map(
+                lambda request: _fetch_source_link_evidence(
+                    request,
+                    settings.link_hunter_verify_timeout_seconds,
+                ),
+                requests,
             )
+            fetched = {
+                request.source_link_id: result
+                for request, result in zip(requests, results, strict=True)
+            }
+
+    for (opportunity, domain, best_link, _, _), request in zip(rows, requests, strict=True):
+        try:
+            verified = _record_source_link_evidence(db, best_link, request, fetched[best_link.id])
             observation = db.scalar(
                 select(LinkObservation)
                 .where(LinkObservation.source_link_id == best_link.id)
