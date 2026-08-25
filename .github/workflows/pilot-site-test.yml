@@ -5,8 +5,10 @@ on:
     branches:
       - pilot/three-site-validation
     paths:
+      - app/main.py
       - app/pilot_sites.py
       - app/serve.py
+      - app/templates/dashboard.html
       - app/templates/pilot_site.html
       - app/templates/pilot_message.html
       - tests/test_pilot_sites.py
