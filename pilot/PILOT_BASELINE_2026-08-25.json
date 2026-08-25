@@ -1,0 +1,69 @@
+{
+  "pilot": "three-site-validation",
+  "baseline_utc": "2026-08-25T22:49:00Z",
+  "baseline_rule": "All Day 1/7/15/30/60 pilot reporting excludes events before baseline_utc. Pre-baseline events include setup traffic, smoke tests, bots and scanners and are not commercial-performance data.",
+  "production_validation": {
+    "final_semantic_smoke_at_utc": "2026-08-25T22:48:42.808302Z",
+    "smoke_failures": 0,
+    "https_valid_all_three": true
+  },
+  "domains": {
+    "craftsheaven.club": {
+      "acquisition_price_usd": 4.12,
+      "crawler_prediction_frozen": {
+        "monthly_exposure": 154126,
+        "expected_clicks_monthly": 462,
+        "monthly_revenue_low_usd": 115.50,
+        "monthly_revenue_high_usd": 462.00,
+        "buy_score": 81.9,
+        "monetization_route": "course_or_lead_page",
+        "observation_days": 2.44,
+        "traffic_confidence": "early_projection",
+        "source_updated_at_utc": "2026-08-25T20:49:08.618317Z"
+      },
+      "legacy_paths": ["/woodworkingplans", "/woodworking-plans"]
+    },
+    "satvic.yoga": {
+      "acquisition_price_usd": 26.26,
+      "crawler_prediction_frozen": {
+        "monthly_exposure": 85073,
+        "expected_clicks_monthly": 176,
+        "monthly_revenue_low_usd": 31.68,
+        "monthly_revenue_high_usd": 140.80,
+        "buy_score": 79.5,
+        "monetization_route": "affiliate_landing",
+        "observation_days": 1.26,
+        "traffic_confidence": "early_projection",
+        "source_updated_at_utc": "2026-08-24T20:30:50.476652Z"
+      }
+    },
+    "teamgerardiperformance.com": {
+      "acquisition_price_usd": 11.08,
+      "crawler_prediction_frozen": {
+        "monthly_exposure": 242673,
+        "expected_clicks_monthly": 893,
+        "monthly_revenue_low_usd": 160.74,
+        "monthly_revenue_high_usd": 714.40,
+        "buy_score": 88.4,
+        "monetization_route": "affiliate_landing",
+        "observation_days": 3.04,
+        "traffic_confidence": "early_projection",
+        "source_updated_at_utc": "2026-08-24T10:58:05.070809Z"
+      },
+      "indexing_policy": "noindex,follow",
+      "brand_safeguard": "Independent comparison/resource site; no affiliation or continuity claim with Gerardi Performance."
+    }
+  },
+  "combined_frozen_prediction": {
+    "expected_clicks_monthly": 1531,
+    "monthly_revenue_low_usd": 307.92,
+    "monthly_revenue_high_usd": 1317.20,
+    "acquisition_cost_usd": 41.46
+  },
+  "pre_baseline_observation_only": {
+    "note": "Do not use as commercial validation. Includes our own smoke/setup traffic and automated internet scanning.",
+    "craftsheaven.club": {"pageviews": 67, "unique_sessions": 65, "cta_interest_clicks": 6},
+    "satvic.yoga": {"pageviews": 225, "unique_sessions": 219, "cta_interest_clicks": 13},
+    "teamgerardiperformance.com": {"pageviews": 101, "unique_sessions": 97, "cta_interest_clicks": 10}
+  }
+}
