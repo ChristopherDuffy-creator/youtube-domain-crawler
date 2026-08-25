@@ -39,6 +39,7 @@ from app.youtube import (
     VideoStatistics,
     YouTubeClient,
     YouTubeVideo,
+    _StatisticsRequestPacer,
 )
 
 
@@ -55,7 +56,7 @@ def _video(video_id: str, channel_id: str, description: str, views: int = 250_00
 
 
 def test_youtube_client_uses_quota_efficient_batched_inventory_endpoints(monkeypatch) -> None:
-    client = YouTubeClient("test-key")
+    client = YouTubeClient("test-key", statistics_requests_per_minute=1_000_000)
     calls: list[tuple[str, dict[str, Any]]] = []
 
     def fake_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -126,7 +127,11 @@ def test_youtube_client_uses_quota_efficient_batched_inventory_endpoints(monkeyp
 
 
 def test_granular_statistics_fetch_uses_a_bounded_parallel_worker_pool(monkeypatch) -> None:
-    client = YouTubeClient("test-key", statistics_workers=4)
+    client = YouTubeClient(
+        "test-key",
+        statistics_workers=4,
+        statistics_requests_per_minute=1_000_000,
+    )
     active = 0
     peak = 0
     lock = threading.Lock()
@@ -157,6 +162,45 @@ def test_granular_statistics_fetch_uses_a_bounded_parallel_worker_pool(monkeypat
     assert [item.id for item in statistics] == [
         f"statistics-video-{index}" for index in range(200)
     ]
+
+
+def test_granular_statistics_pacer_spaces_requests_across_client_instances(monkeypatch) -> None:
+    now = 1_000.0
+    sleep_calls: list[float] = []
+    request_times: list[float] = []
+
+    def fake_monotonic() -> float:
+        return now
+
+    def fake_sleep(delay: float) -> None:
+        nonlocal now
+        sleep_calls.append(delay)
+        now += delay
+
+    pacer = _StatisticsRequestPacer(clock=fake_monotonic, sleeper=fake_sleep)
+
+    def fake_get(_path: str, _params: dict[str, Any]) -> dict[str, Any]:
+        request_times.append(now)
+        return {"items": []}
+
+    first = YouTubeClient(
+        "test-key",
+        statistics_requests_per_minute=120,
+        statistics_request_pacer=pacer,
+    )
+    second = YouTubeClient(
+        "test-key",
+        statistics_requests_per_minute=120,
+        statistics_request_pacer=pacer,
+    )
+    monkeypatch.setattr(first, "_get", fake_get)
+    monkeypatch.setattr(second, "_get", fake_get)
+
+    first.fetch_video_statistics_batch(["statistics-video-1"])
+    second.fetch_video_statistics_batch(["statistics-video-2"])
+
+    assert sleep_calls == [0.5]
+    assert request_times == [1_000.0, 1_000.5]
 class FakeFanoutClient:
     def __init__(self) -> None:
         self.playlist_tokens: list[str | None] = []
