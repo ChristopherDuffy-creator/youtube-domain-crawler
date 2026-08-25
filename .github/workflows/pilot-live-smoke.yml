@@ -15,25 +15,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Smoke test pilot routing and public DNS
+      - name: Smoke test final public pilot behavior
         shell: bash
         run: |
           set +e
-          base="https://youtube-domain-crawler-production.up.railway.app"
-          echo "Smoke version 2"
+          failures=0
+          check_code() {
+            url="$1"; expected="$2"; label="$3"
+            code=$(curl --max-time 25 -sS -o /tmp/pilot-body -w '%{http_code}' "$url" || echo ERR)
+            bytes=$(wc -c </tmp/pilot-body 2>/dev/null || echo 0)
+            echo "$label -> $code bytes=$bytes"
+            if [ "$code" != "$expected" ]; then failures=$((failures+1)); fi
+          }
+
           for domain in craftsheaven.club satvic.yoga teamgerardiperformance.com; do
-            echo "=== HOST-ROUTED $domain ==="
-            for path in / /privacy /go/main; do
-              code=$(curl --max-time 20 -sS -o /tmp/body -w '%{http_code}' -H "Host: $domain" "$base$path" || echo ERR)
-              echo "$domain $path -> $code bytes=$(wc -c </tmp/body 2>/dev/null || echo 0)"
-            done
-            echo "=== PUBLIC HTTPS $domain ==="
-            code=$(curl --max-time 20 -sS -o /tmp/public -w '%{http_code}' "https://$domain/" || echo ERR)
-            echo "$domain public -> $code bytes=$(wc -c </tmp/public 2>/dev/null || echo 0)"
+            echo "=== $domain ==="
+            check_code "https://$domain/" 200 "$domain home"
+            check_code "https://$domain/privacy" 200 "$domain privacy"
+            check_code "https://$domain/go/main" 200 "$domain internal recommendation guide"
+            check_code "https://$domain/robots.txt" 200 "$domain robots"
           done
-          echo "=== LEGACY DEEP LINKS ==="
-          for path in /woodworkingplans /woodworking-plans; do
-            code=$(curl --max-time 20 -sS -o /tmp/legacy -w '%{http_code}' -H 'Host: craftsheaven.club' "$base$path" || echo ERR)
-            echo "craftsheaven.club $path -> $code bytes=$(wc -c </tmp/legacy 2>/dev/null || echo 0)"
-          done
+
+          echo "=== Crafts legacy intent ==="
+          check_code "https://craftsheaven.club/woodworkingplans" 200 "crafts old /woodworkingplans"
+          check_code "https://craftsheaven.club/woodworking-plans" 200 "crafts old /woodworking-plans"
+          check_code "https://craftsheaven.club/sitemap.xml" 200 "crafts sitemap"
+
+          echo "=== Satvic indexable ==="
+          check_code "https://satvic.yoga/sitemap.xml" 200 "satvic sitemap"
+
+          echo "=== Team Gerardi cautious indexing ==="
+          check_code "https://teamgerardiperformance.com/sitemap.xml" 404 "team sitemap intentionally absent"
+          body=$(curl --max-time 25 -fsS https://teamgerardiperformance.com/ || true)
+          if printf '%s' "$body" | grep -q 'name="robots" content="noindex,follow"'; then
+            echo "team noindex -> PASS"
+          else
+            echo "team noindex -> FAIL"
+            failures=$((failures+1))
+          fi
+          if printf '%s' "$body" | grep -q 'Not affiliated with, endorsed by, or operated by Gerardi Performance'; then
+            echo "team independence disclosure -> PASS"
+          else
+            echo "team independence disclosure -> FAIL"
+            failures=$((failures+1))
+          fi
+
+          echo "SMOKE_FAILURES=$failures"
+          if [ "$failures" -ne 0 ]; then
+            echo "::warning::Pilot semantic smoke found $failures problem(s)."
+          fi
           exit 0
