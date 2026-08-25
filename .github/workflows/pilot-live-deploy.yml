@@ -9,6 +9,7 @@ on:
       - app/serve.py
       - app/templates/pilot_site.html
       - app/templates/pilot_message.html
+      - app/templates/pilot_recommendations.html
       - .github/workflows/pilot-live-deploy.yml
 
 permissions:
@@ -26,10 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy current pilot branch to existing Railway service
+      - name: Deploy exact current pilot branch snapshot to existing Railway service
         shell: bash
         run: |
           set +e
+          echo "DEPLOYING_COMMIT=$(git rev-parse HEAD)"
           if [ -z "$RAILWAY_TOKEN" ]; then
             echo "::warning::RAILWAY_TOKEN missing"
             exit 0
@@ -48,7 +50,7 @@ jobs:
 
           health_ok=0
           for attempt in $(seq 1 24); do
-            body="$(curl --max-time 20 -fsS https://youtube-domain-crawler-production.up.railway.app/health || true)"
+            body="$(curl --max-time 20 -fsS -H 'Cache-Control: no-cache' "https://youtube-domain-crawler-production.up.railway.app/health?deploy=$(date +%s%N)" || true)"
             if BODY="$body" python -c 'import json,os;p=json.loads(os.environ["BODY"]);assert p.get("status") == "ok";assert p.get("database") == "ok"' 2>/dev/null; then
               echo "RAILWAY_HEALTH_OK"
               health_ok=1
