@@ -69,11 +69,21 @@ def test_summary_only_evidence_cannot_enter_a_ranked_web_tier() -> None:
         assert opportunity.tier == "pending"
 
 
-def test_scheduler_isolates_email_and_never_runs_paid_proof_in_process() -> None:
+def test_scheduler_isolates_work_lanes_and_never_runs_paid_proof_in_process() -> None:
     scheduler = jobs.build_scheduler(Settings())
     scheduled = {job.id: job for job in scheduler.get_jobs()}
 
     assert "link_hunter_proof" not in scheduled
+    assert scheduled["youtube_discovery"].executor == "youtube"
+    assert scheduled["youtube_channel_fanout"].executor == "youtube"
+    assert scheduled["view_snapshots"].executor == "youtube"
+    assert scheduled["availability_checks"].executor == "availability"
+    assert scheduled["commoncrawl_prefilter"].executor == "sources"
+    assert scheduled["stackexchange_prefilter"].executor == "sources"
+    assert scheduled["hackernews_prefilter"].executor == "sources"
+    assert scheduled["web_free_screening"].executor == "web"
+    assert scheduled["web_link_refresh"].executor == "web"
+    assert scheduled["youtube_intelligence"].executor == "maintenance"
     assert scheduled["daily_digest"].executor == "email"
     assert scheduled["daily_digest_catchup"].executor == "email"
 
