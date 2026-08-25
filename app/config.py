@@ -120,7 +120,7 @@ class Settings(BaseSettings):
     priority_monthly_views: int = Field(default=100_000, ge=1)
     target_qualified_domains: int = Field(default=100, ge=1)
 
-    discovery_interval_minutes: int = Field(default=90, ge=15)
+    discovery_interval_minutes: int = Field(default=60, ge=15)
     search_calls_per_run: int = Field(default=3, ge=1, le=10)
     published_before_years: int = Field(default=3, ge=1, le=15)
     youtube_channel_fanout_enabled: bool = True

@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from app.config import DEFAULT_DROPPED_DOMAIN_FEED_URLS, Settings
 from app.jobs import build_scheduler
 
@@ -25,3 +27,16 @@ def test_fresh_feed_runs_after_deploy_and_daily() -> None:
     assert "initial_dropped_youtube_search" in job_ids
     assert "dropped_feeds" in job_ids
     assert "dropped_youtube_search" in job_ids
+
+
+def test_default_discovery_schedule_increases_seed_coverage_within_search_quota() -> None:
+    settings = Settings()
+    scheduler = build_scheduler(settings)
+    discovery = scheduler.get_job("youtube_discovery")
+
+    assert settings.discovery_interval_minutes == 60
+    assert settings.search_calls_per_run == 3
+    assert discovery is not None
+    assert discovery.trigger.interval == timedelta(minutes=60)
+    assert (24 * 60 // settings.discovery_interval_minutes) * settings.search_calls_per_run == 72
+    assert settings.youtube_search_daily_limit > 72 + 10
