@@ -487,6 +487,8 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
             "youtube_discovery": (
                 "search_calls",
                 "videos_returned",
+                "known_videos_skipped",
+                "video_detail_calls",
                 "new_videos",
                 "new_domains",
                 "new_links",

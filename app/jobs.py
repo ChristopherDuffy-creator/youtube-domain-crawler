@@ -495,6 +495,8 @@ def run_discovery() -> None:
         counters = {
             "search_calls": 0,
             "videos_returned": 0,
+            "known_videos_skipped": 0,
+            "video_detail_calls": 0,
             "new_videos": 0,
             "new_domains": 0,
             "new_links": 0,
@@ -527,7 +529,14 @@ def run_discovery() -> None:
                 )
                 counters["search_calls"] += 1
                 counters["videos_returned"] += len(page.video_ids)
-                detail_calls = (len(page.video_ids) + 49) // 50
+                known_video_ids = set(
+                    db.scalars(select(Video.id).where(Video.id.in_(page.video_ids))).all()
+                )
+                new_video_ids = [
+                    video_id for video_id in page.video_ids if video_id not in known_video_ids
+                ]
+                counters["known_videos_skipped"] += len(page.video_ids) - len(new_video_ids)
+                detail_calls = (len(new_video_ids) + 49) // 50
                 if detail_calls and not consume_youtube_quota(
                     db,
                     settings,
@@ -535,7 +544,8 @@ def run_discovery() -> None:
                 ):
                     counters["quota_exhausted"] = 1
                     break
-                videos = client.fetch_videos(page.video_ids)
+                videos = client.fetch_videos(new_video_ids) if new_video_ids else []
+                counters["video_detail_calls"] += detail_calls
                 seed_youtube_channels(db, videos, count_as_search_seed=True)
                 for video in videos:
                     result, error = _process_video_isolated(
