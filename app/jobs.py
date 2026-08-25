@@ -2232,7 +2232,15 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         timezone="UTC",
         job_defaults={"coalesce": True, "max_instances": 1},
         executors={
+            # Keep YouTube work serial so its ledger remains the single source
+            # of truth for API consumption, while unrelated (and free) work
+            # cannot sit behind a long channel crawl.
             "default": APSchedulerThreadPoolExecutor(max_workers=1),
+            "youtube": APSchedulerThreadPoolExecutor(max_workers=1),
+            "availability": APSchedulerThreadPoolExecutor(max_workers=1),
+            "sources": APSchedulerThreadPoolExecutor(max_workers=1),
+            "web": APSchedulerThreadPoolExecutor(max_workers=1),
+            "maintenance": APSchedulerThreadPoolExecutor(max_workers=1),
             "email": APSchedulerThreadPoolExecutor(max_workers=1),
         },
     )
@@ -2242,6 +2250,7 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         DateTrigger(run_date=start + timedelta(seconds=15)),
         id="seed_checkpoint",
         replace_existing=True,
+        executor="youtube",
     )
     scheduler.add_job(
         run_discovery,
@@ -2250,6 +2259,7 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         ),
         id="youtube_discovery",
         replace_existing=True,
+        executor="youtube",
     )
     if settings.youtube_channel_fanout_enabled:
         scheduler.add_job(
@@ -2260,60 +2270,70 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
             ),
             id="youtube_channel_fanout",
             replace_existing=True,
+            executor="youtube",
         )
     scheduler.add_job(
         run_availability_checks,
         IntervalTrigger(hours=6, start_date=start + timedelta(minutes=3)),
         id="availability_checks",
         replace_existing=True,
+        executor="availability",
     )
     scheduler.add_job(
         run_dropped_feeds,
         DateTrigger(run_date=start + timedelta(minutes=2)),
         id="initial_dropped_feeds",
         replace_existing=True,
+        executor="web",
     )
     scheduler.add_job(
         run_web_free_screening_job,
         IntervalTrigger(hours=2, start_date=start + timedelta(minutes=2, seconds=30)),
         id="web_free_screening",
         replace_existing=True,
+        executor="web",
     )
     scheduler.add_job(
         run_web_link_refresh_job,
         IntervalTrigger(hours=6, start_date=start + timedelta(minutes=7)),
         id="web_link_refresh",
         replace_existing=True,
+        executor="web",
     )
     scheduler.add_job(
         run_youtube_intelligence_maintenance,
         IntervalTrigger(hours=2, start_date=start + timedelta(minutes=8)),
         id="youtube_intelligence",
         replace_existing=True,
+        executor="maintenance",
     )
     scheduler.add_job(
         run_dropped_youtube_search,
         DateTrigger(run_date=start + timedelta(minutes=4)),
         id="initial_dropped_youtube_search",
         replace_existing=True,
+        executor="youtube",
     )
     scheduler.add_job(
         run_commoncrawl_prefilter_job,
         DateTrigger(run_date=start + timedelta(minutes=6)),
         id="initial_commoncrawl_prefilter",
         replace_existing=True,
+        executor="sources",
     )
     scheduler.add_job(
         run_stackexchange_prefilter_job,
         DateTrigger(run_date=start + timedelta(minutes=9)),
         id="initial_stackexchange_prefilter",
         replace_existing=True,
+        executor="sources",
     )
     scheduler.add_job(
         run_hackernews_prefilter_job,
         DateTrigger(run_date=start + timedelta(minutes=12)),
         id="initial_hackernews_prefilter",
         replace_existing=True,
+        executor="sources",
     )
     scheduler.add_job(
         run_view_snapshots,
@@ -2323,18 +2343,21 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         ),
         id="view_snapshots",
         replace_existing=True,
+        executor="youtube",
     )
     scheduler.add_job(
         run_dropped_feeds,
         CronTrigger(hour=3, minute=5, timezone="UTC"),
         id="dropped_feeds",
         replace_existing=True,
+        executor="web",
     )
     scheduler.add_job(
         run_dropped_youtube_search,
         CronTrigger(hour=4, minute=10, timezone="UTC"),
         id="dropped_youtube_search",
         replace_existing=True,
+        executor="youtube",
     )
     scheduler.add_job(
         run_commoncrawl_prefilter_job,
@@ -2343,18 +2366,21 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         CronTrigger(hour="1,7,13,19", minute=17, timezone="UTC"),
         id="commoncrawl_prefilter",
         replace_existing=True,
+        executor="sources",
     )
     scheduler.add_job(
         run_stackexchange_prefilter_job,
         CronTrigger(hour="2,8,14,20", minute=27, timezone="UTC"),
         id="stackexchange_prefilter",
         replace_existing=True,
+        executor="sources",
     )
     scheduler.add_job(
         run_hackernews_prefilter_job,
         CronTrigger(hour="3,9,15,21", minute=37, timezone="UTC"),
         id="hackernews_prefilter",
         replace_existing=True,
+        executor="sources",
     )
     scheduler.add_job(
         run_daily_digest,
