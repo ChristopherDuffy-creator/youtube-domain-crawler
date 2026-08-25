@@ -40,7 +40,8 @@ def test_dashboard_exposes_status_strip_and_action_workflow() -> None:
 
     assert 'class="status-strip"' in template
     assert "Spent today" in template
-    assert "Next Web run" in template
+    assert "Winner queue cadence" in template
+    assert ">15 min<" in template
     assert "Latest Web success" in template
     assert "Latest YouTube success" in template
     assert "Prague time" in template

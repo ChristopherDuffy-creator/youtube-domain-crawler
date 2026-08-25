@@ -2,7 +2,7 @@ name: Approved Link Hunter Scheduler
 
 on:
   schedule:
-    - cron: "43 0,2,4,6,8,10,12,14,16,18,20,22 * * *"
+    - cron: "*/15 * * * *"
 
 permissions:
   contents: read
@@ -49,7 +49,7 @@ jobs:
               --data-binary @/tmp/dispatch.json >/dev/null
             if [ $? -eq 0 ]; then
               state=success
-              description="Dispatched guarded batch; caps $0.18/run and $2.16/UTC day"
+              description="Dispatched winner queue; caps $0.18/run and $2.16/UTC day"
             else
               description="Production batch dispatch failed; zero provider calls made by scheduler"
             fi

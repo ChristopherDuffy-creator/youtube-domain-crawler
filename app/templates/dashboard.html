@@ -1,3 +1,10 @@
+{% macro revenue_band(high) -%}
+  {% set value = high or 0 %}
+  {% if value >= 50 %}<span class="pill priority">Acquisition priority · $50+/mo</span>
+  {% elif value >= 15 %}<span class="pill qualified">Good earner · $15–$50/mo</span>
+  {% elif value >= 5 %}<span class="pill watchlist">Small keeper · $5–$15/mo</span>
+  {% else %}<span class="pill pending">Micro · under $5/mo</span>{% endif %}
+{%- endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -46,7 +53,7 @@
     <section class="status-strip" aria-label="Crawler status">
       <article><span>${{ "%.4f"|format(daily_budget.spent_usd) }}</span><small>Spent today{% if daily_budget.reserved_usd %} · ${{ "%.4f"|format(daily_budget.reserved_usd) }} reserved{% endif %}</small></article>
       <article><span>${{ "%.4f"|format(daily_budget.remaining_usd) }}</span><small>Remaining of ${{ "%.2f"|format(daily_budget.limit_usd) }} today</small></article>
-      <article><span>{{ (next_web_run|dashboard_time).strftime('%H:%M') }}</span><small>Next Web run · {{ (next_web_run|dashboard_time).strftime('%d %b') }} · Prague time</small></article>
+      <article><span>15 min</span><small>Winner queue cadence · budget-aware continuous processing</small></article>
       <article><span>{% if last_web_success and last_web_success.finished_at %}{{ (last_web_success.finished_at|dashboard_time).strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest Web success{% if last_web_success and last_web_success.finished_at %} · {{ (last_web_success.finished_at|dashboard_time).strftime('%d %b') }} · Prague time{% endif %}</small></article>
       <article><span>{% if last_youtube_success and last_youtube_success.finished_at %}{{ (last_youtube_success.finished_at|dashboard_time).strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest YouTube success{% if last_youtube_success and last_youtube_success.finished_at %} · {{ (last_youtube_success.finished_at|dashboard_time).strftime('%d %b') }} · Prague time{% endif %}</small></article>
       <article><span>{{ decision_counts.get('shortlisted', 0) }}</span><small>Shortlisted · {{ decision_counts.get('bought', 0) }} bought · {{ decision_counts.get('ignored', 0) }} ignored</small></article>
@@ -118,7 +125,7 @@
                 <strong>{{ "{:,}".format(signal.monthly_linked_video_exposure if signal else candidate.monthly_views) }}</strong>
                 <small>{% if signal and signal.traffic_confidence == 'measured_15d' %}measured 15-day signal · not 30-day verified{% elif candidate.verified_30d %}verified {{ "%.1f"|format(candidate.observation_days) }}d{% elif candidate.observation_days >= 1 %}projected from {{ "%.1f"|format(candidate.observation_days) }}d{% else %}collecting snapshots{% endif %}</small>
               </td>
-              <td>{% if signal %}<strong>{{ "{:,}".format(signal.expected_clicks_monthly) }} expected clicks/mo</strong><small>${{ "%.0f"|format(signal.monthly_revenue_low_usd) }}–${{ "%.0f"|format(signal.monthly_revenue_high_usd) }} modelled revenue · ceiling ${{ "%.0f"|format(signal.max_purchase_price_usd) }} · {{ signal.monetization_route.replace('_', ' ') }}</small>{% else %}<span>Calculating</span><small>local intelligence maintenance pending</small>{% endif %}</td>
+              <td>{% if signal %}{{ revenue_band(signal.monthly_revenue_high_usd) }}<strong>{{ "{:,}".format(signal.expected_clicks_monthly) }} expected clicks/mo</strong><small>${{ "%.0f"|format(signal.monthly_revenue_low_usd) }}–${{ "%.0f"|format(signal.monthly_revenue_high_usd) }} modelled revenue · ceiling ${{ "%.0f"|format(signal.max_purchase_price_usd) }} · {{ signal.monetization_route.replace('_', ' ') }}</small>{% else %}<span>Calculating</span><small>local intelligence maintenance pending</small>{% endif %}</td>
               <td><span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span><small>{{ domain.availability_source or 'not checked' }}</small></td>
               <td><a href="https://www.youtube.com/watch?v={{ video.id }}" target="_blank" rel="noopener">{{ video.title[:75] }}</a><small>{{ "{:,}".format(video.lifetime_views) }} lifetime views</small></td>
               <td>{{ candidate.link_count }}<small>{{ candidate.video_count }} video{% if candidate.video_count != 1 %}s{% endif %}</small></td>
@@ -151,7 +158,8 @@
         <div>
           <p class="eyebrow">WEB-WIDE</p>
           <h2>Expandosaurus Link Hunter</h2>
-          <p>Permanent web intelligence: free screening → cached backlink evidence → direct link survival → predicted clicks/revenue → human purchase decision. The system never buys automatically.</p>
+          <p>Permanent web intelligence: free screening → cached backlink evidence → global winner queue → direct link survival → predicted clicks/revenue → human purchase decision. The system never buys automatically.</p>
+          <p><strong>Revenue bands:</strong> Micro under $5 · Small keeper $5–$15 · Good earner $15–$50 · Acquisition priority $50+/month. Bands use the high side of the modelled range for triage, not guaranteed revenue.</p>
         </div>
       </div>
 
@@ -198,6 +206,7 @@
               </td>
               <td>
                 {% if economics %}
+                  {{ revenue_band(economics.monthly_revenue_high_usd) }}
                   <strong>${{ "%.0f"|format(economics.monthly_revenue_low_usd) }}–${{ "%.0f"|format(economics.monthly_revenue_high_usd) }}/mo</strong>
                   <small>{{ "{:,}".format(economics.expected_clicks_monthly) }} predicted outbound clicks</small>
                   <small>suggested ceiling ${{ "%.0f"|format(economics.max_purchase_price_usd) }} · {{ economics.monetization_route.replace('_', ' ') }}</small>
@@ -290,20 +299,21 @@
 
           {% if dataforseo_enabled and not link_hunter_enabled %}
           <section class="technical-note">
-            <strong>Provider ready; safe/off between guarded batches.</strong> The approved twelve-slot controller runs every two hours, enables one capped batch, then automatically disables paid calls and checks production health. The database ledger enforces $0.18/run and $2.16/UTC day.
+            <strong>Provider ready; safe/off between guarded batches.</strong> The approved winner controller checks every 15 minutes, processes the highest-ranked cached/new candidates first, then automatically disables paid calls and checks production health. The database ledger still enforces $0.18/run and $2.16/UTC day; once the daily reservation cannot fit, the zero-cost preview pauses paid work until reset.
           </section>
           {% endif %}
 
           <section class="technical-note">
             <strong>Next proof preview — zero provider calls.</strong>
-            {% if proof_preview.target_count %}
-              {{ proof_preview.summary_target_count }} domain{% if proof_preview.summary_target_count != 1 %}s{% endif %} in one cheap summary screen → up to {{ proof_preview.deep_proof_target_count }} deep proofs → up to {{ proof_preview.max_source_pages }} source pages. Conservative maximum spend ${{ "%.4f"|format(proof_preview.estimated_max_cost_usd) }} against a ${{ "%.2f"|format(proof_preview.configured_cost_cap_usd) }} cap.
+            {% if proof_preview.work_available_count %}
+              {{ proof_preview.summary_target_count }} new domain{% if proof_preview.summary_target_count != 1 %}s{% endif %} ready for the cheap summary screen + {{ proof_preview.cached_deep_target_count }} cached-summary winner candidate{% if proof_preview.cached_deep_target_count != 1 %}s{% endif %} waiting for deep proof → up to {{ proof_preview.deep_proof_target_count }} deep proofs → up to {{ proof_preview.max_source_pages }} source pages. Conservative maximum spend ${{ "%.4f"|format(proof_preview.estimated_max_cost_usd) }} against a ${{ "%.2f"|format(proof_preview.configured_cost_cap_usd) }} cap.
               <small>UTC daily ledger: ${{ "%.4f"|format(proof_preview.daily_budget.spent_usd) }} spent + ${{ "%.4f"|format(proof_preview.daily_budget.reserved_usd) }} reserved · ${{ "%.4f"|format(proof_preview.daily_budget.remaining_usd) }} remaining of ${{ "%.2f"|format(proof_preview.daily_budget.limit_usd) }}.</small>
-              <small>Provisional deep-proof leaders: {{ proof_preview.provisional_deep_targets|join(', ') }}. The paid bulk summary reranks these before any detailed backlink call.</small>
-              <small>First summary-screen targets: {{ proof_preview.summary_targets_sample|join(', ') }}{% if proof_preview.summary_target_count > proof_preview.summary_targets_sample|length %}, …{% endif %}</small>
+              <small>Provisional global leaders: {{ proof_preview.provisional_deep_targets|join(', ') }}. Cached summaries compete continuously with fresh discoveries; detailed proof always takes the strongest available names.</small>
+              {% if proof_preview.cached_deep_targets_sample %}<small>Cached winner sample: {{ proof_preview.cached_deep_targets_sample|join(', ') }}{% if proof_preview.cached_deep_target_count > proof_preview.cached_deep_targets_sample|length %}, …{% endif %}</small>{% endif %}
+              {% if proof_preview.summary_targets_sample %}<small>Next new summary targets: {{ proof_preview.summary_targets_sample|join(', ') }}{% if proof_preview.summary_target_count > proof_preview.summary_targets_sample|length %}, …{% endif %}</small>{% endif %}
               <small>{% if proof_preview.within_cost_cap %}✓ preflight is inside the configured cap{% else %}✗ preflight exceeds the cap and the paid proof will refuse to start{% endif %} · paid requests made by this preview: {{ proof_preview.paid_requests_made }}</small>
             {% else %}
-              No unchecked dropped-domain targets are currently queued for the proof.
+              No new summaries or cached winner candidates are currently queued for proof.
             {% endif %}
             <small><a href="/admin/link-hunter/proof-preview">View JSON preview</a></small>
           </section>
