@@ -235,6 +235,7 @@ class YouTubeDomainSignal(Base):
     active_link_count: Mapped[int] = mapped_column(Integer, default=0)
     channel_count: Mapped[int] = mapped_column(Integer, default=0)
     lifetime_linked_video_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    observed_view_gain: Mapped[int] = mapped_column(BigInteger, default=0)
     monthly_linked_video_exposure: Mapped[int] = mapped_column(BigInteger, default=0)
     click_eligible_exposure: Mapped[int] = mapped_column(BigInteger, default=0)
     short_form_exposure: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -252,7 +253,7 @@ class YouTubeDomainSignal(Base):
     max_purchase_price_usd: Mapped[float] = mapped_column(Float, default=0.0)
     buy_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
     monetization_route: Mapped[str] = mapped_column(String(64), default="content_restore")
-    model_version: Mapped[int] = mapped_column(Integer, default=2, index=True)
+    model_version: Mapped[int] = mapped_column(Integer, default=3, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

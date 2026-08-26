@@ -44,6 +44,7 @@ _BIGINT_COLUMNS = (
     ("candidates", "monthly_views"),
     ("video_refresh_states", "last_view_count"),
     ("youtube_domain_signals", "lifetime_linked_video_views"),
+    ("youtube_domain_signals", "observed_view_gain"),
     ("youtube_domain_signals", "monthly_linked_video_exposure"),
     ("youtube_domain_signals", "click_eligible_exposure"),
     ("youtube_domain_signals", "short_form_exposure"),
@@ -52,6 +53,11 @@ _BIGINT_COLUMNS = (
 
 _ADDITIVE_COLUMNS = (
     ("videos", "duration_seconds", "INTEGER"),
+    (
+        "youtube_domain_signals",
+        "observed_view_gain",
+        "BIGINT NOT NULL DEFAULT 0",
+    ),
     (
         "youtube_domain_signals",
         "click_eligible_exposure",

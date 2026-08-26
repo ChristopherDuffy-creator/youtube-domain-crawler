@@ -27,7 +27,7 @@ _PACIFIC = ZoneInfo("America/Los_Angeles")
 _BLOCKED_AVAILABILITY = {"registered", "premium", "aftermarket", "reserved"}
 _SIGNAL_DOMAIN_CHUNK = 5
 _SIGNAL_UNSCOPED_LIMIT = 25
-_SIGNAL_MODEL_VERSION = 2
+_SIGNAL_MODEL_VERSION = 3
 
 
 def _chunks(values: list[int], size: int = 5_000) -> Iterable[list[int]]:
@@ -236,6 +236,7 @@ def _refresh_youtube_domain_signal_chunk(
                 active_video_count=0,
                 active_link_count=0,
                 channel_count=0,
+                observed_view_gain=0,
                 monthly_linked_video_exposure=0,
                 click_eligible_exposure=0,
                 short_form_exposure=0,
@@ -271,6 +272,7 @@ def _refresh_youtube_domain_signal_chunk(
             for video_id, video in unique_videos.items()
         }
         metrics = list(metrics_by_video_id.values())
+        observed_view_gain = sum(metric.delta_views for metric in metrics)
         monthly_exposure = sum(metric.monthly_views for metric in metrics)
         observation_days = max((metric.observation_days for metric in metrics), default=0.0)
         measured = any(
@@ -377,6 +379,7 @@ def _refresh_youtube_domain_signal_chunk(
         signal.lifetime_linked_video_views = sum(
             max(0, video.lifetime_views) for video in unique_videos.values()
         )
+        signal.observed_view_gain = observed_view_gain
         signal.monthly_linked_video_exposure = monthly_exposure
         signal.click_eligible_exposure = click_eligible_exposure
         signal.short_form_exposure = short_form_exposure

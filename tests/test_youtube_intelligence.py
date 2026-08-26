@@ -190,6 +190,7 @@ def test_early_signal_has_no_click_revenue_or_decision_case() -> None:
 
         assert signal is not None
         assert signal.measured_15d is False
+        assert signal.observed_view_gain == 150_000
         assert signal.monthly_linked_video_exposure > 0
         assert signal.expected_clicks_monthly == 0
         assert signal.monthly_revenue_low_usd == 0
