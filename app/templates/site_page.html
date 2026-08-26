@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ page_title }} | {{ site.name }}</title>
+  <meta name="description" content="{{ page_title }} for {{ site.name }}.">
+  <link rel="canonical" href="{{ canonical_url }}">
+  <link rel="icon" href="/static/{{ site.key }}-favicon.svg" type="image/svg+xml">
+  <style>
+    :root{--accent:{% if site.key == 'crafts' %}#6d4630{% elif site.key == 'satvic' %}#315b4b{% else %}#245468{% endif %};--highlight:{% if site.key == 'gerardi' %}#bdd85b{% else %}#d5a06a{% endif %};--ink:#243038;--muted:#657078;--paper:#fff;--wash:#f3f4f0;--line:#dfe3df}
+    *{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font:16px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}.shell{width:min(900px,calc(100% - 40px));margin:auto}.header{background:var(--accent);color:#fff}.nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}.brand{display:flex;align-items:center;gap:12px;color:#fff;text-decoration:none}.logo{display:grid;width:40px;height:40px;place-items:center;background:var(--highlight);color:#203029;font-size:13px;font-weight:900;letter-spacing:.04em}.brand strong{display:block;font-family:Georgia,serif}.brand small{display:block;margin-top:3px;font-size:9px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;opacity:.76}.nav a:last-child{color:#fff;font-size:13px;font-weight:800;text-decoration:none}.hero{padding:76px 0 63px;background:var(--accent);color:#fff}.hero p{margin:0 0 10px;color:var(--highlight);font-size:11px;font-weight:900;letter-spacing:.18em;text-transform:uppercase}.hero h1{max-width:720px;margin:0;font:500 clamp(2.8rem,6vw,4.8rem)/1.03 Georgia,serif;letter-spacing:-.04em}.content{margin:-1px auto 70px;padding:58px 64px;background:var(--paper);border:1px solid var(--line)}section+section{margin-top:42px;padding-top:38px;border-top:1px solid var(--line)}h2{margin:0 0 13px;color:var(--accent);font:600 1.55rem/1.2 Georgia,serif}p{margin:0 0 14px;color:var(--muted)}.footer{padding:34px 0;background:#18262c;color:#c5d0cc;font-size:12px}.footer .shell{display:flex;justify-content:space-between;gap:28px}.links{display:flex;flex-wrap:wrap;gap:17px}.links a{color:#eef4f1;text-decoration:none}@media(max-width:650px){.content{padding:38px 24px}.footer .shell{display:block}.links{margin-top:18px}}
+  </style>
+</head>
+<body>
+  <header class="header"><div class="shell nav"><a class="brand" href="/"><span class="logo">{% if site.key == 'crafts' %}CH{% elif site.key == 'satvic' %}SY{% else %}TGP{% endif %}</span><span><strong>{{ site.name }}</strong><small>{{ site.tagline }}</small></span></a><a href="/">Back to the guide →</a></div><div class="shell hero"><p>Independent guide</p><h1>{{ page_title }}</h1></div></header>
+  <main class="shell content">{% for heading, paragraphs in sections %}<section><h2>{{ heading }}</h2>{% for paragraph in paragraphs %}<p>{{ paragraph }}</p>{% endfor %}</section>{% endfor %}</main>
+  <footer class="footer"><div class="shell"><span>© 2026 {{ site.name }}</span><nav class="links"><a href="/about">About</a><a href="/affiliate-disclosure">Affiliate disclosure</a><a href="/privacy">Privacy</a><a href="mailto:info@expandosaurus.com">Contact</a></nav></div></footer>
+</body>
+</html>

@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.orm import Session
 
+from app.affiliate_links import AFFILIATE_LINKS, PublicSite, public_site_for_host
 from app.backup import build_logical_snapshot
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
@@ -187,6 +188,95 @@ _GERARDI_HOSTS = {
 }
 
 
+_PUBLIC_PAGE_CONTENT: dict[str, dict[str, tuple[str, list[tuple[str, list[str]]]]]] = {
+    "about": {
+        "crafts": (
+            "About Crafts Heaven",
+            [
+                (
+                    "A practical place to begin",
+                    [
+                        "Crafts Heaven is an independent guide for people who want "
+                        "to make useful things without needing a large workshop or "
+                        "a wall of power tools.",
+                        "We focus on approachable hand tools, sensible starter kits "
+                        "and projects that help beginners build skill one careful "
+                        "cut at a time.",
+                    ],
+                ),
+                (
+                    "How recommendations are chosen",
+                    [
+                        "We favour versatile tools, beginner-friendly features and "
+                        "equipment that can earn its place in a small workspace. "
+                        "Our guides explain what to compare so you can make your "
+                        "own decision.",
+                    ],
+                ),
+            ],
+        ),
+        "satvic": (
+            "About Satvic Yoga",
+            [
+                (
+                    "A calmer home practice",
+                    [
+                        "Satvic Yoga is an independent guide to creating a simple, "
+                        "comfortable practice at home. It is for ordinary people "
+                        "who want to move, breathe and rest with less complication.",
+                        "We curate practical props, books and quiet-space essentials "
+                        "while encouraging readers to begin with what they already "
+                        "have.",
+                    ],
+                ),
+                (
+                    "How recommendations are chosen",
+                    [
+                        "We look for useful, versatile items that support comfort "
+                        "and consistency. Product pages on Amazon contain the current "
+                        "specifications, price and availability.",
+                    ],
+                ),
+            ],
+        ),
+        "gerardi": (
+            "About Team Gerardi Performance",
+            [
+                (
+                    "Straightforward home training",
+                    [
+                        "Team Gerardi Performance helps beginners build a sensible "
+                        "home-training setup and a routine they can repeat. The emphasis "
+                        "is on good basics, progressive habits and equipment that fits "
+                        "real homes.",
+                        "Our buying guides make it easier to compare common training "
+                        "tools without promising shortcuts or instant results.",
+                    ],
+                ),
+                (
+                    "A sensible starting point",
+                    [
+                        "Training needs vary. Begin conservatively, learn sound "
+                        "technique and seek qualified medical advice before starting "
+                        "if you have an injury, health condition or concern.",
+                    ],
+                ),
+            ],
+        ),
+    },
+    "privacy": {
+        "crafts": ("Privacy", []),
+        "satvic": ("Privacy", []),
+        "gerardi": ("Privacy", []),
+    },
+    "affiliate-disclosure": {
+        "crafts": ("Affiliate disclosure", []),
+        "satvic": ("Affiliate disclosure", []),
+        "gerardi": ("Affiliate disclosure", []),
+    },
+}
+
+
 @app.middleware("http")
 async def serve_satvic_site(request: Request, call_next):
     """Serve the public Satvic guide before the authenticated crawler dashboard.
@@ -215,6 +305,138 @@ async def serve_satvic_site(request: Request, call_next):
             context={},
         )
     return await call_next(request)
+
+
+def _require_public_site(request: Request) -> PublicSite:
+    site = public_site_for_host(request.headers.get("host", ""))
+    if site is None:
+        raise HTTPException(status_code=404, detail="Public site not found")
+    return site
+
+
+def _public_page_sections(
+    site: PublicSite,
+    page_name: str,
+) -> tuple[str, list[tuple[str, list[str]]]]:
+    title, sections = _PUBLIC_PAGE_CONTENT[page_name][site.key]
+    if page_name == "privacy":
+        sections = [
+            (
+                "What this site records",
+                [
+                    f"{site.name} does not require a reader account and does not "
+                    "currently run an email sign-up form or behavioural advertising cookies.",
+                    "Like most websites, the hosting service may retain short-lived "
+                    "technical logs needed for security and reliability. We also "
+                    "record the name of an affiliate link when it is selected so we "
+                    "can understand which guides are useful; we do not store your name "
+                    "in that event.",
+                ],
+            ),
+            (
+                "Links to other websites",
+                [
+                    "When you follow a link to Amazon or another external service, "
+                    "that service applies its own privacy and cookie policies. Review "
+                    "those policies before providing personal information.",
+                ],
+            ),
+            (
+                "Contact",
+                [
+                    "For a privacy question, email info@expandosaurus.com and identify "
+                    "the site you are asking about.",
+                ],
+            ),
+        ]
+    elif page_name == "affiliate-disclosure":
+        sections = [
+            (
+                "How affiliate links work",
+                [
+                    f"{site.name} participates in the Amazon Associates Programme. "
+                    "As an Amazon Associate we earn from qualifying purchases.",
+                    "If you follow a marked Amazon link and make a qualifying purchase, "
+                    "we may receive a commission. This does not add a separate charge "
+                    "to your order.",
+                ],
+            ),
+            (
+                "Our approach",
+                [
+                    "Affiliate relationships help fund the site, but they do not change "
+                    "the practical criteria explained in our guides. We do not copy "
+                    "live Amazon prices, ratings or availability; check the Amazon "
+                    "product page for current details before buying.",
+                ],
+            ),
+        ]
+    return title, sections
+
+
+def _public_page_response(request: Request, page_name: str) -> Response:
+    site = _require_public_site(request)
+    page_title, sections = _public_page_sections(site, page_name)
+    return templates.TemplateResponse(
+        request=request,
+        name="site_page.html",
+        context={
+            "site": site,
+            "page_title": page_title,
+            "sections": sections,
+            "canonical_url": f"{site.canonical_url}/{page_name}",
+        },
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@app.get("/about", response_class=HTMLResponse, include_in_schema=False)
+def public_about(request: Request) -> Response:
+    return _public_page_response(request, "about")
+
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+def public_privacy(request: Request) -> Response:
+    return _public_page_response(request, "privacy")
+
+
+@app.get("/affiliate-disclosure", response_class=HTMLResponse, include_in_schema=False)
+def public_affiliate_disclosure(request: Request) -> Response:
+    return _public_page_response(request, "affiliate-disclosure")
+
+
+@app.get("/go/{slug}", include_in_schema=False)
+def public_affiliate_redirect(request: Request, slug: str) -> RedirectResponse:
+    site = _require_public_site(request)
+    target = AFFILIATE_LINKS.get(site.key, {}).get(slug)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    logger.info("affiliate_click site=%s recommendation=%s", site.key, slug)
+    return RedirectResponse(
+        url=target,
+        status_code=status.HTTP_302_FOUND,
+        headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"},
+    )
+
+
+@app.get("/robots.txt", include_in_schema=False)
+def public_robots(request: Request) -> Response:
+    site = _require_public_site(request)
+    content = f"User-agent: *\nAllow: /\nDisallow: /go/\nSitemap: {site.canonical_url}/sitemap.xml\n"
+    return Response(content=content, media_type="text/plain")
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+def public_sitemap(request: Request) -> Response:
+    site = _require_public_site(request)
+    urls = ["", "/about", "/privacy", "/affiliate-disclosure"]
+    entries = "".join(f"<url><loc>{site.canonical_url}{path}</loc></url>" for path in urls)
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"{entries}</urlset>"
+    )
+    return Response(content=content, media_type="application/xml")
 
 
 def _valid_dashboard_credentials(username: str, password: str) -> bool:
