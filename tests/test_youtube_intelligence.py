@@ -32,7 +32,12 @@ from app.youtube_intelligence import (
 )
 
 
-def _linked_video(video_id: str, domain: str, views: int = 160_000) -> YouTubeVideo:
+def _linked_video(
+    video_id: str,
+    domain: str,
+    views: int = 160_000,
+    duration_seconds: int | None = None,
+) -> YouTubeVideo:
     return YouTubeVideo(
         id=video_id,
         title="High intent evergreen tutorial",
@@ -41,6 +46,7 @@ def _linked_video(video_id: str, domain: str, views: int = 160_000) -> YouTubeVi
         description=f"Download the full guide now at https://{domain}/offer",
         published_at=datetime.now(UTC) - timedelta(days=1_000),
         view_count=views,
+        duration_seconds=duration_seconds,
     )
 
 
@@ -143,7 +149,7 @@ def test_15_day_signal_is_measured_not_verified_and_builds_a_money_case() -> Non
         assert signal.monthly_linked_video_exposure >= 70_000
         assert signal.expected_clicks_monthly > 0
         assert signal.monthly_revenue_high_usd > signal.monthly_revenue_low_usd
-        assert signal.max_purchase_price_usd > 0
+        assert signal.max_purchase_price_usd == 0
         assert signal.buy_score > 0
 
         links = db.scalars(
@@ -156,6 +162,83 @@ def test_15_day_signal_is_measured_not_verified_and_builds_a_money_case() -> Non
         db.refresh(signal)
         assert signal.active_link_count == 0
         assert signal.expected_clicks_monthly == 0
+        assert signal.buy_score == 0
+
+
+def test_early_signal_has_no_click_revenue_or_decision_case() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+
+    with Session(engine) as db:
+        process_video(db, _linked_video("early0000001", "early-only.com"), "seed", "test")
+        domain = db.scalar(select(Domain).where(Domain.name == "early-only.com"))
+        assert domain is not None
+        domain.availability_status = "available"
+        db.add(
+            ViewSnapshot(
+                video_id="early0000001",
+                captured_at=now - timedelta(days=6),
+                capture_date=(now - timedelta(days=6)).date(),
+                view_count=10_000,
+            )
+        )
+        db.commit()
+
+        refresh_candidates(db, {domain.id})
+        signal = db.get(YouTubeDomainSignal, domain.id)
+
+        assert signal is not None
+        assert signal.measured_15d is False
+        assert signal.monthly_linked_video_exposure > 0
+        assert signal.expected_clicks_monthly == 0
+        assert signal.monthly_revenue_low_usd == 0
+        assert signal.monthly_revenue_high_usd == 0
+        assert signal.max_purchase_price_usd == 0
+        assert signal.buy_score == 0
+
+
+def test_short_form_exposure_never_becomes_assumed_clickable_traffic() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+
+    with Session(engine) as db:
+        process_video(
+            db,
+            _linked_video(
+                "short0000001",
+                "short-description.com",
+                duration_seconds=20,
+            ),
+            "seed",
+            "test",
+        )
+        domain = db.scalar(
+            select(Domain).where(Domain.name == "short-description.com")
+        )
+        assert domain is not None
+        domain.availability_status = "available"
+        db.add(
+            ViewSnapshot(
+                video_id="short0000001",
+                captured_at=now - timedelta(days=15),
+                capture_date=(now - timedelta(days=15)).date(),
+                view_count=10_000,
+            )
+        )
+        db.commit()
+
+        refresh_candidates(db, {domain.id})
+        signal = db.get(YouTubeDomainSignal, domain.id)
+
+        assert signal is not None
+        assert signal.measured_15d is True
+        assert signal.short_form_video_count == 1
+        assert signal.short_form_exposure > 0
+        assert signal.click_eligible_exposure == 0
+        assert signal.expected_clicks_monthly == 0
+        assert signal.monthly_revenue_high_usd == 0
         assert signal.buy_score == 0
 
 

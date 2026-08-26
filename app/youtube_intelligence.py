@@ -10,7 +10,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import Settings
-from app.metrics import calculate_monthly_views
+from app.metrics import calculate_monthly_views, is_short_form_duration
 from app.models import (
     Domain,
     DroppedDomain,
@@ -27,6 +27,7 @@ _PACIFIC = ZoneInfo("America/Los_Angeles")
 _BLOCKED_AVAILABILITY = {"registered", "premium", "aftermarket", "reserved"}
 _SIGNAL_DOMAIN_CHUNK = 5
 _SIGNAL_UNSCOPED_LIMIT = 25
+_SIGNAL_MODEL_VERSION = 2
 
 
 def _chunks(values: list[int], size: int = 5_000) -> Iterable[list[int]]:
@@ -236,6 +237,10 @@ def _refresh_youtube_domain_signal_chunk(
                 active_link_count=0,
                 channel_count=0,
                 monthly_linked_video_exposure=0,
+                click_eligible_exposure=0,
+                short_form_exposure=0,
+                short_form_video_count=0,
+                spike_video_count=0,
                 observation_days=0.0,
                 traffic_confidence="no_active_links",
                 measured_15d=False,
@@ -247,6 +252,7 @@ def _refresh_youtube_domain_signal_chunk(
                 monthly_revenue_high_usd=0.0,
                 max_purchase_price_usd=0.0,
                 buy_score=0.0,
+                model_version=_SIGNAL_MODEL_VERSION,
                 updated_at=now,
             )
         )
@@ -260,11 +266,40 @@ def _refresh_youtube_domain_signal_chunk(
         if not links:
             continue
         unique_videos = {link.video_id: link.video for link in links}
-        metrics = [calculate_monthly_views(video.snapshots) for video in unique_videos.values()]
+        metrics_by_video_id = {
+            video_id: calculate_monthly_views(video.snapshots)
+            for video_id, video in unique_videos.items()
+        }
+        metrics = list(metrics_by_video_id.values())
         monthly_exposure = sum(metric.monthly_views for metric in metrics)
         observation_days = max((metric.observation_days for metric in metrics), default=0.0)
-        verified = any(metric.verified_30d for metric in metrics)
-        measured = observation_days >= settings.youtube_measured_window_days
+        measured = any(
+            metric.observation_days >= settings.youtube_measured_window_days
+            for metric in metrics
+        )
+        short_video_ids = {
+            video_id
+            for video_id, video in unique_videos.items()
+            if is_short_form_duration(video.duration_seconds)
+        }
+        measured_click_video_ids = {
+            video_id
+            for video_id, metric in metrics_by_video_id.items()
+            if video_id not in short_video_ids
+            and metric.observation_days >= settings.youtube_measured_window_days
+        }
+        click_eligible_exposure = sum(
+            metrics_by_video_id[video_id].monthly_views
+            for video_id in measured_click_video_ids
+        )
+        short_form_exposure = sum(
+            metrics_by_video_id[video_id].monthly_views
+            for video_id in short_video_ids
+        )
+        verified = any(
+            metrics_by_video_id[video_id].verified_30d
+            for video_id in measured_click_video_ids
+        )
         if verified:
             confidence_label = "verified_30d"
             confidence_factor = 1.0
@@ -281,13 +316,29 @@ def _refresh_youtube_domain_signal_chunk(
             confidence_label = "collecting"
             confidence_factor = 0.10
 
-        cta_rate = sum(int(link.has_cta) for link in links) / len(links)
-        clickable_rate = sum(int(link.clickable) for link in links) / len(links)
-        best_position = min(link.description_position for link in links)
-        ctr = 0.0015 + 0.005 * cta_rate + 0.003 * clickable_rate
-        ctr += max(0.0, 0.003 * (1.0 - min(1.0, best_position)))
-        ctr = min(0.02, ctr)
-        expected_clicks = int(round(monthly_exposure * ctr * confidence_factor))
+        click_eligible_links = [
+            link for link in links if link.video_id in measured_click_video_ids
+        ]
+        if click_eligible_links:
+            cta_rate = sum(int(link.has_cta) for link in click_eligible_links) / len(
+                click_eligible_links
+            )
+            clickable_rate = sum(
+                int(link.clickable) for link in click_eligible_links
+            ) / len(click_eligible_links)
+            best_position = min(
+                link.description_position for link in click_eligible_links
+            )
+            ctr = 0.0015 + 0.005 * cta_rate + 0.003 * clickable_rate
+            ctr += max(0.0, 0.003 * (1.0 - min(1.0, best_position)))
+            ctr = min(0.02, ctr)
+            expected_clicks = int(
+                round(click_eligible_exposure * ctr * confidence_factor)
+            )
+        else:
+            cta_rate = 0.0
+            clickable_rate = 0.0
+            expected_clicks = 0
         route = _monetization_route(domain, links)
         epc = {
             "lead_generation": (0.6, 2.0),
@@ -297,14 +348,20 @@ def _refresh_youtube_domain_signal_chunk(
         }[route]
         revenue_low = round(expected_clicks * epc[0], 2)
         revenue_high = round(expected_clicks * epc[1], 2)
-        available = domain.availability_status in {"available", "likely_available"}
+        available = domain.availability_status == "available"
         max_purchase = round(
-            min(500.0, revenue_low * 3.0 * confidence_factor) if available else 0.0,
+            min(500.0, revenue_low * 3.0 * confidence_factor)
+            if available and verified
+            else 0.0,
             2,
         )
         base_score = float(domain.candidate.score if domain.candidate is not None else 0.0)
-        exposure_points = min(18.0, math.log10(monthly_exposure + 1) * 3.0)
-        buy_score = max(0.0, min(100.0, base_score * 0.78 + exposure_points))
+        exposure_points = min(18.0, math.log10(click_eligible_exposure + 1) * 3.0)
+        buy_score = (
+            max(0.0, min(100.0, base_score * 0.78 + exposure_points))
+            if measured and click_eligible_exposure > 0
+            else 0.0
+        )
         if domain.availability_status in _BLOCKED_AVAILABILITY:
             buy_score = 0.0
 
@@ -321,6 +378,12 @@ def _refresh_youtube_domain_signal_chunk(
             max(0, video.lifetime_views) for video in unique_videos.values()
         )
         signal.monthly_linked_video_exposure = monthly_exposure
+        signal.click_eligible_exposure = click_eligible_exposure
+        signal.short_form_exposure = short_form_exposure
+        signal.short_form_video_count = len(short_video_ids)
+        signal.spike_video_count = sum(
+            int(metric.spike_detected) for metric in metrics
+        )
         signal.observation_days = observation_days
         signal.traffic_confidence = confidence_label
         signal.measured_15d = measured
@@ -333,10 +396,43 @@ def _refresh_youtube_domain_signal_chunk(
         signal.max_purchase_price_usd = max_purchase
         signal.buy_score = round(buy_score, 1)
         signal.monetization_route = route
+        signal.model_version = _SIGNAL_MODEL_VERSION
         signal.updated_at = now
         updated += 1
     db.commit()
     return updated
+
+
+def quarantine_stale_youtube_signals(db: Session, settings: Settings) -> int:
+    """Fail closed before stale or under-observed economics reach the dashboard."""
+    stale = db.execute(
+        update(YouTubeDomainSignal)
+        .where(YouTubeDomainSignal.model_version < _SIGNAL_MODEL_VERSION)
+        .values(
+            traffic_confidence="recalculation_required",
+            expected_clicks_monthly=0,
+            monthly_revenue_low_usd=0.0,
+            monthly_revenue_high_usd=0.0,
+            max_purchase_price_usd=0.0,
+            buy_score=0.0,
+        )
+    )
+    early = db.execute(
+        update(YouTubeDomainSignal)
+        .where(
+            YouTubeDomainSignal.observation_days
+            < settings.youtube_measured_window_days
+        )
+        .values(
+            expected_clicks_monthly=0,
+            monthly_revenue_low_usd=0.0,
+            monthly_revenue_high_usd=0.0,
+            max_purchase_price_usd=0.0,
+            buy_score=0.0,
+        )
+    )
+    db.commit()
+    return max(int(stale.rowcount or 0), int(early.rowcount or 0))
 
 
 def _release_signal_orm_memory(db: Session) -> None:

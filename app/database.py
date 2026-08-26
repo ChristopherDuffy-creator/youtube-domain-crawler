@@ -45,7 +45,38 @@ _BIGINT_COLUMNS = (
     ("video_refresh_states", "last_view_count"),
     ("youtube_domain_signals", "lifetime_linked_video_views"),
     ("youtube_domain_signals", "monthly_linked_video_exposure"),
+    ("youtube_domain_signals", "click_eligible_exposure"),
+    ("youtube_domain_signals", "short_form_exposure"),
     ("youtube_domain_signals", "expected_clicks_monthly"),
+)
+
+_ADDITIVE_COLUMNS = (
+    ("videos", "duration_seconds", "INTEGER"),
+    (
+        "youtube_domain_signals",
+        "click_eligible_exposure",
+        "BIGINT NOT NULL DEFAULT 0",
+    ),
+    (
+        "youtube_domain_signals",
+        "short_form_exposure",
+        "BIGINT NOT NULL DEFAULT 0",
+    ),
+    (
+        "youtube_domain_signals",
+        "short_form_video_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "youtube_domain_signals",
+        "spike_video_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "youtube_domain_signals",
+        "model_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    ),
 )
 
 def ensure_runtime_schema(bind: Engine = engine) -> None:
@@ -62,6 +93,14 @@ def ensure_runtime_schema(bind: Engine = engine) -> None:
         """
     )
     with bind.begin() as connection:
+        for table_name, column_name, column_type in _ADDITIVE_COLUMNS:
+            # Every identifier and SQL type comes from the static allow-list.
+            connection.execute(
+                text(
+                    f'ALTER TABLE "{table_name}" '
+                    f'ADD COLUMN IF NOT EXISTS "{column_name}" {column_type}'
+                )
+            )
         for table_name, column_name in _BIGINT_COLUMNS:
             data_type = connection.execute(
                 type_query,
@@ -75,6 +114,24 @@ def ensure_runtime_schema(bind: Engine = engine) -> None:
                         f'ALTER COLUMN "{column_name}" TYPE BIGINT'
                     )
                 )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_youtube_domain_signals_model_version "
+                "ON youtube_domain_signals (model_version)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_pilot_site_events_domain_time "
+                "ON pilot_site_events (domain, created_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_pilot_site_events_session_time "
+                "ON pilot_site_events (session_id, created_at)"
+            )
+        )
 
 
 def get_db() -> Generator[Session, None, None]:

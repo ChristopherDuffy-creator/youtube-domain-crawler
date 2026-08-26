@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ class PlaylistPage:
 class VideoStatistics:
     id: str
     view_count: int
+    duration_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class YouTubeVideo:
     description: str
     published_at: datetime | None
     view_count: int
+    duration_seconds: int | None = None
 
 
 def _chunks(items: Iterable[str], size: int = 50) -> Iterable[list[str]]:
@@ -71,6 +74,43 @@ def _parse_datetime(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _parse_duration_seconds(content_details: object) -> int | None:
+    """Parse duration from both videos.list and videos.batchGetStats shapes."""
+    if not isinstance(content_details, dict):
+        return None
+    millis = content_details.get("durationMillis")
+    if millis is not None:
+        try:
+            return max(0, int(round(float(millis) / 1_000)))
+        except (TypeError, ValueError):
+            pass
+    raw = str(content_details.get("duration") or "").strip()
+    if not raw:
+        return None
+    iso = re.fullmatch(
+        r"P(?:(?P<days>\d+)D)?T(?:(?P<hours>\d+)H)?"
+        r"(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if iso:
+        return int(
+            round(
+                float(iso.group("days") or 0) * 86400
+                + float(iso.group("hours") or 0) * 3600
+                + float(iso.group("minutes") or 0) * 60
+                + float(iso.group("seconds") or 0)
+            )
+        )
+    parts = re.findall(r"(\d+(?:\.\d+)?)\s*([hms])", raw, flags=re.IGNORECASE)
+    if parts and "".join(f"{value}{unit}" for value, unit in parts).lower() == re.sub(
+        r"\s+", "", raw.lower()
+    ):
+        multipliers = {"h": 3600, "m": 60, "s": 1}
+        return int(round(sum(float(value) * multipliers[unit.lower()] for value, unit in parts)))
+    return None
 
 
 class _StatisticsRequestPacer:
@@ -173,7 +213,7 @@ class YouTubeClient:
             payload = self._get(
                 "videos",
                 {
-                    "part": "snippet,statistics,status",
+                    "part": "snippet,statistics,status,contentDetails",
                     "id": ",".join(chunk),
                 },
             )
@@ -192,6 +232,9 @@ class YouTubeClient:
                         description=snippet.get("description", ""),
                         published_at=_parse_datetime(snippet.get("publishedAt")),
                         view_count=int(statistics.get("viewCount", 0)),
+                        duration_seconds=_parse_duration_seconds(
+                            item.get("contentDetails", {})
+                        ),
                     )
                 )
         return videos
@@ -252,7 +295,7 @@ class YouTubeClient:
             payload = self._get(
                 "videos",
                 {
-                    "part": "statistics,status",
+                    "part": "statistics,status,contentDetails",
                     "id": ",".join(chunk),
                 },
             )
@@ -263,6 +306,9 @@ class YouTubeClient:
                     VideoStatistics(
                         id=str(item["id"]),
                         view_count=int(item.get("statistics", {}).get("viewCount", 0)),
+                        duration_seconds=_parse_duration_seconds(
+                            item.get("contentDetails", {})
+                        ),
                     )
                 )
         return statistics
@@ -288,7 +334,7 @@ class YouTubeClient:
             payload = self._get(
                 "videos:batchGetStats",
                 {
-                    "part": "id,statistics",
+                    "part": "id,statistics,contentDetails",
                     "id": ",".join(chunk),
                 },
             )
@@ -298,6 +344,9 @@ class YouTubeClient:
                         VideoStatistics(
                             id=str(item["id"]),
                             view_count=int(item.get("statistics", {}).get("viewCount", 0)),
+                            duration_seconds=_parse_duration_seconds(
+                                item.get("contentDetails", {})
+                            ),
                         )
                     )
             return statistics

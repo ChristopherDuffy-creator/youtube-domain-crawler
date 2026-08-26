@@ -79,16 +79,21 @@ def test_youtube_client_uses_quota_efficient_batched_inventory_endpoints(monkeyp
         if path == "videos:batchGetStats":
             return {
                 "items": [
-                    {"id": "video-1", "statistics": {"viewCount": "4321"}}
+                    {
+                        "id": "video-1",
+                        "statistics": {"viewCount": "4321"},
+                        "contentDetails": {"duration": "19s"},
+                    }
                 ]
             }
-        if params["part"] == "statistics,status":
+        if params["part"] == "statistics,status,contentDetails":
             return {
                 "items": [
                     {
                         "id": "video-1",
                         "status": {"privacyStatus": "public"},
                         "statistics": {"viewCount": "1234"},
+                        "contentDetails": {"duration": "PT1M2S"},
                     }
                 ]
             }
@@ -104,8 +109,8 @@ def test_youtube_client_uses_quota_efficient_batched_inventory_endpoints(monkeyp
 
     assert channels == [ChannelDetails("channel-1", "Channel One", "uploads-1")]
     assert page == PlaylistPage(["video-1"], "next-page")
-    assert statistics == [VideoStatistics("video-1", 1234)]
-    assert batch_statistics == [VideoStatistics("video-1", 4321)]
+    assert statistics == [VideoStatistics("video-1", 1234, 62)]
+    assert batch_statistics == [VideoStatistics("video-1", 4321, 19)]
     channel_call = next(params for path, params in calls if path == "channels")
     playlist_call = next(params for path, params in calls if path == "playlistItems")
     detail_calls = [
@@ -123,7 +128,10 @@ def test_youtube_client_uses_quota_efficient_batched_inventory_endpoints(monkeyp
     assert all("maxResults" not in params for params in detail_calls)
     assert all(len(params["id"].split(",")) <= 50 for params in detail_calls)
     batch_call = next(params for path, params in calls if path == "videos:batchGetStats")
-    assert batch_call == {"part": "id,statistics", "id": "video-1"}
+    assert batch_call == {
+        "part": "id,statistics,contentDetails",
+        "id": "video-1",
+    }
 
 
 def test_granular_statistics_fetch_uses_a_bounded_parallel_worker_pool(monkeypatch) -> None:

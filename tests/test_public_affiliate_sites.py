@@ -9,7 +9,7 @@ import app.main as main_module
 from app.affiliate_links import AFFILIATE_LINKS
 from app.database import Base, SessionLocal, engine
 from app.main import app
-from app.models import ContactMessage, EmailSubscriber
+from app.models import ContactMessage, EmailSubscriber, PilotSiteEvent
 
 SITE_EXPECTATIONS = {
     "craftsheaven.club": ("Crafts Heaven", "crafts"),
@@ -89,6 +89,7 @@ def test_each_site_has_email_capture_and_working_contact_navigation() -> None:
         assert 'name="consent"' in response.text
         assert 'href="/contact"' in response.text
         assert 'href="mailto:info@expandosaurus.com">Contact' not in response.text
+        assert '<script src="/static/pilot.js" defer></script>' in response.text
 
 
 def test_satvic_primary_cta_uses_plain_language() -> None:
@@ -164,3 +165,35 @@ def test_dashboard_host_does_not_expose_public_redirects() -> None:
     response = client.get("/go/adjustable-dumbbells", follow_redirects=False)
 
     assert response.status_code == 404
+
+
+def test_anonymous_site_events_are_recorded_once_and_strip_referrer_paths() -> None:
+    Base.metadata.create_all(bind=engine)
+    session_id = uuid4().hex
+    client = TestClient(app, base_url="https://satvic.yoga")
+    payload = {
+        "event_type": "interest_click",
+        "path": "/?private=value",
+        "session_id": session_id,
+        "referrer": "https://example.com/private/search?q=sensitive",
+        "offer_id": "natural-yoga-mat",
+    }
+
+    first = client.post("/track/site-event", json=payload)
+    second = client.post("/track/site-event", json=payload)
+
+    assert first.status_code == 204
+    assert second.status_code == 204
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(PilotSiteEvent).where(PilotSiteEvent.session_id == session_id)
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].domain == "satvic.yoga"
+        assert rows[0].path == "/"
+        assert rows[0].referrer == "example.com"
+        assert rows[0].offer_id == "natural-yoga-mat"
+        db.execute(
+            delete(PilotSiteEvent).where(PilotSiteEvent.session_id == session_id)
+        )
+        db.commit()

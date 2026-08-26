@@ -35,7 +35,7 @@ from app.emailer import (
 )
 from app.hackernews_prefilter import run_hackernews_prefilter as run_hackernews_prefilter_batch
 from app.link_hunter import refresh_web_link_observations
-from app.metrics import ViewMetric, calculate_monthly_views
+from app.metrics import ViewMetric, calculate_monthly_views, is_short_form_duration
 from app.models import (
     AppCheckpoint,
     Candidate,
@@ -341,6 +341,8 @@ def process_video(
     video.description = description
     video.published_at = item.published_at
     video.lifetime_views = item.view_count
+    if item.duration_seconds is not None:
+        video.duration_seconds = item.duration_seconds
     video.discovery_query = video.discovery_query or discovery_query
     video.discovery_route = video.discovery_route or discovery_route
     video.last_seen_at = now
@@ -1075,6 +1077,8 @@ def run_view_snapshot_batch(
                 state, item.view_count
             )
             video.lifetime_views = item.view_count
+            if item.duration_seconds is not None:
+                video.duration_seconds = item.duration_seconds
             video.last_seen_at = captured_at
             state.last_view_count = item.view_count
             state.refresh_interval_hours = interval
@@ -1367,9 +1371,10 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
 
         if best_video is None or best_link is None:
             continue
+        short_form = is_short_form_duration(best_video.duration_seconds)
         tier = determine_tier(
             best_metric.monthly_views,
-            best_metric.verified_30d,
+            best_metric.verified_30d and not short_form,
             domain.availability_status,
             settings,
         )
@@ -1379,7 +1384,7 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
                 lifetime_views=best_video.lifetime_views,
                 link_position=best_link.description_position,
                 has_cta=best_link.has_cta,
-                clickable=best_link.clickable,
+                clickable=best_link.clickable and not short_form,
                 video_count=len(by_video),
                 link_count=len(active_links),
                 published_at=best_video.published_at,
@@ -1392,7 +1397,7 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
             db.add(candidate)
         candidate.tier = tier
         candidate.monthly_views = best_metric.monthly_views
-        candidate.verified_30d = best_metric.verified_30d
+        candidate.verified_30d = best_metric.verified_30d and not short_form
         candidate.observation_days = best_metric.observation_days
         candidate.score = score
         candidate.video_count = len(by_video)

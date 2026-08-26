@@ -36,6 +36,7 @@ class Video(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lifetime_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     discovery_query: Mapped[str] = mapped_column(Text, default="")
     discovery_route: Mapped[str] = mapped_column(String(32), default="youtube_first")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -235,6 +236,10 @@ class YouTubeDomainSignal(Base):
     channel_count: Mapped[int] = mapped_column(Integer, default=0)
     lifetime_linked_video_views: Mapped[int] = mapped_column(BigInteger, default=0)
     monthly_linked_video_exposure: Mapped[int] = mapped_column(BigInteger, default=0)
+    click_eligible_exposure: Mapped[int] = mapped_column(BigInteger, default=0)
+    short_form_exposure: Mapped[int] = mapped_column(BigInteger, default=0)
+    short_form_video_count: Mapped[int] = mapped_column(Integer, default=0)
+    spike_video_count: Mapped[int] = mapped_column(Integer, default=0)
     observation_days: Mapped[float] = mapped_column(Float, default=0.0)
     traffic_confidence: Mapped[str] = mapped_column(String(24), default="collecting", index=True)
     measured_15d: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -247,6 +252,7 @@ class YouTubeDomainSignal(Base):
     max_purchase_price_usd: Mapped[float] = mapped_column(Float, default=0.0)
     buy_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
     monetization_route: Mapped[str] = mapped_column(String(64), default="content_restore")
+    model_version: Mapped[int] = mapped_column(Integer, default=2, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -354,6 +360,25 @@ class ContactMessage(Base):
     email: Mapped[str] = mapped_column(String(320))
     message: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), default="new", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PilotSiteEvent(Base):
+    """Anonymous, first-party events from the three public guide sites."""
+
+    __tablename__ = "pilot_site_events"
+    __table_args__ = (
+        Index("ix_pilot_site_events_domain_time", "domain", "created_at"),
+        Index("ix_pilot_site_events_session_time", "session_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    domain: Mapped[str] = mapped_column(String(255), index=True)
+    event_type: Mapped[str] = mapped_column(String(32), index=True)
+    path: Mapped[str] = mapped_column(Text, default="/")
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    referrer: Mapped[str] = mapped_column(Text, default="")
+    offer_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

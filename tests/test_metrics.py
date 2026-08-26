@@ -46,3 +46,19 @@ def test_never_reports_negative_view_growth() -> None:
     )
     assert metric.monthly_views == 0
     assert metric.delta_views == 0
+
+
+def test_quarantines_a_single_counter_spike_without_deleting_raw_growth() -> None:
+    now = datetime(2026, 8, 17, tzinfo=UTC)
+    snapshots = [
+        Snapshot(now - timedelta(days=5 - index), 10_000 + index * 100)
+        for index in range(5)
+    ]
+    snapshots.append(Snapshot(now, 110_400))
+
+    metric = calculate_monthly_views(snapshots)
+
+    assert metric.raw_monthly_views > 500_000
+    assert metric.monthly_views == 3_000
+    assert metric.spike_detected is True
+    assert metric.sample_intervals == 5

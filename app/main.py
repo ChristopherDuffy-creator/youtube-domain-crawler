@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
@@ -30,7 +30,13 @@ from app.backup import build_logical_snapshot
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
 from app.emailer import EmailError, send_email
-from app.jobs import JOB_FUNCTIONS, build_scheduler, ensure_seed_data, ingest_dropped_text
+from app.jobs import (
+    JOB_FUNCTIONS,
+    build_scheduler,
+    ensure_seed_data,
+    ingest_dropped_text,
+    refresh_candidates,
+)
 from app.link_hunter import _score_opportunity, run_provider_proof_job
 from app.link_hunter_preview import build_provider_proof_preview
 from app.models import (
@@ -46,6 +52,7 @@ from app.models import (
     LinkObservation,
     Opportunity,
     OpportunityEconomics,
+    PilotSiteEvent,
     RunLog,
     SourceLink,
     SourcePage,
@@ -61,7 +68,10 @@ from app.models import (
 from app.provider_budget import provider_daily_budget_snapshot
 from app.storage_guard import database_storage_status, storage_guard_allows_writes
 from app.web_hunter_upgrade import regrade_existing_web_opportunities
-from app.youtube_intelligence import youtube_quota_snapshot
+from app.youtube_intelligence import (
+    quarantine_stale_youtube_signals,
+    youtube_quota_snapshot,
+)
 
 settings = get_settings()
 logging.basicConfig(
@@ -148,6 +158,23 @@ async def lifespan(_: FastAPI):
             with SessionLocal() as db:
                 if storage_guard_allows_writes(db, settings, "startup_maintenance"):
                     ensure_seed_data(db)
+                    quarantined = quarantine_stale_youtube_signals(db, settings)
+                    visible_youtube_ids = set(
+                        db.scalars(
+                            select(Candidate.domain_id).where(
+                                Candidate.tier.in_(
+                                    {"priority", "qualified", "watchlist"}
+                                )
+                            )
+                        ).all()
+                    )
+                    refreshed_youtube = refresh_candidates(db, visible_youtube_ids)
+                    logger.info(
+                        "YouTube projection safety gate quarantined %s and "
+                        "recalculated %s visible candidates",
+                        quarantined,
+                        refreshed_youtube,
+                    )
                     regraded = regrade_existing_web_opportunities(
                         db,
                         _score_opportunity,
@@ -193,6 +220,12 @@ _GERARDI_HOSTS = {
 }
 _PUBLIC_EMAIL_PATTERN = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}\.[^@\s]{2,63}$")
 _PUBLIC_CONSENT_VERSION = "2026-08-26"
+_PUBLIC_TRACKING_SESSION_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+_PUBLIC_TRACKING_OFFER_PATTERN = re.compile(r"^[a-z0-9-]{1,120}$")
+_PUBLIC_TRACKING_BOT_PATTERN = re.compile(
+    r"bot|crawler|spider|slurp|headless|lighthouse|uptime|monitor",
+    flags=re.IGNORECASE,
+)
 
 
 def _normalise_public_email(value: str) -> str | None:
@@ -347,10 +380,12 @@ def _public_page_sections(
                     "If you use the contact form, we store your name, email address and "
                     "message so we can reply and keep a record of the enquiry.",
                     "Like most websites, the hosting service may retain short-lived "
-                    "technical logs needed for security and reliability. We also "
-                    "record the name of an affiliate link when it is selected so we "
-                    "can understand which guides are useful; we do not store your name "
-                    "in that event.",
+                    "technical logs needed for security and reliability. We record "
+                    "anonymous page views and the name of an affiliate link when it "
+                    "is selected so we can understand which guides are useful. Each "
+                    "page uses a fresh random identifier that is not stored in your "
+                    "browser; these events do not contain your name, email address or "
+                    "full referring URL.",
                 ],
             ),
             (
@@ -601,6 +636,82 @@ def public_affiliate_redirect(request: Request, slug: str) -> RedirectResponse:
         status_code=status.HTTP_302_FOUND,
         headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex"},
     )
+
+
+@app.post("/track/site-event", include_in_schema=False, status_code=204)
+async def public_site_event(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Record bounded, anonymous first-party evidence and quietly reject noise."""
+    site = _require_public_site(request)
+    if request.headers.get("x-expandosaurus-verification") == "1":
+        return Response(status_code=204)
+    user_agent = request.headers.get("user-agent", "")[:300]
+    if not user_agent or _PUBLIC_TRACKING_BOT_PATTERN.search(user_agent):
+        return Response(status_code=204)
+    try:
+        payload = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return Response(status_code=204)
+    if not isinstance(payload, dict):
+        return Response(status_code=204)
+
+    event_type = str(payload.get("event_type") or "")
+    session_id = str(payload.get("session_id") or "")
+    if event_type not in {"pageview", "interest_click"}:
+        return Response(status_code=204)
+    if not _PUBLIC_TRACKING_SESSION_PATTERN.fullmatch(session_id):
+        return Response(status_code=204)
+    path = str(payload.get("path") or "/").split("?", 1)[0][:300]
+    if not path.startswith("/"):
+        path = "/"
+    offer_id = str(payload.get("offer_id") or "") or None
+    if offer_id and not _PUBLIC_TRACKING_OFFER_PATTERN.fullmatch(offer_id):
+        offer_id = None
+    if event_type == "interest_click" and offer_id is None:
+        return Response(status_code=204)
+
+    now = datetime.now(UTC)
+    recent_cutoff = now - timedelta(seconds=30)
+    duplicate = db.scalar(
+        select(PilotSiteEvent.id)
+        .where(
+            PilotSiteEvent.domain == urlparse(site.canonical_url).netloc,
+            PilotSiteEvent.session_id == session_id,
+            PilotSiteEvent.event_type == event_type,
+            PilotSiteEvent.path == path,
+            PilotSiteEvent.offer_id == offer_id,
+            PilotSiteEvent.created_at >= recent_cutoff,
+        )
+        .limit(1)
+    )
+    if duplicate is not None:
+        return Response(status_code=204)
+    recent_events = db.scalar(
+        select(func.count(PilotSiteEvent.id)).where(
+            PilotSiteEvent.session_id == session_id,
+            PilotSiteEvent.created_at >= now - timedelta(hours=1),
+        )
+    )
+    if int(recent_events or 0) >= 40:
+        return Response(status_code=204)
+
+    raw_referrer = str(payload.get("referrer") or "")[:1_000]
+    referrer_host = urlparse(raw_referrer).hostname or ""
+    db.add(
+        PilotSiteEvent(
+            domain=urlparse(site.canonical_url).netloc,
+            event_type=event_type,
+            path=path,
+            session_id=session_id,
+            referrer=referrer_host[:255],
+            offer_id=offer_id,
+            created_at=now,
+        )
+    )
+    db.commit()
+    return Response(status_code=204)
 
 
 @app.get("/robots.txt", include_in_schema=False)

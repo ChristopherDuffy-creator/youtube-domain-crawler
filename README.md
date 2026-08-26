@@ -38,6 +38,8 @@ The crawler automatically downloads WhoisFreaks' public daily feed of 10,000 rec
 
 YouTube supplies a cumulative view count, not “views in the last month.” The crawler therefore takes its own snapshots. Only videos with useful outbound links enter the refresh queue: fast-growing/high-exposure videos refresh frequently, slower videos back off, and repeatedly stagnant videos can fall to a 30-day interval. Early numbers are clearly marked **projected**. At 15 days the dashboard exposes a separate **measured** decision checkpoint, but never mislabels it as verified; a candidate cannot become Qualified or Priority until the crawler has a genuine 27–35 day measurement window.
 
+Projection safety is fail-closed. Once three snapshot intervals exist, monthly pace uses the median interval velocity and quarantines isolated counter spikes while preserving every raw snapshot for audit. No click, revenue or decision-score estimate is shown before 15 days. Videos of 180 seconds or less are treated as short-form discovery exposure—not assumed clickable-description traffic—and a purchase ceiling is withheld until click-eligible exposure has a verified 27–35 day window.
+
 ### Registration verification
 
 The free first layer uses RDAP plus DNS and labels a clean result **likely available**. Final qualification requires Porkbun's live registrar check to confirm that it is available for ordinary registration now. Registry-premium names over the configured price ceiling are kept out of the qualified list.
@@ -156,7 +158,7 @@ The dashboard shows:
 - qualified, priority, watchlist and pending candidates;
 - verified versus projected 30-day views;
 - linked-video exposure, modelled outbound clicks, revenue range, suggested purchase ceiling and monetization route;
-- hot/warm channel counts, permanent YouTube money cases, instant local dropped matches and remaining quota in every bucket;
+- hot/warm channel counts, permanent YouTube evidence records, instant local dropped matches and remaining quota in every bucket;
 - exact registration status and price;
 - candidate score, best linked video, lifetime views and repeat-link counts;
 - cumulative new and manual-test counts;

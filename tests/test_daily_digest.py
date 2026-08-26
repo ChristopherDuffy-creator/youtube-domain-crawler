@@ -25,7 +25,7 @@ from app.youtube import YouTubeVideo
 def test_daily_digest_reports_real_work_pending_candidates_errors_and_web_hits() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    now = datetime(2026, 8, 18, 8, 0, tzinfo=UTC)
+    now = datetime.now(UTC)
     settings = Settings(
         legacy_videos_checked=214,
         legacy_domains_checked=124,
