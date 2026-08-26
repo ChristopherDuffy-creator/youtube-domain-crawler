@@ -179,6 +179,44 @@ app = FastAPI(title=settings.app_name, version="0.4.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
+_SATVIC_HOSTS = {"satvic.yoga", "www.satvic.yoga"}
+_CRAFTS_HOSTS = {"craftsheaven.club", "www.craftsheaven.club"}
+_GERARDI_HOSTS = {
+    "teamgerardiperformance.com",
+    "www.teamgerardiperformance.com",
+}
+
+
+@app.middleware("http")
+async def serve_satvic_site(request: Request, call_next):
+    """Serve the public Satvic guide before the authenticated crawler dashboard.
+
+    Railway sends all custom domains to the same service.  Keeping this narrow
+    host/path check preserves the dashboard and crawler routes while allowing
+    satvic.yoga to be a standalone public site.
+    """
+    host = request.headers.get("host", "").split(":", 1)[0].lower()
+    if host in _SATVIC_HOSTS and request.url.path == "/":
+        return templates.TemplateResponse(
+            request=request,
+            name="satvic.html",
+            context={},
+        )
+    if host in _CRAFTS_HOSTS and request.url.path == "/":
+        return templates.TemplateResponse(
+            request=request,
+            name="crafts.html",
+            context={},
+        )
+    if host in _GERARDI_HOSTS and request.url.path == "/":
+        return templates.TemplateResponse(
+            request=request,
+            name="gerardi.html",
+            context={},
+        )
+    return await call_next(request)
+
+
 def _valid_dashboard_credentials(username: str, password: str) -> bool:
     supplied_user = username.encode()
     supplied_password = password.encode()
