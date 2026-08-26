@@ -23,6 +23,9 @@ and a contact form. Subscriber and enquiry records are stored in PostgreSQL and
 can be exported from the protected dashboard; contact notifications are sent to
 `info@expandosaurus.com` when Resend is configured.
 
+Railway production tracks the GitHub `main` branch and deploys new pushes
+automatically.
+
 ### Route 1 — YouTube first
 
 The crawler rotates through evergreen, commercially useful searches, but treats search results as seeds rather than the final inventory. It stores each promising channel, resolves that channel's uploads playlist, resumes through playlist pages, fetches video metadata in batches of 50, and permanently indexes every useful external URL. High-yield channels are prioritised and low-yield channels naturally fall behind.
