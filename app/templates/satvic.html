@@ -10,7 +10,10 @@
     * { box-sizing:border-box; }
     body { margin:0; background:var(--sand); color:var(--ink); font:16px/1.6 Georgia, serif; }
     header { padding:72px 24px 64px; text-align:center; color:#fff; background:linear-gradient(135deg,#315c4a,#213e34); }
-    .mark { font:700 13px/1 Arial,sans-serif; letter-spacing:.2em; text-transform:uppercase; opacity:.9; }
+    .mark { display:inline-flex; align-items:center; gap:12px; text-align:left; font-family:Arial,sans-serif; text-transform:uppercase; }
+    .mark svg { width:46px; height:46px; fill:none; stroke:#e8f1e8; stroke-width:2; }
+    .mark strong { display:block; font-size:15px; letter-spacing:.16em; }
+    .mark small { display:block; margin-top:5px; font-size:9px; letter-spacing:.24em; opacity:.72; }
     h1 { max-width:820px; margin:18px auto 12px; font-size:clamp(2.5rem,6vw,5.2rem); line-height:1.02; font-weight:500; }
     header p { max-width:590px; margin:0 auto; font-size:1.14rem; opacity:.92; }
     main { max-width:1080px; margin:auto; padding:54px 24px 70px; }
@@ -31,7 +34,7 @@
 </head>
 <body>
   <header>
-    <div class="mark">☾ Satvic Yoga ☽</div>
+    <div class="mark"><svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21"/><path d="M24 37C14 31 13 20 18 12c7 1 9 6 6 13 3-7 8-12 15-13 3 11-3 20-15 25Z"/></svg><span><strong>Satvic Yoga</strong><small>Breathe · Move · Rest</small></span></div>
     <h1>A quieter way to practise at home.</h1>
     <p>Simple, useful essentials for yoga, breathwork, rest and meditation—without turning your home into a studio.</p>
   </header>
@@ -64,6 +67,6 @@
 
     <section class="practice"><h2>Start with ten quiet minutes.</h2><p>Unroll a mat. Sit or lie down comfortably. Let your breath settle naturally. A lasting practice is built through gentleness and repetition—not buying everything at once.</p></section>
   </main>
-  <footer><div class="mark">☾ Satvic Yoga ☽</div><p>Independent recommendations for a more considered home practice.</p><p>As an Amazon Associate, Satvic Yoga earns from qualifying purchases.</p></footer>
+  <footer><div class="mark"><svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21"/><path d="M24 37C14 31 13 20 18 12c7 1 9 6 6 13 3-7 8-12 15-13 3 11-3 20-15 25Z"/></svg><span><strong>Satvic Yoga</strong><small>Breathe · Move · Rest</small></span></div><p>Independent recommendations for a more considered home practice.</p><p>As an Amazon Associate, Satvic Yoga earns from qualifying purchases.</p></footer>
 </body>
 </html>
