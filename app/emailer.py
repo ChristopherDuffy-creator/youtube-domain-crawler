@@ -105,7 +105,13 @@ class DailyDigest:
     web_opportunities: list[EmailWebOpportunity] = field(default_factory=list)
 
 
-def send_email(settings: Settings, subject: str, body_html: str) -> str | None:
+def send_email(
+    settings: Settings,
+    subject: str,
+    body_html: str,
+    *,
+    to_email: str | None = None,
+) -> str | None:
     if not settings.email_enabled:
         return None
     try:
@@ -118,7 +124,7 @@ def send_email(settings: Settings, subject: str, body_html: str) -> str | None:
             },
             json={
                 "from": settings.alert_from,
-                "to": [settings.alert_email],
+                "to": [to_email or settings.alert_email],
                 "subject": subject,
                 "html": body_html,
             },

@@ -5,6 +5,7 @@ import binascii
 import csv
 import hashlib
 import hmac
+import html
 import io
 import logging
 import re
@@ -21,22 +22,26 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import case, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.affiliate_links import AFFILIATE_LINKS, PublicSite, public_site_for_host
 from app.backup import build_logical_snapshot
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
+from app.emailer import EmailError, send_email
 from app.jobs import JOB_FUNCTIONS, build_scheduler, ensure_seed_data, ingest_dropped_text
 from app.link_hunter import _score_opportunity, run_provider_proof_job
 from app.link_hunter_preview import build_provider_proof_preview
 from app.models import (
     BacklinkSummary,
     Candidate,
+    ContactMessage,
     DashboardDecision,
     Domain,
     DroppedDomain,
     DroppedDomainMatch,
+    EmailSubscriber,
     FetchVerification,
     LinkObservation,
     Opportunity,
@@ -186,6 +191,15 @@ _GERARDI_HOSTS = {
     "teamgerardiperformance.com",
     "www.teamgerardiperformance.com",
 }
+_PUBLIC_EMAIL_PATTERN = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}\.[^@\s]{2,63}$")
+_PUBLIC_CONSENT_VERSION = "2026-08-26"
+
+
+def _normalise_public_email(value: str) -> str | None:
+    email = value.strip().lower()
+    if len(email) > 320 or not _PUBLIC_EMAIL_PATTERN.fullmatch(email):
+        return None
+    return email
 
 
 _PUBLIC_PAGE_CONTENT: dict[str, dict[str, tuple[str, list[tuple[str, list[str]]]]]] = {
@@ -324,8 +338,14 @@ def _public_page_sections(
             (
                 "What this site records",
                 [
-                    f"{site.name} does not require a reader account and does not "
-                    "currently run an email sign-up form or behavioural advertising cookies.",
+                    f"{site.name} does not require a reader account and does not use "
+                    "behavioural advertising cookies.",
+                    "If you join the email list, we store your email address, the site "
+                    "you joined from, your consent status and the date of consent. We "
+                    "use that information only for the updates you requested and do "
+                    "not sell the list.",
+                    "If you use the contact form, we store your name, email address and "
+                    "message so we can reply and keep a record of the enquiry.",
                     "Like most websites, the hosting service may retain short-lived "
                     "technical logs needed for security and reliability. We also "
                     "record the name of an affiliate link when it is selected so we "
@@ -345,7 +365,8 @@ def _public_page_sections(
                 "Contact",
                 [
                     "For a privacy question, email info@expandosaurus.com and identify "
-                    "the site you are asking about.",
+                    "the site you are asking about. You can use the same address to "
+                    "unsubscribe or ask for your stored email data to be removed.",
                 ],
             ),
         ]
@@ -356,6 +377,8 @@ def _public_page_sections(
                 [
                     f"{site.name} participates in the Amazon Associates Programme. "
                     "As an Amazon Associate we earn from qualifying purchases.",
+                    "We may also use clearly identified links from advertisers joined "
+                    "through the Awin affiliate network.",
                     "If you follow a marked Amazon link and make a qualifying purchase, "
                     "we may receive a commission. This does not add a separate charge "
                     "to your order.",
@@ -405,6 +428,167 @@ def public_affiliate_disclosure(request: Request) -> Response:
     return _public_page_response(request, "affiliate-disclosure")
 
 
+def _contact_page_response(
+    request: Request,
+    *,
+    sent: bool = False,
+    error: str = "",
+    form_values: dict[str, str] | None = None,
+    status_code: int = status.HTTP_200_OK,
+) -> Response:
+    site = _require_public_site(request)
+    return templates.TemplateResponse(
+        request=request,
+        name="contact.html",
+        context={
+            "site": site,
+            "sent": sent,
+            "error": error,
+            "form_values": form_values or {},
+            "canonical_url": f"{site.canonical_url}/contact",
+        },
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/contact", response_class=HTMLResponse, include_in_schema=False)
+def public_contact(request: Request, sent: bool = False) -> Response:
+    return _contact_page_response(request, sent=sent)
+
+
+@app.post("/contact", response_class=HTMLResponse, include_in_schema=False)
+def public_contact_submit(
+    request: Request,
+    name: str = Form(default=""),
+    email: str = Form(default=""),
+    message: str = Form(default=""),
+    website: str = Form(default=""),
+    db: Session = Depends(get_db),
+) -> Response:
+    site = _require_public_site(request)
+    if website.strip():
+        return RedirectResponse(url="/contact?sent=true", status_code=303)
+
+    clean_name = " ".join(name.strip().split())
+    clean_email = _normalise_public_email(email)
+    clean_message = message.strip()
+    form_values = {"name": clean_name, "email": email.strip(), "message": clean_message}
+    if not clean_name or len(clean_name) > 120:
+        return _contact_page_response(
+            request,
+            error="Please enter your name.",
+            form_values=form_values,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    if clean_email is None:
+        return _contact_page_response(
+            request,
+            error="Please enter a valid email address.",
+            form_values=form_values,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    if len(clean_message) < 10 or len(clean_message) > 5_000:
+        return _contact_page_response(
+            request,
+            error="Please enter a message between 10 and 5,000 characters.",
+            form_values=form_values,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    db.add(
+        ContactMessage(
+            site_key=site.key,
+            name=clean_name,
+            email=clean_email,
+            message=clean_message,
+        )
+    )
+    db.commit()
+
+    if settings.email_enabled:
+        subject = f"{site.name} website enquiry"
+        body = (
+            f"<h2>{html.escape(site.name)} website enquiry</h2>"
+            f"<p><strong>Name:</strong> {html.escape(clean_name)}</p>"
+            f"<p><strong>Email:</strong> {html.escape(clean_email)}</p>"
+            f"<p><strong>Message:</strong><br>{html.escape(clean_message).replace(chr(10), '<br>')}</p>"
+        )
+        try:
+            send_email(
+                settings,
+                subject,
+                body,
+                to_email="info@expandosaurus.com",
+            )
+        except EmailError:
+            logger.exception("Contact notification delivery failed for site=%s", site.key)
+
+    return RedirectResponse(url="/contact?sent=true", status_code=303)
+
+
+@app.post("/subscribe", include_in_schema=False)
+def public_subscribe(
+    request: Request,
+    email: str = Form(default=""),
+    consent: str = Form(default=""),
+    website: str = Form(default=""),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    site = _require_public_site(request)
+    if website.strip():
+        return RedirectResponse(url="/?subscribed=1#newsletter", status_code=303)
+
+    clean_email = _normalise_public_email(email)
+    if clean_email is None or consent != "yes":
+        return RedirectResponse(url="/?subscribe=invalid#newsletter", status_code=303)
+
+    now = datetime.now(UTC)
+    subscriber = db.scalar(
+        select(EmailSubscriber).where(
+            EmailSubscriber.site_key == site.key,
+            EmailSubscriber.email == clean_email,
+        )
+    )
+    if subscriber is None:
+        subscriber = EmailSubscriber(
+            site_key=site.key,
+            email=clean_email,
+            status="active",
+            source="homepage",
+            consent_version=_PUBLIC_CONSENT_VERSION,
+            consented_at=now,
+            updated_at=now,
+        )
+        db.add(subscriber)
+    else:
+        subscriber.status = "active"
+        subscriber.source = "homepage"
+        subscriber.consent_version = _PUBLIC_CONSENT_VERSION
+        subscriber.consented_at = now
+        subscriber.updated_at = now
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.scalar(
+            select(EmailSubscriber).where(
+                EmailSubscriber.site_key == site.key,
+                EmailSubscriber.email == clean_email,
+            )
+        )
+        if existing is None:
+            raise
+        existing.status = "active"
+        existing.consent_version = _PUBLIC_CONSENT_VERSION
+        existing.consented_at = now
+        existing.updated_at = now
+        db.commit()
+
+    return RedirectResponse(url="/?subscribed=1#newsletter", status_code=303)
+
+
 @app.get("/go/{slug}", include_in_schema=False)
 def public_affiliate_redirect(request: Request, slug: str) -> RedirectResponse:
     site = _require_public_site(request)
@@ -429,7 +613,7 @@ def public_robots(request: Request) -> Response:
 @app.get("/sitemap.xml", include_in_schema=False)
 def public_sitemap(request: Request) -> Response:
     site = _require_public_site(request)
-    urls = ["", "/about", "/privacy", "/affiliate-disclosure"]
+    urls = ["", "/about", "/contact", "/privacy", "/affiliate-disclosure"]
     entries = "".join(f"<url><loc>{site.canonical_url}{path}</loc></url>" for path in urls)
     content = (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -1494,6 +1678,72 @@ def dashboard(
         current_timestamp=current_timestamp,
     )
     return response
+
+
+@app.get("/export/subscribers.csv")
+def export_subscribers(
+    _: str = Depends(require_dashboard_auth),
+    db: Session = Depends(get_db),
+) -> Response:
+    rows = db.scalars(
+        select(EmailSubscriber).order_by(
+            EmailSubscriber.created_at.desc(),
+            EmailSubscriber.id.desc(),
+        )
+    ).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        ["site", "email", "status", "source", "consent_version", "consented_at"]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row.site_key,
+                row.email,
+                row.status,
+                row.source,
+                row.consent_version,
+                row.consented_at.isoformat(),
+            ]
+        )
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="email-subscribers.csv"'},
+    )
+
+
+@app.get("/export/contact-messages.csv")
+def export_contact_messages(
+    _: str = Depends(require_dashboard_auth),
+    db: Session = Depends(get_db),
+) -> Response:
+    rows = db.scalars(
+        select(ContactMessage).order_by(
+            ContactMessage.created_at.desc(),
+            ContactMessage.id.desc(),
+        )
+    ).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["site", "name", "email", "message", "status", "created_at"])
+    for row in rows:
+        writer.writerow(
+            [
+                row.site_key,
+                row.name,
+                row.email,
+                row.message,
+                row.status,
+                row.created_at.isoformat(),
+            ]
+        )
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="contact-messages.csv"'},
+    )
 
 
 @app.get("/export/candidates.csv")

@@ -322,6 +322,41 @@ class DashboardDecision(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class EmailSubscriber(Base):
+    """Consent record for a public-site email subscriber."""
+
+    __tablename__ = "email_subscribers"
+    __table_args__ = (
+        UniqueConstraint("site_key", "email", name="uq_email_subscribers_site_email"),
+        Index("ix_email_subscribers_site_status", "site_key", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    site_key: Mapped[str] = mapped_column(String(16), index=True)
+    email: Mapped[str] = mapped_column(String(320))
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    source: Mapped[str] = mapped_column(String(64), default="homepage")
+    consent_version: Mapped[str] = mapped_column(String(32), default="2026-08-26")
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ContactMessage(Base):
+    """A message submitted through one of the public affiliate sites."""
+
+    __tablename__ = "contact_messages"
+    __table_args__ = (Index("ix_contact_messages_site_status", "site_key", "status"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    site_key: Mapped[str] = mapped_column(String(16), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    email: Mapped[str] = mapped_column(String(320))
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="new", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 # --- Web-wide Expandosaurus Link Hunter ------------------------------------
 # These tables intentionally sit beside the YouTube-specific tables. They let
 # the dashboard keep the two acquisition routes visually separate while both
