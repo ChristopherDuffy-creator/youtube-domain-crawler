@@ -547,8 +547,8 @@ def _public_page_sections(
                 "What this site records",
                 [
                     f"{site.name} does not require a reader account and does not use "
-                    "behavioural advertising cookies. Google Analytics is optional "
-                    "and loads only after you choose Allow analytics.",
+                    "behavioural advertising cookies. Google Analytics loads with "
+                    "the site so we can measure visits and improve useful content.",
                     "If you join the email list, we store your email address, the site "
                     "you joined from, your consent status and the date of consent. We "
                     "use that information only for the updates you requested and do "
@@ -562,12 +562,11 @@ def _public_page_sections(
                     "page uses a fresh random identifier that is not stored in your "
                     "browser; these events do not contain your name, email address or "
                     "full referring URL.",
-                    "If you allow analytics, Google Analytics records pages viewed, "
+                    "Google Analytics records pages viewed, "
                     "approximate location, referral source and technical details such "
                     "as browser and device type. Google may set analytics cookies for "
-                    "this purpose. Advertising storage and personalisation remain "
-                    "disabled. You can change or withdraw this choice at any time "
-                    "using Privacy choices in the footer.",
+                    "this purpose. Advertising signals and personalisation remain "
+                    "disabled.",
                 ],
             ),
             (

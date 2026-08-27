@@ -1,6 +1,10 @@
-<link rel="stylesheet" href="/static/analytics-consent.css">
-<script
-  src="/static/analytics-consent.js"
-  data-measurement-id="{{ site.analytics_measurement_id }}"
-  defer
-></script>
+<script async src="https://www.googletagmanager.com/gtag/js?id={{ site.analytics_measurement_id }}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  window.gtag = window.gtag || function gtag() { window.dataLayer.push(arguments); };
+  window.gtag("js", new Date());
+  window.gtag("config", "{{ site.analytics_measurement_id }}", {
+    allow_google_signals: false,
+    allow_ad_personalization_signals: false
+  });
+</script>

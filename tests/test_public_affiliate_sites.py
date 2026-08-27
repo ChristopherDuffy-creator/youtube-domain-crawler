@@ -115,26 +115,25 @@ def test_each_site_has_email_capture_and_working_contact_navigation() -> None:
         assert '<script src="/static/pilot.js" defer></script>' in response.text
 
 
-def test_each_site_uses_consent_based_google_analytics_on_every_page() -> None:
+def test_each_site_uses_automatic_google_analytics_on_every_page() -> None:
     for host in SITE_EXPECTATIONS:
         client = TestClient(app, base_url=f"https://{host}")
 
         for path in ("/", "/about", "/contact", "/privacy"):
             response = client.get(path)
             assert response.status_code == 200
-            assert f'data-measurement-id="{GOOGLE_ANALYTICS_MEASUREMENT_ID}"' in response.text
-            assert 'src="/static/analytics-consent.js"' in response.text
-            assert 'href="/static/analytics-consent.css"' in response.text
-            assert "data-analytics-settings" in response.text
+            assert GOOGLE_ANALYTICS_MEASUREMENT_ID in response.text
+            assert "googletagmanager.com/gtag/js" in response.text
+            assert "window.gtag" in response.text
+            assert "data-analytics-settings" not in response.text
 
         privacy = client.get("/privacy").text
-        assert "Google Analytics is optional" in privacy
-        assert "Advertising storage and personalisation remain disabled" in privacy
+        assert "Google Analytics loads with the site" in privacy
+        assert "Advertising signals and personalisation remain disabled" in privacy
 
-    script = TestClient(app).get("/static/analytics-consent.js").text
-    assert 'readChoice() === "granted"' in script
-    assert 'ad_storage: "denied"' in script
-    assert "googletagmanager.com/gtag/js" in script
+    analytics_partial = Path("app/templates/_analytics.html").read_text()
+    assert "allow_google_signals: false" in analytics_partial
+    assert "allow_ad_personalization_signals: false" in analytics_partial
 
     pilot_script = TestClient(app).get("/static/pilot.js").text
     assert 'recordGoogleEvent("affiliate_click"' in pilot_script
