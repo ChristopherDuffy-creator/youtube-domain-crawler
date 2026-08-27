@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from time import time
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -16,6 +17,19 @@ SITE_EXPECTATIONS = {
     "satvic.yoga": ("Satvic Yoga", "satvic"),
     "teamgerardiperformance.com": ("Team Gerardi Performance", "gerardi"),
 }
+
+
+def protected_form_fields(site_key: str, form_kind: str) -> dict[str, str]:
+    return {
+        "form_token": main_module._issue_public_form_token(
+            site_key,
+            form_kind,
+            issued_at=int(time()) - main_module._PUBLIC_FORM_MIN_AGE_SECONDS - 1,
+        ),
+        "form_guard": "ready",
+        "website": "",
+        "fax_number": "",
+    }
 
 
 def test_each_public_domain_serves_its_amazon_first_guide() -> None:
@@ -92,6 +106,10 @@ def test_each_site_has_email_capture_and_working_contact_navigation() -> None:
 
         assert 'action="/subscribe"' in response.text
         assert 'name="consent"' in response.text
+        assert 'name="form_token"' in response.text
+        assert 'name="form_guard"' in response.text
+        assert 'name="fax_number"' in response.text
+        assert 'data-public-form="subscribe"' in response.text
         assert 'href="/contact"' in response.text
         assert 'href="mailto:info@expandosaurus.com">Contact' not in response.text
         assert '<script src="/static/pilot.js" defer></script>' in response.text
@@ -132,12 +150,20 @@ def test_subscription_is_stored_once_per_site() -> None:
 
     first = client.post(
         "/subscribe",
-        data={"email": email, "consent": "yes", "website": ""},
+        data={
+            "email": email,
+            "consent": "yes",
+            **protected_form_fields("crafts", "subscribe"),
+        },
         follow_redirects=False,
     )
     second = client.post(
         "/subscribe",
-        data={"email": email.upper(), "consent": "yes", "website": ""},
+        data={
+            "email": email.upper(),
+            "consent": "yes",
+            **protected_form_fields("crafts", "subscribe"),
+        },
         follow_redirects=False,
     )
 
@@ -167,7 +193,7 @@ def test_contact_form_stores_the_message(monkeypatch) -> None:
             "name": "Website Tester",
             "email": email,
             "message": "Please send more information about the guide.",
-            "website": "",
+            **protected_form_fields("gerardi", "contact"),
         },
         follow_redirects=False,
     )
@@ -181,6 +207,88 @@ def test_contact_form_stores_the_message(monkeypatch) -> None:
         assert stored.status == "new"
         db.execute(delete(ContactMessage).where(ContactMessage.email == email))
         db.commit()
+
+
+def test_public_form_tokens_require_human_time_and_match_the_site() -> None:
+    now = int(time())
+    token = main_module._issue_public_form_token(
+        "crafts",
+        "contact",
+        issued_at=now,
+    )
+
+    assert not main_module._public_form_token_valid(
+        token, "crafts", "contact", now=now
+    )
+    assert main_module._public_form_token_valid(
+        token,
+        "crafts",
+        "contact",
+        now=now + main_module._PUBLIC_FORM_MIN_AGE_SECONDS,
+    )
+    assert not main_module._public_form_token_valid(
+        token,
+        "satvic",
+        "contact",
+        now=now + main_module._PUBLIC_FORM_MIN_AGE_SECONDS,
+    )
+    assert not main_module._public_form_token_valid(
+        token,
+        "crafts",
+        "contact",
+        now=now + main_module._PUBLIC_FORM_MAX_AGE_SECONDS + 1,
+    )
+
+
+def test_promotional_contact_bot_is_silently_discarded(monkeypatch) -> None:
+    Base.metadata.create_all(bind=engine)
+    email = f"seo-bot-{uuid4().hex}@example.com"
+    deliveries: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "send_email",
+        lambda *args, **kwargs: deliveries.append("sent"),
+    )
+    client = TestClient(app, base_url="https://teamgerardiperformance.com")
+
+    response = client.post(
+        "/contact",
+        data={
+            "name": "SEO Sales Bot",
+            "email": email,
+            "message": (
+                "We provide SEO, AEO and GEO services to rank higher on Google and "
+                "AI-powered search. May I send a quote and price list?"
+            ),
+            **protected_form_fields("gerardi", "contact"),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/contact?sent=true"
+    assert deliveries == []
+    with SessionLocal() as db:
+        stored = db.scalar(select(ContactMessage).where(ContactMessage.email == email))
+        assert stored is None
+
+
+def test_automated_subscription_without_browser_guard_is_discarded() -> None:
+    Base.metadata.create_all(bind=engine)
+    email = f"signup-bot-{uuid4().hex}@example.com"
+    client = TestClient(app, base_url="https://satvic.yoga")
+
+    response = client.post(
+        "/subscribe",
+        data={"email": email, "consent": "yes"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/?subscribed=1#newsletter"
+    with SessionLocal() as db:
+        stored = db.scalar(select(EmailSubscriber).where(EmailSubscriber.email == email))
+        assert stored is None
 
 
 def test_dashboard_host_does_not_expose_public_redirects() -> None:

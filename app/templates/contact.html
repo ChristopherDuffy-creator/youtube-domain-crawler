@@ -22,11 +22,13 @@
     <section>
       {% if sent %}<p class="notice" role="status"><strong>Message received.</strong> Thank you—we’ll reply by email.</p>{% endif %}
       {% if error %}<p class="notice error" role="alert">{{ error }}</p>{% endif %}
-      <form class="form" action="/contact" method="post">
+      <form class="form" action="/contact" method="post" data-public-form="contact">
+        <input type="hidden" name="form_token" value="{{ form_token }}">
+        <input type="hidden" name="form_guard" value="">
         <label>Your name<input type="text" name="name" maxlength="120" autocomplete="name" required value="{{ form_values.get('name', '') }}"></label>
         <label>Email address<input type="email" name="email" maxlength="320" autocomplete="email" required value="{{ form_values.get('email', '') }}"></label>
         <label>Message<textarea name="message" minlength="10" maxlength="5000" required>{{ form_values.get('message', '') }}</textarea></label>
-        <div class="hp" aria-hidden="true"><label>Website<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
+        <div class="hp" aria-hidden="true"><label>Website<input type="text" name="website" tabindex="-1" autocomplete="off"></label><label>Fax number<input type="text" name="fax_number" tabindex="-1" autocomplete="off"></label></div>
         <button class="button" type="submit">Send to info@expandosaurus.com</button>
         <p class="small">We use these details only to handle your enquiry. See the <a href="/privacy">privacy notice</a>.</p>
       </form>

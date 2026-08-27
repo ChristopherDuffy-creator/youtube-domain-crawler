@@ -3,6 +3,11 @@
 
   if (navigator.webdriver) return;
 
+  document.querySelectorAll("form[data-public-form]").forEach((form) => {
+    const guard = form.querySelector("input[name='form_guard']");
+    if (guard) guard.value = "ready";
+  });
+
   const sessionId = typeof crypto.randomUUID === "function"
     ? crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 18)}`;

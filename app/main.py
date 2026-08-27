@@ -9,6 +9,8 @@ import html
 import io
 import logging
 import re
+import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -248,6 +250,28 @@ _PUBLIC_TRACKING_BOT_PATTERN = re.compile(
     r"bot|crawler|spider|slurp|headless|lighthouse|uptime|monitor",
     flags=re.IGNORECASE,
 )
+_PUBLIC_FORM_MIN_AGE_SECONDS = 3
+_PUBLIC_FORM_MAX_AGE_SECONDS = 7_200
+_PUBLIC_FORM_RATE_LIMITS = {"contact": (4, 3_600), "subscribe": (6, 3_600)}
+_PUBLIC_FORM_RATE_LOCK = Lock()
+_PUBLIC_FORM_RATE_BUCKETS: dict[tuple[str, str, str], list[float]] = {}
+_PUBLIC_CONTACT_SPAM_PATTERNS = tuple(
+    re.compile(pattern, flags=re.IGNORECASE)
+    for pattern in (
+        r"\bseo\b",
+        r"\baeo\b",
+        r"\bgeo\b",
+        r"rank(?:ing)? higher",
+        r"search engine optimi[sz]ation",
+        r"ai-powered search",
+        r"\bbacklinks?\b",
+        r"\bguest posts?\b",
+        r"domain authority",
+        r"first page of google",
+        r"quote\s*(?:&|and)\s*price list",
+        r"\bweb design services?\b",
+    )
+)
 
 
 def _normalise_public_email(value: str) -> str | None:
@@ -255,6 +279,126 @@ def _normalise_public_email(value: str) -> str | None:
     if len(email) > 320 or not _PUBLIC_EMAIL_PATTERN.fullmatch(email):
         return None
     return email
+
+
+def _public_form_secret() -> bytes:
+    material = (
+        "expandosaurus-public-forms:"
+        f"{settings.admin_token}:{settings.dashboard_password}"
+    ).encode()
+    return hashlib.sha256(material).digest()
+
+
+def _issue_public_form_token(
+    site_key: str,
+    form_kind: Literal["contact", "subscribe"],
+    *,
+    issued_at: int | None = None,
+) -> str:
+    issued = int(time.time()) if issued_at is None else int(issued_at)
+    nonce = secrets.token_urlsafe(12)
+    payload = f"{issued}:{site_key}:{form_kind}:{nonce}".encode()
+    signature = hmac.new(_public_form_secret(), payload, hashlib.sha256).digest()
+    encoded_payload = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return f"{encoded_payload}.{encoded_signature}"
+
+
+def _public_form_token_valid(
+    token: str,
+    site_key: str,
+    form_kind: Literal["contact", "subscribe"],
+    *,
+    now: int | None = None,
+) -> bool:
+    try:
+        encoded_payload, encoded_signature = token.split(".", 1)
+        payload_padding = "=" * (-len(encoded_payload) % 4)
+        signature_padding = "=" * (-len(encoded_signature) % 4)
+        payload = base64.urlsafe_b64decode(encoded_payload + payload_padding)
+        supplied_signature = base64.urlsafe_b64decode(
+            encoded_signature + signature_padding
+        )
+        expected_signature = hmac.new(
+            _public_form_secret(), payload, hashlib.sha256
+        ).digest()
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            return False
+        issued_text, token_site, token_kind, nonce = payload.decode().split(":", 3)
+        issued = int(issued_text)
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return False
+    if token_site != site_key or token_kind != form_kind or len(nonce) < 12:
+        return False
+    age = (int(time.time()) if now is None else int(now)) - issued
+    return _PUBLIC_FORM_MIN_AGE_SECONDS <= age <= _PUBLIC_FORM_MAX_AGE_SECONDS
+
+
+def _public_form_client_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    if forwarded:
+        return forwarded[:64]
+    if request.client is not None and request.client.host:
+        return request.client.host[:64]
+    return "unknown"
+
+
+def _public_form_rate_limited(
+    request: Request,
+    site_key: str,
+    form_kind: Literal["contact", "subscribe"],
+) -> bool:
+    limit, window_seconds = _PUBLIC_FORM_RATE_LIMITS[form_kind]
+    now = time.monotonic()
+    cutoff = now - window_seconds
+    key = (site_key, form_kind, _public_form_client_key(request))
+    with _PUBLIC_FORM_RATE_LOCK:
+        if len(_PUBLIC_FORM_RATE_BUCKETS) > 5_000:
+            stale_keys = [
+                bucket_key
+                for bucket_key, timestamps in _PUBLIC_FORM_RATE_BUCKETS.items()
+                if not timestamps or timestamps[-1] < cutoff
+            ]
+            for bucket_key in stale_keys:
+                _PUBLIC_FORM_RATE_BUCKETS.pop(bucket_key, None)
+        timestamps = [
+            timestamp
+            for timestamp in _PUBLIC_FORM_RATE_BUCKETS.get(key, [])
+            if timestamp >= cutoff
+        ]
+        blocked = len(timestamps) >= limit
+        if not blocked:
+            timestamps.append(now)
+        _PUBLIC_FORM_RATE_BUCKETS[key] = timestamps
+    return blocked
+
+
+def _public_form_blocked(
+    request: Request,
+    site_key: str,
+    form_kind: Literal["contact", "subscribe"],
+    *,
+    form_token: str,
+    form_guard: str,
+    honeypots: tuple[str, ...],
+) -> bool:
+    if any(value.strip() for value in honeypots):
+        return True
+    if form_guard != "ready":
+        return True
+    if not _public_form_token_valid(form_token, site_key, form_kind):
+        return True
+    return _public_form_rate_limited(request, site_key, form_kind)
+
+
+def _public_contact_looks_like_spam(message: str) -> bool:
+    url_count = len(re.findall(r"(?:https?://|www\.)", message, flags=re.IGNORECASE))
+    if url_count >= 2:
+        return True
+    signal_count = sum(
+        bool(pattern.search(message)) for pattern in _PUBLIC_CONTACT_SPAM_PATTERNS
+    )
+    return signal_count >= 3
 
 
 _PUBLIC_PAGE_CONTENT: dict[str, dict[str, tuple[str, list[tuple[str, list[str]]]]]] = {
@@ -359,19 +503,19 @@ async def serve_satvic_site(request: Request, call_next):
         return templates.TemplateResponse(
             request=request,
             name="satvic.html",
-            context={},
+            context={"form_token": _issue_public_form_token("satvic", "subscribe")},
         )
     if host in _CRAFTS_HOSTS and request.url.path == "/":
         return templates.TemplateResponse(
             request=request,
             name="crafts.html",
-            context={},
+            context={"form_token": _issue_public_form_token("crafts", "subscribe")},
         )
     if host in _GERARDI_HOSTS and request.url.path == "/":
         return templates.TemplateResponse(
             request=request,
             name="gerardi.html",
-            context={},
+            context={"form_token": _issue_public_form_token("gerardi", "subscribe")},
         )
     return await call_next(request)
 
@@ -504,6 +648,7 @@ def _contact_page_response(
             "error": error,
             "form_values": form_values or {},
             "canonical_url": f"{site.canonical_url}/contact",
+            "form_token": _issue_public_form_token(site.key, "contact"),
         },
         status_code=status_code,
         headers={"Cache-Control": "no-store"},
@@ -522,10 +667,21 @@ def public_contact_submit(
     email: str = Form(default=""),
     message: str = Form(default=""),
     website: str = Form(default=""),
+    fax_number: str = Form(default=""),
+    form_token: str = Form(default=""),
+    form_guard: str = Form(default=""),
     db: Session = Depends(get_db),
 ) -> Response:
     site = _require_public_site(request)
-    if website.strip():
+    if _public_form_blocked(
+        request,
+        site.key,
+        "contact",
+        form_token=form_token,
+        form_guard=form_guard,
+        honeypots=(website, fax_number),
+    ):
+        logger.info("Discarded automated public form site=%s kind=contact", site.key)
         return RedirectResponse(url="/contact?sent=true", status_code=303)
 
     clean_name = " ".join(name.strip().split())
@@ -553,6 +709,22 @@ def public_contact_submit(
             form_values=form_values,
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         )
+
+    if _public_contact_looks_like_spam(clean_message):
+        logger.info("Discarded promotional public form site=%s kind=contact", site.key)
+        return RedirectResponse(url="/contact?sent=true", status_code=303)
+
+    duplicate = db.scalar(
+        select(ContactMessage.id).where(
+            ContactMessage.site_key == site.key,
+            ContactMessage.email == clean_email,
+            ContactMessage.message == clean_message,
+            ContactMessage.created_at >= datetime.now(UTC) - timedelta(hours=24),
+        )
+    )
+    if duplicate is not None:
+        logger.info("Discarded duplicate public form site=%s kind=contact", site.key)
+        return RedirectResponse(url="/contact?sent=true", status_code=303)
 
     db.add(
         ContactMessage(
@@ -591,10 +763,21 @@ def public_subscribe(
     email: str = Form(default=""),
     consent: str = Form(default=""),
     website: str = Form(default=""),
+    fax_number: str = Form(default=""),
+    form_token: str = Form(default=""),
+    form_guard: str = Form(default=""),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     site = _require_public_site(request)
-    if website.strip():
+    if _public_form_blocked(
+        request,
+        site.key,
+        "subscribe",
+        form_token=form_token,
+        form_guard=form_guard,
+        honeypots=(website, fax_number),
+    ):
+        logger.info("Discarded automated public form site=%s kind=subscribe", site.key)
         return RedirectResponse(url="/?subscribed=1#newsletter", status_code=303)
 
     clean_email = _normalise_public_email(email)
