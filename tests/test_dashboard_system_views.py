@@ -27,12 +27,15 @@ def _status(
 
 def test_dashboard_defaults_to_the_youtube_watchlist_and_removes_web_view() -> None:
     template = Path("app/templates/dashboard.html").read_text(encoding="utf-8")
+    login = Path("app/templates/login.html").read_text(encoding="utf-8")
 
     assert signature(dashboard).parameters["tier"].default == "watchlist"
     assert signature(dashboard).parameters["view"].default is None
     assert "YouTube Domain Opportunities" in template
     assert "Web Link Hunter" not in template
     assert "Web CSV" not in template
+    assert "YouTube Domain Opportunities" in login
+    assert "Web Link Hunter" not in login
     assert 'action="/logout"' in template
 
 
