@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -78,6 +78,11 @@ _ADDITIVE_COLUMNS = (
     ),
     (
         "candidates",
+        "evaluation_started_at",
+        "TIMESTAMP WITH TIME ZONE",
+    ),
+    (
+        "candidates",
         "trend_percent",
         "DOUBLE PRECISION NOT NULL DEFAULT 0",
     ),
@@ -121,7 +126,8 @@ _ADDITIVE_COLUMNS = (
 
 def ensure_runtime_schema(bind: Engine = engine) -> None:
     """Apply safe additive/widening migrations missed by ``create_all``."""
-    if bind.dialect.name != "postgresql":
+    dialect = bind.dialect.name
+    if dialect not in {"postgresql", "sqlite"}:
         return
     type_query = text(
         """
@@ -132,22 +138,41 @@ def ensure_runtime_schema(bind: Engine = engine) -> None:
           AND column_name = :column_name
         """
     )
+    sqlite_columns: dict[str, set[str]] = {}
+    if dialect == "sqlite":
+        inspector = inspect(bind)
+        for table_name, _, _ in _ADDITIVE_COLUMNS:
+            if table_name not in sqlite_columns and inspector.has_table(table_name):
+                sqlite_columns[table_name] = {
+                    str(column["name"]) for column in inspector.get_columns(table_name)
+                }
     with bind.begin() as connection:
         for table_name, column_name, column_type in _ADDITIVE_COLUMNS:
             # Every identifier and SQL type comes from the static allow-list.
-            connection.execute(
-                text(f'ALTER TABLE "{table_name}" ADD COLUMN IF NOT EXISTS "{column_name}" {column_type}')
-            )
-        for table_name, column_name in _BIGINT_COLUMNS:
-            data_type = connection.execute(
-                type_query,
-                {"table_name": table_name, "column_name": column_name},
-            ).scalar_one_or_none()
-            if data_type == "integer":
-                # Identifiers come only from the static allow-list above.
+            if dialect == "sqlite":
+                if column_name in sqlite_columns.get(table_name, set()):
+                    continue
                 connection.execute(
-                    text(f'ALTER TABLE "{table_name}" ALTER COLUMN "{column_name}" TYPE BIGINT')
+                    text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_type}')
                 )
+            else:
+                connection.execute(
+                    text(
+                        f'ALTER TABLE "{table_name}" ADD COLUMN IF NOT EXISTS '
+                        f'"{column_name}" {column_type}'
+                    )
+                )
+        if dialect == "postgresql":
+            for table_name, column_name in _BIGINT_COLUMNS:
+                data_type = connection.execute(
+                    type_query,
+                    {"table_name": table_name, "column_name": column_name},
+                ).scalar_one_or_none()
+                if data_type == "integer":
+                    # Identifiers come only from the static allow-list above.
+                    connection.execute(
+                        text(f'ALTER TABLE "{table_name}" ALTER COLUMN "{column_name}" TYPE BIGINT')
+                    )
         connection.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_youtube_domain_signals_model_version "

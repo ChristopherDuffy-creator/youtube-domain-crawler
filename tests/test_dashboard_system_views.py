@@ -69,6 +69,9 @@ def test_dashboard_uses_checkpoint_filters_and_quarantines_noisy_rows() -> None:
     assert "Candidate.day7_monthly_views < settings.watchlist_monthly_views" in source
     assert "YouTubeDomainSignal.spike_video_count == 0" in source
     assert "_YOUTUBE_VISIBLE_MAXIMUM = 1_000_000" in source
+    assert 'Domain.availability_status == "available"' in source
+    assert 'Domain.availability_source == "porkbun"' in source
+    assert "Candidate.evaluation_started_at.is_not(None)" in source
 
 
 def test_technical_counts_are_collapsed_instead_of_prominent_cards() -> None:

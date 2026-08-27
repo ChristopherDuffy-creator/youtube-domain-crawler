@@ -114,6 +114,7 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
                 day3_monthly_views=0,
                 day7_monthly_views=0,
                 evaluation_stage="collecting",
+                evaluation_started_at=None,
                 trend_percent=0.0,
                 buy_ready=False,
                 verified_30d=False,

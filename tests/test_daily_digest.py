@@ -201,9 +201,10 @@ def test_daily_digest_reports_real_work_pending_candidates_errors_and_web_hits()
     assert report.work["drops_loaded"] == 9_975
     assert report.work["availability_checked"] == 100
     assert report.work["availability_errors"] == 2
-    assert report.watchlist_count == 1
+    assert report.watchlist_count == 0
+    assert report.pending_count == 1
     assert report.pending["verification"] == 0
-    assert report.pending["day7"] == 1
+    assert report.pending["day7"] == 0
     assert report.pending["registrar"] == 1
     assert report.pending_candidates[0].domain == "pending-example.com"
     assert report.issues[0].job == "availability_checks"

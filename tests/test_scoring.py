@@ -19,7 +19,7 @@ def test_main_tiers_use_20k_50k_100k_and_require_an_evaluation_start() -> None:
     assert determine_tier(50_000, True, "available", config) == "qualified"
     assert determine_tier(100_000, True, "available", config) == "priority"
     assert determine_tier(100_000, False, "available", config) == "pending"
-    assert determine_tier(100_000, True, "likely_available", config) == "watchlist"
+    assert determine_tier(100_000, True, "likely_available", config) == "pending"
     assert determine_tier(19_999, True, "available", config) == "pending"
     assert determine_tier(1_000_000, True, "registered", config) == "rejected"
 

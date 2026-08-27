@@ -27,16 +27,15 @@ def determine_tier(
     settings: Settings,
 ) -> str:
     exact_available = availability_status == "available"
-    plausible_available = availability_status in {"available", "likely_available"}
     if availability_status in {"registered", "premium", "aftermarket", "reserved"}:
         return "rejected"
-    if not evaluation_started or not plausible_available:
+    if not evaluation_started or not exact_available:
         return "pending"
     if exact_available and monthly_views >= settings.priority_monthly_views:
         return "priority"
     if exact_available and monthly_views >= settings.qualified_monthly_views:
         return "qualified"
-    if monthly_views >= settings.watchlist_monthly_views:
+    if exact_available and monthly_views >= settings.watchlist_monthly_views:
         return "watchlist"
     return "pending"
 

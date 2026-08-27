@@ -123,8 +123,14 @@ def test_porkbun_marks_unavailable_as_registered(monkeypatch) -> None:
     assert result.status == "registered"
 
 
-def test_exact_registrar_is_only_used_after_likely_available_and_traffic_gate(monkeypatch) -> None:
-    monkeypatch.setattr("app.availability.check_rdap", lambda domain: ("not_found", None))
+def test_exact_registrar_bypasses_rdap_after_the_traffic_gate(monkeypatch) -> None:
+    rdap_calls: list[str] = []
+
+    def fake_rdap(domain: str) -> tuple[str, None]:
+        rdap_calls.append(domain)
+        return "not_found", None
+
+    monkeypatch.setattr("app.availability.check_rdap", fake_rdap)
     monkeypatch.setattr("app.availability.check_dns", lambda domain: "nxdomain")
     calls: list[str] = []
 
@@ -144,10 +150,12 @@ def test_exact_registrar_is_only_used_after_likely_available_and_traffic_gate(mo
     preliminary = check_domain("candidate-example.com", config, exact_registrar_check=False)
     assert preliminary.status == "likely_available"
     assert calls == []
+    assert rdap_calls == ["candidate-example.com"]
 
     exact = check_domain("candidate-example.com", config, exact_registrar_check=True)
     assert exact.status == "available"
     assert calls == ["candidate-example.com"]
+    assert rdap_calls == ["candidate-example.com"]
 
 
 def test_rdap_retries_transient_server_errors(monkeypatch) -> None:

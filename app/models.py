@@ -127,6 +127,9 @@ class Candidate(Base):
     day3_monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
     day7_monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
     evaluation_stage: Mapped[str] = mapped_column(String(16), default="collecting", index=True)
+    evaluation_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     trend_percent: Mapped[float] = mapped_column(Float, default=0.0)
     buy_ready: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     verified_30d: Mapped[bool] = mapped_column(Boolean, default=False)

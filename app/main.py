@@ -32,6 +32,9 @@ from app.config import (
     YOUTUBE_QUALIFIED_BUY_SCORE,
     get_settings,
 )
+from app.config import (
+    YOUTUBE_RESERVE_MINIMUM as _YOUTUBE_RESERVE_MINIMUM,
+)
 from app.database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
 from app.domain_lifecycle import (
     hard_delete_domain,
@@ -131,8 +134,6 @@ WebEvidenceRow = tuple[
 
 _HIDDEN_WEB_AVAILABILITY = {"registered", "aftermarket", "premium", "reserved"}
 _HIDDEN_YOUTUBE_AVAILABILITY = _HIDDEN_WEB_AVAILABILITY
-_VISIBLE_YOUTUBE_AVAILABILITY = {"available", "likely_available", "unknown"}
-_YOUTUBE_RESERVE_MINIMUM = 10_000
 _YOUTUBE_VISIBLE_MAXIMUM = 1_000_000
 
 
@@ -1496,7 +1497,10 @@ def dashboard(
     common_conditions = (
         Candidate.tier != "rejected",
         ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
-        Domain.availability_status.in_(_VISIBLE_YOUTUBE_AVAILABILITY),
+        Domain.availability_status == "available",
+        Domain.availability_source == "porkbun",
+        Domain.premium.is_(False),
+        Candidate.evaluation_started_at.is_not(None),
         YouTubeDomainSignal.model_version >= 4,
         YouTubeDomainSignal.click_eligible_exposure > 0,
         YouTubeDomainSignal.buy_score > 0,
@@ -1582,25 +1586,25 @@ def dashboard(
             "label": "Watchlist",
             "short": "Before Day 3",
             "heading": "Watchlist",
-            "description": "20k+ candidates waiting for their Day 3 comparison.",
+            "description": "Registrar-confirmed 20k+ domains waiting for their Day 3 comparison.",
         },
         "day3": {
             "label": "3 Day Results",
             "short": "First comparison",
             "heading": "3 Day Results",
-            "description": "20k+ candidates after the first traffic recheck.",
+            "description": "Available 20k+ domains after the first traffic recheck.",
         },
         "day7": {
             "label": "7+ Day Results",
             "short": "Full review",
             "heading": "7+ Day Results",
-            "description": "Completed week reviews. Qualified and Priority are decided here.",
+            "description": "Available domains with a completed week review. Final rankings are decided here.",
         },
         "low": {
             "label": "10k–20k",
             "short": "7+ day value plays",
             "heading": "10k–20k Value Plays",
-            "description": "Only lower-band candidates that completed the full 7+ day review.",
+            "description": "Only available lower-band domains that completed the full 7+ day review.",
         },
     }
 
@@ -2049,7 +2053,10 @@ def export_candidates(
         .where(
             Candidate.tier != "rejected",
             ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
-            Domain.availability_status.in_(_VISIBLE_YOUTUBE_AVAILABILITY),
+            Domain.availability_status == "available",
+            Domain.availability_source == "porkbun",
+            Domain.premium.is_(False),
+            Candidate.evaluation_started_at.is_not(None),
             YouTubeDomainSignal.model_version >= 4,
             YouTubeDomainSignal.click_eligible_exposure > 0,
             YouTubeDomainSignal.buy_score > 0,
@@ -2090,6 +2097,7 @@ def export_candidates(
             "day3_monthly_run_rate",
             "day7_monthly_run_rate",
             "evaluation_stage",
+            "review_started_at",
             "trend_percent",
             "buy_ready",
             "verified_30_day_window",
@@ -2121,6 +2129,9 @@ def export_candidates(
                 candidate.day3_monthly_views,
                 candidate.day7_monthly_views,
                 candidate.evaluation_stage,
+                candidate.evaluation_started_at.isoformat()
+                if candidate.evaluation_started_at is not None
+                else "",
                 candidate.trend_percent,
                 candidate.buy_ready,
                 candidate.verified_30d,

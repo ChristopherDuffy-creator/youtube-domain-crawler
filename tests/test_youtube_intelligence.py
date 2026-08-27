@@ -14,6 +14,7 @@ from app.jobs import (
     run_view_snapshot_batch,
 )
 from app.models import (
+    Candidate,
     Domain,
     DroppedDomain,
     DroppedDomainMatch,
@@ -127,6 +128,13 @@ def test_15_day_signal_is_measured_not_verified_and_builds_a_money_case() -> Non
         domain = db.scalar(select(Domain).where(Domain.name == "measured-opportunity.com"))
         assert domain is not None
         domain.availability_status = "available"
+        domain.availability_source = "porkbun"
+        domain.last_checked_at = now - timedelta(days=15)
+        domain.candidate = Candidate(
+            evaluation_started_at=now - timedelta(days=15),
+            evaluation_stage="day0",
+            start_monthly_views=90_000,
+        )
         db.add(
             ViewSnapshot(
                 video_id="measured0001",
@@ -196,6 +204,13 @@ def test_day3_signal_restores_provisional_score_and_potential_value() -> None:
         domain = db.scalar(select(Domain).where(Domain.name == "early-only.com"))
         assert domain is not None
         domain.availability_status = "available"
+        domain.availability_source = "porkbun"
+        domain.last_checked_at = now - timedelta(days=6)
+        domain.candidate = Candidate(
+            evaluation_started_at=now - timedelta(days=6),
+            evaluation_stage="day0",
+            start_monthly_views=100_000,
+        )
         db.add(
             ViewSnapshot(
                 video_id="early0000001",

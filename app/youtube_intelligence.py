@@ -333,6 +333,7 @@ def _refresh_youtube_domain_signal_chunk(
         base_score = float(domain.candidate.score if domain.candidate is not None else 0.0)
         exposure_points = min(18.0, math.log10(click_eligible_exposure + 1) * 3.0)
         maturity_penalty = {
+            "awaiting": 20.0,
             "collecting": 20.0,
             "day0": 12.0,
             "day3": 6.0,

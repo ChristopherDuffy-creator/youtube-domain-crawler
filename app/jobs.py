@@ -3,7 +3,7 @@ from __future__ import annotations
 import gc
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -19,7 +19,13 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.availability import AvailabilityResult, check_domain
 from app.commoncrawl_prefilter import run_commoncrawl_prefilter as run_commoncrawl_prefilter_batch
-from app.config import EVERGREEN_QUERIES, MANUAL_CHECKPOINTS, Settings, get_settings
+from app.config import (
+    EVERGREEN_QUERIES,
+    MANUAL_CHECKPOINTS,
+    YOUTUBE_RESERVE_MINIMUM,
+    Settings,
+    get_settings,
+)
 from app.database import SessionLocal
 from app.domain_lifecycle import (
     bought_domain_names,
@@ -998,18 +1004,26 @@ def _checkpoint_refresh_interval_hours(
     video: Video,
     captured_at: datetime,
     adaptive_interval: int,
+    review_started_at: datetime | Sequence[datetime] | None = None,
 ) -> int:
     """Prevent adaptive backoff from skipping the Day 3 or Day 7 check."""
-    first_seen = video.first_seen_at
-    if first_seen.tzinfo is None:
-        first_seen = first_seen.replace(tzinfo=UTC)
-    for checkpoint_hours in (72, 168):
-        checkpoint_at = first_seen + timedelta(hours=checkpoint_hours)
-        if checkpoint_at <= captured_at:
-            continue
+    if review_started_at is None:
+        baselines = [video.first_seen_at]
+    elif isinstance(review_started_at, datetime):
+        baselines = [review_started_at]
+    else:
+        baselines = list(review_started_at)
+    upcoming: list[datetime] = []
+    for baseline in baselines:
+        baseline = _aware_utc(baseline)
+        for checkpoint_hours in (72, 168):
+            checkpoint_at = baseline + timedelta(hours=checkpoint_hours)
+            if checkpoint_at > captured_at:
+                upcoming.append(checkpoint_at)
+    if upcoming:
         hours_remaining = max(
             1,
-            math.ceil((checkpoint_at - captured_at).total_seconds() / 3600),
+            math.ceil((min(upcoming) - captured_at).total_seconds() / 3600),
         )
         return min(adaptive_interval, hours_remaining)
     return adaptive_interval
@@ -1080,6 +1094,18 @@ def run_view_snapshot_batch(
                 select(VideoRefreshState).where(VideoRefreshState.video_id.in_(batch))
             ).all()
         }
+        review_starts_by_video_id: dict[str, list[datetime]] = {}
+        for video_id, review_started_at in db.execute(
+            select(VideoDomain.video_id, Candidate.evaluation_started_at)
+            .join(Candidate, Candidate.domain_id == VideoDomain.domain_id)
+            .where(
+                VideoDomain.video_id.in_(batch),
+                VideoDomain.active.is_(True),
+                Candidate.evaluation_started_at.is_not(None),
+            )
+        ).all():
+            if review_started_at is not None:
+                review_starts_by_video_id.setdefault(video_id, []).append(review_started_at)
         snapshots_by_video_id = {
             snapshot.video_id: snapshot
             for snapshot in db.scalars(
@@ -1109,6 +1135,7 @@ def run_view_snapshot_batch(
                 video,
                 captured_at,
                 interval,
+                review_starts_by_video_id.get(video_id),
             )
             video.lifetime_views = item.view_count
             if item.duration_seconds is not None:
@@ -1178,17 +1205,42 @@ def run_view_snapshots() -> None:
 
 def _domains_due_for_check(db: Session, limit: int) -> list[Domain]:
     now = utcnow()
+    one_hour = now - timedelta(hours=1)
     one_day = now - timedelta(days=1)
     # A shared RDAP endpoint has already told us to slow down. Repeating the
     # same name the next day only creates another rate-limit wave, so retain a
     # short, database-backed negative cache across process restarts.
     rate_limited_retry = now - timedelta(days=3)
     seven_days = now - timedelta(days=7)
+    priority_candidate_traffic = or_(
+        Candidate.monthly_views >= YOUTUBE_RESERVE_MINIMUM,
+        Candidate.start_monthly_views >= YOUTUBE_RESERVE_MINIMUM,
+        Candidate.day3_monthly_views >= YOUTUBE_RESERVE_MINIMUM,
+        Candidate.day7_monthly_views >= YOUTUBE_RESERVE_MINIMUM,
+    )
+    priority_needs_exact = and_(
+        priority_candidate_traffic,
+        Domain.availability_status.in_(["unknown", "likely_available", "conflicting"]),
+        or_(
+            Domain.last_checked_at.is_(None),
+            Domain.availability_source != "porkbun",
+            Domain.last_checked_at < one_hour,
+        ),
+    )
+    priority_needs_review_start = and_(
+        priority_candidate_traffic,
+        Domain.availability_status == "available",
+        Domain.availability_source == "porkbun",
+        Candidate.evaluation_started_at.is_(None),
+    )
+    priority_pipeline_check = or_(priority_needs_exact, priority_needs_review_start)
     return db.scalars(
         select(Domain)
+        .outerjoin(Candidate, Candidate.domain_id == Domain.id)
         .where(
             Domain.excluded_reason.is_(None),
             or_(
+                priority_pipeline_check,
                 Domain.last_checked_at.is_(None),
                 and_(
                     Domain.availability_status.in_(["likely_available", "conflicting"]),
@@ -1217,7 +1269,12 @@ def _domains_due_for_check(db: Session, limit: int) -> list[Domain]:
         # explicit case, already-checked domains can monopolise this capped
         # queue while newly indexed domains wait indefinitely.
         .order_by(
-            case((Domain.last_checked_at.is_(None), 0), else_=1),
+            case(
+                (priority_pipeline_check, 0),
+                (Domain.last_checked_at.is_(None), 1),
+                else_=2,
+            ),
+            Candidate.monthly_views.desc(),
             Domain.last_checked_at.asc(),
             Domain.first_seen_at.asc(),
         )
@@ -1266,7 +1323,13 @@ def run_availability_checks() -> None:
                             domain.availability_status == "available"
                             or (
                                 domain.candidate
-                                and domain.candidate.monthly_views >= settings.watchlist_monthly_views
+                                and max(
+                                    domain.candidate.monthly_views,
+                                    domain.candidate.start_monthly_views,
+                                    domain.candidate.day3_monthly_views,
+                                    domain.candidate.day7_monthly_views,
+                                )
+                                >= YOUTUBE_RESERVE_MINIMUM
                             )
                         ),
                     ): domain.id
@@ -1329,6 +1392,103 @@ def _best_link_for_video(links: list[VideoDomain]) -> VideoDomain:
 _CANDIDATE_DOMAIN_CHUNK = 25
 
 
+def _aware_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _has_exact_ordinary_availability(domain: Domain) -> bool:
+    """Only a live registrar result is allowed to start the review clock."""
+    return bool(
+        domain.availability_status == "available"
+        and domain.availability_source == "porkbun"
+        and not domain.premium
+    )
+
+
+def _advance_availability_first_review(
+    candidate: Candidate,
+    domain: Domain,
+    metric: ViewMetric,
+    *,
+    observed_at: datetime,
+    short_form_only: bool,
+) -> None:
+    """Advance Day 0/3/7 only after exact ordinary registration is confirmed.
+
+    The permanent video snapshots remain untouched. Candidate checkpoint fields
+    are the active buying review and deliberately restart when availability is
+    absent or has not been proven by the registrar.
+    """
+    if short_form_only:
+        candidate.evaluation_started_at = None
+        candidate.start_monthly_views = 0
+        candidate.day3_monthly_views = 0
+        candidate.day7_monthly_views = 0
+        candidate.evaluation_stage = "short_form_only"
+        candidate.trend_percent = 0.0
+        return
+
+    exact_available = _has_exact_ordinary_availability(domain)
+    current_views = max(0, int(metric.monthly_views))
+    if not exact_available or current_views < YOUTUBE_RESERVE_MINIMUM:
+        candidate.evaluation_started_at = None
+        candidate.start_monthly_views = 0
+        candidate.day3_monthly_views = 0
+        candidate.day7_monthly_views = 0
+        candidate.evaluation_stage = "awaiting" if not exact_available else "collecting"
+        candidate.trend_percent = 0.0
+        return
+
+    observed = _aware_utc(observed_at)
+    if candidate.evaluation_started_at is None:
+        confirmed = (
+            _aware_utc(domain.last_checked_at)
+            if domain.last_checked_at is not None
+            else observed
+        )
+        candidate.evaluation_started_at = max(observed, confirmed)
+        candidate.start_monthly_views = current_views
+        candidate.day3_monthly_views = 0
+        candidate.day7_monthly_views = 0
+        candidate.evaluation_stage = "day0"
+        candidate.trend_percent = 0.0
+        return
+
+    started = _aware_utc(candidate.evaluation_started_at)
+    elapsed_days = max(0.0, (observed - started).total_seconds() / 86400)
+    if candidate.start_monthly_views <= 0:
+        candidate.start_monthly_views = current_views
+
+    previous_stage = candidate.evaluation_stage
+    stage = "day0"
+    if elapsed_days >= 3:
+        if previous_stage not in {"day3", "day7"}:
+            candidate.day3_monthly_views = current_views
+        stage = "day3"
+    if elapsed_days >= 7:
+        if previous_stage != "day7":
+            candidate.day7_monthly_views = current_views
+        stage = "day7"
+    candidate.evaluation_stage = stage
+    comparison = (
+        candidate.day7_monthly_views
+        if stage == "day7"
+        else candidate.day3_monthly_views
+        if stage == "day3"
+        else candidate.start_monthly_views
+    )
+    candidate.trend_percent = (
+        round(
+            (comparison - candidate.start_monthly_views)
+            / candidate.start_monthly_views
+            * 100,
+            1,
+        )
+        if candidate.start_monthly_views > 0
+        else 0.0
+    )
+
+
 def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
     settings = get_settings()
     if not domain_ids:
@@ -1359,6 +1519,7 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
             day3_monthly_views=0,
             day7_monthly_views=0,
             evaluation_stage="collecting",
+            evaluation_started_at=None,
             trend_percent=0.0,
             buy_ready=False,
             verified_30d=False,
@@ -1434,24 +1595,51 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
         if best_video is None or best_link is None:
             continue
         ranked_monthly_views = 0 if short_form_only else best_metric.monthly_views
+        candidate = domain.candidate
+        if candidate is None:
+            candidate = Candidate(domain_id=domain.id)
+            db.add(candidate)
+        observed_at = max(
+            (snapshot.captured_at for snapshot in best_video.snapshots),
+            default=utcnow(),
+        )
+        review_was_unstarted = candidate.evaluation_started_at is None
+        _advance_availability_first_review(
+            candidate,
+            domain,
+            best_metric,
+            observed_at=observed_at,
+            short_form_only=short_form_only,
+        )
+        if review_was_unstarted and candidate.evaluation_started_at is not None:
+            refresh_state = db.get(VideoRefreshState, best_video.id)
+            checkpoint_due = _aware_utc(candidate.evaluation_started_at) + timedelta(days=3)
+            if (
+                refresh_state is not None
+                and _aware_utc(refresh_state.next_refresh_at) > checkpoint_due
+            ):
+                refresh_state.next_refresh_at = checkpoint_due
         day7_stable = (
-            best_metric.evaluation_stage == "day7"
-            and best_metric.day7_monthly_views >= settings.watchlist_monthly_views
+            candidate.evaluation_stage == "day7"
+            and candidate.day7_monthly_views >= settings.watchlist_monthly_views
             and not best_metric.spike_detected
-            and (
-                best_metric.day3_monthly_views <= 0
-                or (
-                    best_metric.day7_monthly_views
-                    >= round(best_metric.day3_monthly_views * 0.5)
-                    and best_metric.day7_monthly_views
-                    <= round(best_metric.day3_monthly_views * 2.0)
-                )
-            )
+            and candidate.day3_monthly_views > 0
+            and candidate.day7_monthly_views
+            >= round(candidate.day3_monthly_views * 0.5)
+            and candidate.day7_monthly_views
+            <= round(candidate.day3_monthly_views * 2.0)
+        )
+        tier_availability = (
+            "available"
+            if _has_exact_ordinary_availability(domain)
+            else domain.availability_status
+            if domain.availability_status in {"registered", "premium", "aftermarket", "reserved"}
+            else "unknown"
         )
         tier = determine_tier(
             ranked_monthly_views,
-            best_metric.evaluation_stage != "collecting" and not short_form_only,
-            domain.availability_status,
+            candidate.evaluation_stage in {"day0", "day3", "day7"},
+            tier_availability,
             settings,
         )
         # Qualified and Priority are final decisions, not early traffic bands.
@@ -1476,18 +1664,9 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
             if not short_form_only
             else 0.0
         )
-        candidate = domain.candidate
-        if candidate is None:
-            candidate = Candidate(domain_id=domain.id)
-            db.add(candidate)
         candidate.tier = tier
         candidate.monthly_views = ranked_monthly_views
-        candidate.start_monthly_views = 0 if short_form_only else best_metric.start_monthly_views
-        candidate.day3_monthly_views = 0 if short_form_only else best_metric.day3_monthly_views
-        candidate.day7_monthly_views = 0 if short_form_only else best_metric.day7_monthly_views
-        candidate.evaluation_stage = "short_form_only" if short_form_only else best_metric.evaluation_stage
-        candidate.trend_percent = 0.0 if short_form_only else best_metric.trend_percent
-        candidate.buy_ready = bool(day7_stable and domain.availability_status == "available")
+        candidate.buy_ready = bool(day7_stable and _has_exact_ordinary_availability(domain))
         candidate.verified_30d = best_metric.verified_30d and not short_form_only
         candidate.observation_days = best_metric.observation_days
         candidate.score = score
@@ -1765,7 +1944,10 @@ def _email_candidates(db: Session, only_unnotified: bool = False) -> list[tuple[
         .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
         .where(
             Candidate.tier.in_(["priority", "qualified"]),
-            Domain.availability_status.notin_(["registered", "aftermarket", "premium", "reserved"]),
+            Domain.availability_status == "available",
+            Domain.availability_source == "porkbun",
+            Domain.premium.is_(False),
+            Candidate.evaluation_started_at.is_not(None),
             or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
         )
         .order_by(
@@ -2399,7 +2581,7 @@ def build_scheduler(settings: Settings) -> BackgroundScheduler:
         )
     scheduler.add_job(
         run_availability_checks,
-        IntervalTrigger(hours=6, start_date=start + timedelta(minutes=3)),
+        IntervalTrigger(hours=1, start_date=start + timedelta(seconds=20)),
         id="availability_checks",
         replace_existing=True,
         executor="availability",

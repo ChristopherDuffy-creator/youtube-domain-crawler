@@ -287,14 +287,40 @@ def check_domain(
             dns_status=dns_status,
         )
 
+    # Candidates entering the review pipeline need a registrar-authoritative
+    # answer. Do not let a shared RDAP rate limit prevent that exact check: the
+    # Porkbun result is both the availability decision and the live ordinary
+    # registration price. RDAP remains the free first pass for the wider
+    # discovery ledger.
+    if settings.registrar_enabled and exact_registrar_check:
+        registrar_result = check_porkbun(domain, settings)
+        if registrar_result.status != "unknown":
+            return registrar_result
+
+        # A failed registrar request cannot prove availability, but RDAP can
+        # still prove that the name is registered and safely remove it.
+        rdap_status, rdap_error = check_rdap(domain)
+        status = classify_rdap_dns(rdap_status, dns_status)
+        if status == "registered":
+            return AvailabilityResult(
+                status="registered",
+                source="rdap_dns",
+                rdap_status=rdap_status,
+                dns_status=dns_status,
+                error=rdap_error,
+            )
+        return AvailabilityResult(
+            status="unknown",
+            source="porkbun",
+            rdap_status=rdap_status,
+            dns_status=dns_status,
+            error=registrar_result.error or rdap_error or "Exact registrar check failed",
+        )
+
     # RDAP is the scarce/rate-limited check.  Only spend it on names for which
     # DNS did not already prove an active registration.
     rdap_status, rdap_error = check_rdap(domain)
     status = classify_rdap_dns(rdap_status, dns_status)
-    if status == "likely_available" and settings.registrar_enabled and exact_registrar_check:
-        registrar_result = check_porkbun(domain, settings)
-        if registrar_result.status != "unknown":
-            return registrar_result
     return AvailabilityResult(
         status=status,
         source="rdap_dns",

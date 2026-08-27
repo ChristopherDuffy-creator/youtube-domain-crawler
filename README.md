@@ -4,7 +4,7 @@ An always-on crawler that finds exact external domains in older YouTube video de
 
 This project is configured for Christy's final rules:
 
-- **Watchlist:** 20,000+ current long-form views/month before the Day 3 review.
+- **Watchlist:** Porkbun-confirmed ordinary registrations with 20,000+ current long-form views/month before the Day 3 review.
 - **3 Day Results:** 20,000+ candidates after the first comparison.
 - **7+ Day Results:** 20,000+ candidates after the full week; only this view assigns Qualified or Priority.
 - **10k–20k Value Plays:** the protected lower band, shown only after a completed Day 7 review.
@@ -41,7 +41,7 @@ The crawler automatically downloads WhoisFreaks' public daily feed of 10,000 rec
 
 ### Traffic verification
 
-YouTube supplies a cumulative view count, not “views in the last month.” The crawler therefore takes immutable daily snapshots and converts actual observed growth into a conservative monthly run-rate. Every candidate gets a starting estimate, a Day 3 recheck and a Day 7 evaluation. Adaptive refresh can run more often, but it is never allowed to skip either checkpoint. The dashboard shows all three figures and their change rather than presenting one projection without context.
+YouTube supplies a cumulative view count, not “views in the last month.” The crawler therefore takes immutable daily snapshots and converts actual observed growth into a conservative monthly run-rate. A candidate enters the buying review only after Porkbun confirms that it is available for an ordinary registration; that confirmation starts a fresh Day 0 clock, followed by Day 3 and Day 7 rechecks. Unknown, likely-available, conflicting, premium and registered names remain in the permanent evidence ledger but cannot enter any review tab. Adaptive refresh can run more often, but it is never allowed to skip either checkpoint. The dashboard shows all three figures and their change rather than presenting one projection without context.
 
 Projection safety is fail-closed. Once two independent intervals exist, the internal pace uses the lower median interval velocity and quarantines isolated counter jumps while preserving every raw snapshot for audit. Provisional buy score, expected clicks and potential monthly value remain visible from the starting estimate, with explicit confidence penalties at Start and Day 3. A purchase ceiling appears only after a stable Day 7 result. Videos of 180 seconds or less remain in the permanent evidence ledger but are excluded from all buying tiers because their description traffic is not assumed clickable.
 
@@ -49,7 +49,7 @@ Projection safety is fail-closed. Once two independent intervals exist, the inte
 
 The free first layer uses RDAP plus DNS and labels a clean result **likely available**. Final qualification requires Porkbun's live registrar check to confirm that it is available for ordinary registration now. Registry-premium names over the configured price ceiling are kept out of the qualified list.
 
-Porkbun's default limit is one availability check every 10 seconds, so the crawler uses RDAP/DNS first and sends only traffic-qualified possibilities to Porkbun. Exact calls are automatically spaced apart to respect that limit.
+Porkbun's default limit is one availability check every 10 seconds. The crawler checks 10k+ traffic candidates directly with Porkbun, automatically spaces those exact calls, and runs this priority queue hourly. RDAP/DNS remains the free first pass for the much wider discovery ledger. Availability checks are read-only and never purchase a domain.
 
 ## Permanent checkpoint
 

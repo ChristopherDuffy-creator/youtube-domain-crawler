@@ -23,6 +23,7 @@ from app.jobs import (
     seed_youtube_channels,
 )
 from app.models import (
+    Candidate,
     Domain,
     DroppedDomain,
     Video,
@@ -427,6 +428,22 @@ def test_adaptive_backoff_cannot_skip_day3_or_day7_rechecks() -> None:
     )
 
 
+def test_availability_confirmation_restarts_checkpoint_scheduling() -> None:
+    discovered = datetime(2026, 8, 1, tzinfo=UTC)
+    confirmed = datetime(2026, 8, 20, tzinfo=UTC)
+    video = Video(id="availability1", first_seen_at=discovered)
+
+    assert (
+        _checkpoint_refresh_interval_hours(
+            video,
+            confirmed + timedelta(days=1),
+            720,
+            confirmed,
+        )
+        == 48
+    )
+
+
 def test_never_checked_domains_are_first_in_capped_availability_queue() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -493,6 +510,43 @@ def test_rate_limited_availability_is_negative_cached_for_three_days() -> None:
         assert [item.name for item in _domains_due_for_check(db, 10)] == ["rate-limited.example"]
 
 
+def test_high_traffic_unknown_beats_general_never_checked_availability_work() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    now = datetime.now(UTC)
+
+    with Session(engine) as db:
+        high = Domain(
+            name="high-priority.example",
+            availability_status="unknown",
+            availability_source="rdap_dns",
+            rdap_status="rate_limited",
+            last_checked_at=now - timedelta(minutes=5),
+        )
+        general = Domain(name="general-never-checked.example")
+        db.add_all([high, general])
+        db.flush()
+        db.add(Candidate(domain_id=high.id, monthly_views=50_000, evaluation_stage="day7"))
+        for index, domain in enumerate((high, general), start=1):
+            video = Video(id=f"prioritycheck{index}", active=True)
+            db.add(video)
+            db.flush()
+            db.add(
+                VideoDomain(
+                    video_id=video.id,
+                    domain_id=domain.id,
+                    raw_url=f"https://{domain.name}",
+                    normalized_url=f"https://{domain.name}/",
+                    active=True,
+                )
+            )
+        db.commit()
+
+        due = _domains_due_for_check(db, 1)
+
+        assert [domain.name for domain in due] == ["high-priority.example"]
+
+
 def test_removed_links_are_included_in_targeted_candidate_refresh() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -522,6 +576,7 @@ def test_scheduler_runs_channel_fanout_and_adaptive_refresh() -> None:
     assert "youtube_intelligence" in jobs
     assert jobs["youtube_channel_fanout"].trigger.interval == timedelta(minutes=30)
     assert jobs["view_snapshots"].trigger.interval == timedelta(hours=6)
+    assert jobs["availability_checks"].trigger.interval == timedelta(hours=1)
 
 
 def test_scale_tables_are_registered_without_mutating_existing_video_schema() -> None:
