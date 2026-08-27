@@ -1305,6 +1305,7 @@ def run_availability_checks() -> None:
             "available": 0,
             "likely_available": 0,
             "registered": 0,
+            "unsupported": 0,
             "rdap_rate_limited": 0,
             "rdap_errors": 0,
             "dns_unknown": 0,
@@ -1361,7 +1362,7 @@ def run_availability_checks() -> None:
                         counters["rdap_errors"] += 1
                     if result.dns_status == "unknown":
                         counters["dns_unknown"] += 1
-                    if result.error:
+                    if result.error and result.status != "unsupported":
                         counters["errors"] += 1
                         if len(counters["error_details"]) < 20:
                             counters["error_details"].append(f"{domain.name}: {result.error}"[:500])

@@ -123,6 +123,23 @@ def test_porkbun_marks_unavailable_as_registered(monkeypatch) -> None:
     assert result.status == "registered"
 
 
+def test_porkbun_marks_an_invalid_tld_as_unsupported(monkeypatch) -> None:
+    def fake_post(*args, **kwargs) -> FakeResponse:
+        return FakeResponse(
+            {
+                "status": "ERROR",
+                "message": "Invalid TLD.",
+            }
+        )
+
+    monkeypatch.setattr("app.availability.httpx.post", fake_post)
+    result = check_porkbun("example.unsupported", registrar_settings())
+
+    assert result.status == "unsupported"
+    assert result.source == "porkbun"
+    assert result.error == "Invalid TLD."
+
+
 def test_exact_registrar_bypasses_rdap_after_the_traffic_gate(monkeypatch) -> None:
     rdap_calls: list[str] = []
 

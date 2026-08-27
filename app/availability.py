@@ -227,12 +227,21 @@ def check_porkbun(domain: str, settings: Settings) -> AvailabilityResult:
             error="Porkbun rate limited",
         )
     if response.status_code >= 400 or str(payload.get("status", "")).upper() == "ERROR":
+        message = str(payload.get("message") or f"HTTP {response.status_code}")
+        if "invalid tld" in message.lower():
+            return AvailabilityResult(
+                status="unsupported",
+                source="porkbun",
+                rdap_status="unchecked",
+                dns_status="unchecked",
+                error=message,
+            )
         return AvailabilityResult(
             status="unknown",
             source="porkbun",
             rdap_status="unchecked",
             dns_status="unchecked",
-            error=str(payload.get("message") or f"HTTP {response.status_code}"),
+            error=message,
         )
 
     result = payload.get("response", payload)
