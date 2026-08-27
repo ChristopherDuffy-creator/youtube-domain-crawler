@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain_lifecycle import get_or_create_unsuppressed_domain
 from app.free_source_candidates import (
     completed_target_exists,
     load_candidate_lanes,
@@ -92,13 +93,8 @@ def _exact_links(hit: dict[str, Any], domain: str) -> list[tuple[str, str, tuple
     return list(deduped.values())
 
 
-def _get_or_create_domain(db: Session, name: str) -> Domain:
-    domain = db.scalar(select(Domain).where(Domain.name == name))
-    if domain is None:
-        domain = Domain(name=name)
-        db.add(domain)
-        db.flush()
-    return domain
+def _get_or_create_domain(db: Session, name: str) -> Domain | None:
+    return get_or_create_unsuppressed_domain(db, name)
 
 
 def _get_or_create_hn_site(db: Session) -> SourceSite:
@@ -171,6 +167,8 @@ def _save_hit_links(
     if page is None:
         return 0, 0
     domain = _get_or_create_domain(db, domain_name)
+    if domain is None:
+        return 0, 0
     _save_metric(db, page, hit)
 
     created = 0

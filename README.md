@@ -8,6 +8,7 @@ This project is configured for Christy's final rules:
 - **Qualified:** 50,000+ current long-form views/month plus exact ordinary-registration confirmation.
 - **Priority:** 100,000+ current long-form views/month plus exact ordinary-registration confirmation.
 - **Buy-ready:** a stable Day 7 comparison, exact availability and a visible buy score/potential value.
+- Ranked YouTube rows have two final actions: **Bought** moves the full score/value snapshot into a dedicated bought-domain ledger and removes the name from every acquisition queue; **Delete** permanently removes its linked records and stores only a one-way fingerprint so crawlers cannot add it back.
 - **Target before buying:** 100 qualified/priority domains.
 - Personal, creator and brand names are not automatically removed.
 - Social sites, link shorteners, affiliate redirectors, registered domains, aftermarket inventory and expensive registry-premium domains do not qualify.

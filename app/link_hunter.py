@@ -20,6 +20,7 @@ from app.availability import AvailabilityResult, check_dns, check_domain
 from app.config import Settings, get_settings
 from app.database import SessionLocal
 from app.dataforseo import DataForSEOClient, DataForSEOError
+from app.domain_lifecycle import get_or_create_unsuppressed_domain
 from app.link_hunter_preview import (
     rerank_summary_screen_targets,
     select_cached_deep_proof_targets_with_ranking,
@@ -377,10 +378,7 @@ def _bulk_provider_call(
     try:
         response = callback()
         items = response.result.get("items") or []
-        item_map = {
-            _normalize_host(str(item.get("url") or item.get("target") or "")): item
-            for item in items
-        }
+        item_map = {_normalize_host(str(item.get("url") or item.get("target") or "")): item for item in items}
         split_cost = response.task_cost_usd / max(len(queries), 1)
         for query in queries:
             item = item_map.get(_normalize_host(query.target), {})
@@ -403,13 +401,8 @@ def _bulk_provider_call(
         raise
 
 
-def _get_or_create_domain(db: Session, name: str) -> Domain:
-    domain = db.scalar(select(Domain).where(Domain.name == name))
-    if domain is None:
-        domain = Domain(name=name)
-        db.add(domain)
-        db.flush()
-    return domain
+def _get_or_create_domain(db: Session, name: str) -> Domain | None:
+    return get_or_create_unsuppressed_domain(db, name)
 
 
 def _dns_prefilter_targets(
@@ -426,6 +419,9 @@ def _dns_prefilter_targets(
     for target in targets:
         dns_status = dns_results[target]
         domain = _get_or_create_domain(db, target)
+        if domain is None:
+            blocked += 1
+            continue
         domain.dns_status = dns_status
         if dns_status == "resolves":
             domain.availability_status = "registered"
@@ -641,11 +637,7 @@ def _score_opportunity(
     screening_risk = 0.0
     if db is not None:
         screening_risk = float(
-            db.scalar(
-                select(WebScreening.risk_score)
-                .where(WebScreening.domain_name == domain.name)
-                .limit(1)
-            )
+            db.scalar(select(WebScreening.risk_score).where(WebScreening.domain_name == domain.name).limit(1))
             or 0.0
         )
     projection = project_opportunity_economics(
@@ -839,9 +831,7 @@ def _record_source_link_evidence(
     result: _VerificationFetchResult,
 ) -> bool:
     """Persist one completed fetch result in the canonical evidence ledger."""
-    verification = db.scalar(
-        select(FetchVerification).where(FetchVerification.source_link_id == link.id)
-    )
+    verification = db.scalar(select(FetchVerification).where(FetchVerification.source_link_id == link.id))
     if verification is None:
         verification = FetchVerification(source_link_id=link.id)
         db.add(verification)
@@ -890,9 +880,7 @@ def _verify_source_link(
     page = db.get(SourcePage, link.source_page_id)
     if page is None:
         return False
-    verification = db.scalar(
-        select(FetchVerification).where(FetchVerification.source_link_id == link.id)
-    )
+    verification = db.scalar(select(FetchVerification).where(FetchVerification.source_link_id == link.id))
     fetched_at = verification.fetched_at if verification is not None else None
     if fetched_at is not None and fetched_at.tzinfo is None:
         fetched_at = fetched_at.replace(tzinfo=UTC)
@@ -938,10 +926,7 @@ def refresh_web_link_observations(
         )
         .join(SourcePage, SourcePage.id == SourceLink.source_page_id)
         .outerjoin(FetchVerification, FetchVerification.source_link_id == SourceLink.id)
-        .where(
-            (FetchVerification.id.is_(None))
-            | (FetchVerification.fetched_at < cutoff)
-        )
+        .where((FetchVerification.id.is_(None)) | (FetchVerification.fetched_at < cutoff))
         .order_by(FetchVerification.fetched_at.asc(), Opportunity.score.desc())
         .limit(batch_size)
     ).all()
@@ -968,8 +953,7 @@ def refresh_web_link_observations(
                 requests,
             )
             fetched = {
-                request.source_link_id: result
-                for request, result in zip(requests, results, strict=True)
+                request.source_link_id: result for request, result in zip(requests, results, strict=True)
             }
 
     for (opportunity, domain, best_link, _, _), request in zip(rows, requests, strict=True):
@@ -981,9 +965,7 @@ def refresh_web_link_observations(
                 .order_by(LinkObservation.observed_at.desc())
                 .limit(1)
             )
-            links = db.scalars(
-                select(SourceLink).where(SourceLink.domain_id == domain.id)
-            ).all()
+            links = db.scalars(select(SourceLink).where(SourceLink.domain_id == domain.id)).all()
             _score_opportunity(
                 opportunity,
                 domain,
@@ -1062,9 +1044,7 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
         }
 
     run_cost_cap = effective_provider_run_limit_usd(settings)
-    targets, free_scores, free_signals, _, _ = select_provider_summary_targets_with_ranking(
-        db, settings
-    )
+    targets, free_scores, free_signals, _, _ = select_provider_summary_targets_with_ranking(db, settings)
     counters: dict[str, Any] = {
         "targets": len(targets),
         "summary_targets": len(targets),
@@ -1133,9 +1113,7 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
             counters["provider_cost_usd"] = round(float(counters["provider_cost_usd"]), 6)
             return counters
 
-        normalized_summaries = {
-            target: summary_map.get(_normalize_host(target), {}) for target in targets
-        }
+        normalized_summaries = {target: summary_map.get(_normalize_host(target), {}) for target in targets}
         _, combined_scores, _ = rerank_summary_screen_targets(
             targets,
             free_scores,
@@ -1145,6 +1123,8 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
         )
         for target in targets:
             domain = _get_or_create_domain(db, target)
+            if domain is None:
+                continue
             _save_summary_opportunity(
                 db,
                 domain,
@@ -1223,6 +1203,8 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
             counters["provider_cost_usd"] += backlink_response.task_cost_usd
 
             domain = _get_or_create_domain(db, target)
+            if domain is None:
+                continue
             saved_links: list[SourceLink] = []
             for item in backlink_response.result.get("items") or []:
                 if item.get("is_lost"):
@@ -1292,8 +1274,7 @@ def run_provider_proof(db: Session, settings: Settings) -> dict[str, Any]:
                     (
                         item
                         for item in traffic_items
-                        if _canonical_url(str(item.get("target") or ""))
-                        == _canonical_url(page_url)
+                        if _canonical_url(str(item.get("target") or "")) == _canonical_url(page_url)
                     ),
                     {"metrics": {}},
                 )

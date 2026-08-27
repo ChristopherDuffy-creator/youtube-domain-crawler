@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.config import Settings
 from app.metrics import calculate_monthly_views, is_short_form_duration
 from app.models import (
+    BoughtDomain,
     Domain,
     DroppedDomain,
     DroppedDomainMatch,
@@ -196,7 +197,10 @@ def _refresh_youtube_domain_signal_chunk(
     *,
     limit: int | None = None,
 ) -> int:
-    statement = select(Domain).where(Domain.video_links.any(VideoDomain.active.is_(True)))
+    statement = select(Domain).where(
+        Domain.video_links.any(VideoDomain.active.is_(True)),
+        ~Domain.id.in_(select(BoughtDomain.domain_id)),
+    )
     if domain_ids is not None:
         if not domain_ids:
             return 0
@@ -472,6 +476,10 @@ def refresh_local_dropped_matches(
         .join(
             Video,
             (Video.id == VideoDomain.video_id) & Video.active.is_(True),
+        )
+        .where(
+            Domain.excluded_reason.is_(None),
+            ~Domain.id.in_(select(BoughtDomain.domain_id)),
         )
     )
     if names is not None:

@@ -21,6 +21,12 @@ from app.availability import AvailabilityResult, check_domain
 from app.commoncrawl_prefilter import run_commoncrawl_prefilter as run_commoncrawl_prefilter_batch
 from app.config import EVERGREEN_QUERIES, MANUAL_CHECKPOINTS, Settings, get_settings
 from app.database import SessionLocal
+from app.domain_lifecycle import (
+    bought_domain_names,
+    get_or_create_unsuppressed_domain,
+    scrub_domain_from_text,
+    suppressed_domain_names,
+)
 from app.domain_tools import extract_domain_names, extract_links, sanitize_external_text
 from app.emailer import (
     DailyDigest,
@@ -38,6 +44,7 @@ from app.link_hunter import refresh_web_link_observations
 from app.metrics import ViewMetric, calculate_monthly_views, is_short_form_duration
 from app.models import (
     AppCheckpoint,
+    BoughtDomain,
     Candidate,
     Domain,
     DroppedDomain,
@@ -319,6 +326,22 @@ def process_video(
     if len(channel_id) > 64:
         raise ValueError("Invalid YouTube channel identifier")
 
+    extracted_links = extract_links(description)
+    deleted_names = suppressed_domain_names(
+        db,
+        {link.domain for link in extracted_links},
+    )
+    bought_names = bought_domain_names(
+        db,
+        {link.domain for link in extracted_links},
+    )
+    blocked_names = deleted_names | bought_names
+    if deleted_names:
+        for domain_name in deleted_names:
+            description = scrub_domain_from_text(description, domain_name)
+    if blocked_names:
+        extracted_links = [link for link in extracted_links if link.domain not in blocked_names]
+
     now = utcnow()
     counters = {
         "new_videos": 0,
@@ -355,14 +378,14 @@ def process_video(
             affected_domain_ids.add(link.domain_id)
         link.active = False
 
-    extracted_links = extract_links(description)
     counters["external_links"] = len(extracted_links)
     for extracted in extracted_links:
         domain = db.scalar(select(Domain).where(Domain.name == extracted.domain))
         if domain is None:
-            domain = Domain(name=extracted.domain, suffix=extracted.suffix)
-            db.add(domain)
-            db.flush()
+            domain = get_or_create_unsuppressed_domain(db, extracted.domain)
+            if domain is None:
+                continue
+            domain.suffix = extracted.suffix
             counters["new_domains"] += 1
         if affected_domain_ids is not None:
             affected_domain_ids.add(domain.id)
@@ -390,7 +413,12 @@ def process_video(
         link.active = True
         link.last_seen_at = now
 
-    _ensure_video_refresh_state(db, video, len(extracted_links))
+    if blocked_names and not extracted_links:
+        refresh_state = db.get(VideoRefreshState, video.id)
+        if refresh_state is not None:
+            db.delete(refresh_state)
+    else:
+        _ensure_video_refresh_state(db, video, len(extracted_links))
     return counters
 
 
@@ -1183,6 +1211,7 @@ def _domains_due_for_check(db: Session, limit: int) -> list[Domain]:
                 ),
             ),
             Domain.video_links.any(VideoDomain.active.is_(True)),
+            ~Domain.id.in_(select(BoughtDomain.domain_id)),
         )
         # PostgreSQL sorts NULL values last for ascending order. Without the
         # explicit case, already-checked domains can monopolise this capped
@@ -1313,8 +1342,12 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
             Video.active.is_(True),
         )
     )
+    bought_candidate_exists = exists(
+        select(BoughtDomain.id).where(BoughtDomain.domain_id == Candidate.domain_id)
+    )
     stale_candidates = update(Candidate).where(
         ~active_link_exists,
+        ~bought_candidate_exists,
         Candidate.tier != "rejected",
         Candidate.domain_id.in_(domain_ids),
     )
@@ -1337,8 +1370,12 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
             updated_at=utcnow(),
         )
     )
+    bought_domain_exists = exists(select(BoughtDomain.id).where(BoughtDomain.domain_id == Domain.id))
     statement = select(Domain).where(Domain.video_links.any(VideoDomain.active.is_(True)))
-    statement = statement.where(Domain.id.in_(domain_ids))
+    statement = statement.where(
+        Domain.id.in_(domain_ids),
+        ~bought_domain_exists,
+    )
     domains = db.scalars(
         statement.options(
             selectinload(Domain.video_links).selectinload(VideoDomain.video).selectinload(Video.snapshots)
@@ -1464,9 +1501,18 @@ def _release_orm_memory(db: Session) -> None:
 def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
     """Refresh candidates in small ORM graph chunks without reducing input throughput."""
     if domain_ids is None:
-        candidate_ids = db.scalars(select(Candidate.domain_id)).all()
+        candidate_ids = db.scalars(
+            select(Candidate.domain_id).where(
+                ~exists(select(BoughtDomain.id).where(BoughtDomain.domain_id == Candidate.domain_id))
+            )
+        ).all()
         active_ids = db.scalars(
-            select(VideoDomain.domain_id).where(VideoDomain.active.is_(True)).distinct()
+            select(VideoDomain.domain_id)
+            .where(
+                VideoDomain.active.is_(True),
+                ~exists(select(BoughtDomain.id).where(BoughtDomain.domain_id == VideoDomain.domain_id)),
+            )
+            .distinct()
         ).all()
         ids = sorted({int(value) for value in [*candidate_ids, *active_ids]})
     else:
@@ -1482,6 +1528,11 @@ def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
 
 def ingest_dropped_text(db: Session, text: str, source: str) -> dict[str, int]:
     domains = extract_domain_names(text)
+    excluded = suppressed_domain_names(db, set(domains)) | bought_domain_names(
+        db,
+        set(domains),
+    )
+    domains = [name for name in domains if name not in excluded]
     counters = {"parsed": len(domains), "new": 0, "matched_index": 0}
     if not domains:
         return counters
@@ -1570,6 +1621,7 @@ def _dropped_domains_due_for_youtube_search(
         .where(
             DroppedDomain.youtube_searched_at.is_(None),
             DroppedDomain.matched_existing_index.is_(False),
+            ~DroppedDomain.name.in_(select(BoughtDomain.domain_name)),
         )
         .order_by(
             case((DroppedDomain.name.like("%.com"), 0), else_=1),
@@ -1898,7 +1950,12 @@ def _build_daily_digest_report(
     ]
 
     web_tier_counts = dict(
-        db.execute(select(Opportunity.tier, func.count()).group_by(Opportunity.tier)).all()
+        db.execute(
+            select(Opportunity.tier, func.count())
+            .join(Domain, Domain.id == Opportunity.domain_id)
+            .where(~Domain.id.in_(select(BoughtDomain.domain_id)))
+            .group_by(Opportunity.tier)
+        ).all()
     )
     web_rows = db.execute(
         select(Opportunity, Domain, SourcePage, SourceSite, OpportunityEconomics)
@@ -1909,6 +1966,7 @@ def _build_daily_digest_report(
         .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
         .where(
             Opportunity.tier.in_(["priority", "qualified", "watchlist", "pending"]),
+            ~Domain.id.in_(select(BoughtDomain.domain_id)),
             Domain.availability_status.notin_(["registered", "aftermarket", "premium", "reserved"]),
             or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
         )

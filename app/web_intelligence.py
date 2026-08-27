@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     BacklinkSummary,
+    BoughtDomain,
     Domain,
     DroppedDomain,
     Opportunity,
@@ -112,11 +113,7 @@ def apply_traffic_first_buy_score(
     revenue_points = min(22.0, 10.0 * math.log10(revenue_high + 1.0))
     evidence_bonus = min(10.0, max(0.0, evidence_score) * 0.10)
     verified_points = 10.0 if verified else 0.0
-    clickability_points = (
-        min(5.0, max(0.0, min(100.0, clickability_score)) / 20.0)
-        if verified
-        else 0.0
-    )
+    clickability_points = min(5.0, max(0.0, min(100.0, clickability_score)) / 20.0) if verified else 0.0
     availability_points = {
         "available": 3.0,
         "likely_available": 2.0,
@@ -259,7 +256,10 @@ def screen_dropped_domains(db: Session, batch_size: int) -> dict[str, int]:
     drops = db.scalars(
         select(DroppedDomain)
         .outerjoin(WebScreening, WebScreening.dropped_domain_id == DroppedDomain.id)
-        .where(WebScreening.id.is_(None))
+        .where(
+            WebScreening.id.is_(None),
+            ~DroppedDomain.name.in_(select(BoughtDomain.domain_name)),
+        )
         .order_by(DroppedDomain.id.asc())
         .limit(batch_size)
     ).all()
@@ -434,9 +434,7 @@ def save_opportunity_economics(
         "safety_flags": projection.safety_flags,
         "updated_at": datetime.now(UTC),
     }
-    economics = db.scalar(
-        select(OpportunityEconomics).where(OpportunityEconomics.domain_id == domain.id)
-    )
+    economics = db.scalar(select(OpportunityEconomics).where(OpportunityEconomics.domain_id == domain.id))
     if economics is not None:
         for field, value in values.items():
             setattr(economics, field, value)
@@ -444,9 +442,7 @@ def save_opportunity_economics(
 
     dialect = db.bind.dialect.name if db.bind is not None else ""
     if dialect == "postgresql":
-        statement = postgresql_insert(OpportunityEconomics).values(
-            domain_id=domain.id, **values
-        )
+        statement = postgresql_insert(OpportunityEconomics).values(domain_id=domain.id, **values)
         statement = statement.on_conflict_do_update(
             index_elements=[OpportunityEconomics.domain_id],
             set_=values,
@@ -464,9 +460,7 @@ def save_opportunity_economics(
         db.add(economics)
         return economics
 
-    return db.scalar(
-        select(OpportunityEconomics).where(OpportunityEconomics.domain_id == domain.id)
-    )
+    return db.scalar(select(OpportunityEconomics).where(OpportunityEconomics.domain_id == domain.id))
 
 
 def backfill_existing_web_intelligence(
@@ -479,9 +473,7 @@ def backfill_existing_web_intelligence(
         .join(Domain, Domain.id == Opportunity.domain_id)
         .outerjoin(BacklinkSummary, BacklinkSummary.domain_id == Domain.id)
         .outerjoin(OpportunityEconomics, OpportunityEconomics.domain_id == Domain.id)
-        .where(
-            (BacklinkSummary.id.is_(None)) | (OpportunityEconomics.id.is_(None))
-        )
+        .where((BacklinkSummary.id.is_(None)) | (OpportunityEconomics.id.is_(None)))
         .order_by(Opportunity.id.asc())
         .limit(batch_size)
     ).all()
@@ -492,9 +484,7 @@ def backfill_existing_web_intelligence(
     links_by_domain: dict[int, list[SourceLink]] = {domain_id: [] for domain_id in domain_ids}
     for chunk in _chunks([str(domain_id) for domain_id in domain_ids]):
         numeric_ids = [int(value) for value in chunk]
-        for link in db.scalars(
-            select(SourceLink).where(SourceLink.domain_id.in_(numeric_ids))
-        ).all():
+        for link in db.scalars(select(SourceLink).where(SourceLink.domain_id.in_(numeric_ids))).all():
             links_by_domain.setdefault(link.domain_id, []).append(link)
 
     screening_risks = {
@@ -515,9 +505,7 @@ def backfill_existing_web_intelligence(
                     provider="historical_ledger",
                     referring_pages=max(0, int(opportunity.referring_page_count or 0)),
                     referring_domains=max(0, int(opportunity.independent_site_count or 0)),
-                    referring_main_domains=max(
-                        0, int(opportunity.independent_site_count or 0)
-                    ),
+                    referring_main_domains=max(0, int(opportunity.independent_site_count or 0)),
                     rank=max(0.0, float(opportunity.link_strength or 0.0)),
                     raw_summary={"backfilled_from": "opportunity"},
                     first_seen_at=now,

@@ -29,6 +29,11 @@ from app.affiliate_links import AFFILIATE_LINKS, PublicSite, public_site_for_hos
 from app.backup import build_logical_snapshot
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
+from app.domain_lifecycle import (
+    hard_delete_domain,
+    migrate_legacy_youtube_bought_decisions,
+    move_youtube_domain_to_bought,
+)
 from app.emailer import EmailError, send_email
 from app.jobs import (
     JOB_FUNCTIONS,
@@ -41,6 +46,7 @@ from app.link_hunter import _score_opportunity, run_provider_proof_job
 from app.link_hunter_preview import build_provider_proof_preview
 from app.models import (
     BacklinkSummary,
+    BoughtDomain,
     Candidate,
     ContactMessage,
     DashboardDecision,
@@ -107,6 +113,7 @@ ResultTier = Literal[
 ]
 DashboardSystem = Literal["web", "youtube"]
 DecisionStatus = Literal["shortlisted", "bought", "ignored"]
+YouTubeDomainAction = Literal["delete", "bought"]
 
 WebEvidenceRow = tuple[
     Opportunity,
@@ -166,6 +173,7 @@ async def lifespan(_: FastAPI):
             with SessionLocal() as db:
                 if storage_guard_allows_writes(db, settings, "startup_maintenance"):
                     ensure_seed_data(db)
+                    migrated_bought = migrate_legacy_youtube_bought_decisions(db)
                     quarantined = quarantine_stale_youtube_signals(db, settings)
                     retained_youtube_ids = set(
                         db.scalars(
@@ -185,8 +193,9 @@ async def lifespan(_: FastAPI):
                     )
                     refreshed_youtube = refresh_candidates(db, retained_youtube_ids)
                     logger.info(
-                        "YouTube projection safety gate quarantined %s and "
-                        "recalculated %s retained candidates",
+                        "YouTube purchase migration moved %s legacy records; projection "
+                        "safety gate quarantined %s and recalculated %s retained candidates",
+                        migrated_bought,
                         quarantined,
                         refreshed_youtube,
                     )
@@ -954,6 +963,7 @@ def _load_web_evidence_rows(
         .outerjoin(OpportunityEconomics, OpportunityEconomics.domain_id == Domain.id)
         .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
         .where(
+            ~Domain.id.in_(select(BoughtDomain.domain_id)),
             Domain.availability_status.notin_(_HIDDEN_WEB_AVAILABILITY),
             or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
         )
@@ -1437,6 +1447,7 @@ def dashboard(
             .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
             .where(
                 Candidate.tier != "rejected",
+                ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
                 Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
                 or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
             )
@@ -1504,6 +1515,7 @@ def dashboard(
             .join(Domain, Domain.id == Candidate.domain_id)
             .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
             .where(
+                ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
                 Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
                 or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
             )
@@ -1517,6 +1529,7 @@ def dashboard(
             .join(Domain, Domain.id == Opportunity.domain_id)
             .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
             .where(
+                ~Domain.id.in_(select(BoughtDomain.domain_id)),
                 Domain.availability_status.notin_(_HIDDEN_WEB_AVAILABILITY),
                 or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
             )
@@ -1531,6 +1544,7 @@ def dashboard(
             .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
             .where(
                 Candidate.tier != "rejected",
+                ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
                 Candidate.updated_at >= new_since,
                 Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
                 or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
@@ -1548,6 +1562,7 @@ def dashboard(
                 .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
                 .where(
                     Candidate.tier != "rejected",
+                    ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
                     Candidate.evaluation_stage == stage,
                     Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
                     or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
@@ -1566,6 +1581,7 @@ def dashboard(
             .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
             .where(
                 Opportunity.updated_at >= new_since,
+                ~Domain.id.in_(select(BoughtDomain.domain_id)),
                 Domain.availability_status.notin_(_HIDDEN_WEB_AVAILABILITY),
                 or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
             )
@@ -1636,7 +1652,7 @@ def dashboard(
     displayed_rows = candidate_rows if view == "youtube" else web_evidence_rows
     displayed_domain_ids = [row[1].id for row in displayed_rows]
     decisions = []
-    if displayed_domain_ids:
+    if displayed_domain_ids and view == "web":
         decisions = db.scalars(
             select(DashboardDecision).where(
                 DashboardDecision.system == view,
@@ -1650,14 +1666,24 @@ def dashboard(
             select(YouTubeDomainSignal).where(YouTubeDomainSignal.domain_id.in_(displayed_domain_ids))
         ).all()
         youtube_signal_by_domain = {signal.domain_id: signal for signal in youtube_signals}
-    decision_counts = {
-        decision_status: int(count)
-        for decision_status, count in db.execute(
-            select(DashboardDecision.status, func.count())
-            .where(DashboardDecision.system == view)
-            .group_by(DashboardDecision.status)
-        ).all()
-    }
+    decision_counts = (
+        {
+            decision_status: int(count)
+            for decision_status, count in db.execute(
+                select(DashboardDecision.status, func.count())
+                .where(DashboardDecision.system == "web")
+                .group_by(DashboardDecision.status)
+            ).all()
+        }
+        if view == "web"
+        else {}
+    )
+    bought_domain_count = int(
+        db.scalar(
+            select(func.count()).select_from(BoughtDomain).where(BoughtDomain.source_system == "youtube")
+        )
+        or 0
+    )
 
     progress = min(100, round(qualified / settings.target_qualified_domains * 100, 1))
     return_to = request.url.path
@@ -1686,6 +1712,7 @@ def dashboard(
             "decision_by_domain": decision_by_domain,
             "youtube_signal_by_domain": youtube_signal_by_domain,
             "decision_counts": decision_counts,
+            "bought_domain_count": bought_domain_count,
             "return_to": return_to,
             "daily_budget": daily_budget,
             "next_web_run": _next_link_hunter_slot(),
@@ -1811,6 +1838,7 @@ def export_candidates(
         .outerjoin(YouTubeDomainSignal, YouTubeDomainSignal.domain_id == Domain.id)
         .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
         .where(
+            ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
             Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
             or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
         )
@@ -2022,6 +2050,11 @@ def set_dashboard_decision(
     _: str = Depends(require_dashboard_auth),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
+    if system != "web":
+        raise HTTPException(
+            status_code=400,
+            detail="YouTube results use the permanent Bought/Delete actions",
+        )
     if db.get(Domain, domain_id) is None:
         raise HTTPException(status_code=404, detail="Domain not found")
     if system == "youtube":
@@ -2055,6 +2088,26 @@ def set_dashboard_decision(
         decision.status = decision_status
         decision.updated_at = datetime.now(UTC)
     db.commit()
+    return RedirectResponse(url=_safe_next_path(return_to), status_code=303)
+
+
+@app.post("/admin/youtube-domain-action")
+def apply_youtube_domain_action(
+    domain_id: int = Form(),
+    domain_action: YouTubeDomainAction = Form(),
+    return_to: str = Form(default="/?view=youtube"),
+    _: str = Depends(require_dashboard_auth),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    try:
+        if domain_action == "bought":
+            move_youtube_domain_to_bought(db, domain_id)
+        else:
+            hard_delete_domain(db, domain_id)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return RedirectResponse(url=_safe_next_path(return_to), status_code=303)
 
 

@@ -9,19 +9,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models import DroppedDomain, ProviderQuery
+from app.models import BoughtDomain, DroppedDomain, ProviderQuery
 
 type CandidateRank = Callable[[DroppedDomain], tuple[object, ...]]
 
 
 def completed_target_exists(*, provider: str, endpoint: str) -> ColumnElement[bool]:
     """Correlated completion check that lets PostgreSQL use the query index."""
-    return select(ProviderQuery.id).where(
-        ProviderQuery.provider == provider,
-        ProviderQuery.endpoint == endpoint,
-        ProviderQuery.status == "complete",
-        ProviderQuery.target == DroppedDomain.name,
-    ).exists()
+    return (
+        select(ProviderQuery.id)
+        .where(
+            ProviderQuery.provider == provider,
+            ProviderQuery.endpoint == endpoint,
+            ProviderQuery.status == "complete",
+            ProviderQuery.target == DroppedDomain.name,
+        )
+        .exists()
+    )
 
 
 def load_candidate_lanes(
@@ -32,7 +36,10 @@ def load_candidate_lanes(
 ) -> tuple[list[DroppedDomain], list[DroppedDomain]]:
     """Load small newest and oldest eligible pools without materialising history."""
     pool_size = max(64, limit * 8)
-    statement = select(DroppedDomain).where(*eligibility)
+    statement = select(DroppedDomain).where(
+        *eligibility,
+        ~DroppedDomain.name.in_(select(BoughtDomain.domain_name)),
+    )
     # Dropped IDs are insertion-ordered and already backed by the primary-key
     # index. Do not add a startup migration that can exhaust a full production
     # PostgreSQL volume while the crawler is recovering.

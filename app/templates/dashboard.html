@@ -58,7 +58,11 @@
       <article><span>15 min</span><small>Winner queue cadence · budget-aware continuous processing</small></article>
       <article><span>{% if last_web_success and last_web_success.finished_at %}{{ (last_web_success.finished_at|dashboard_time).strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest Web success{% if last_web_success and last_web_success.finished_at %} · {{ (last_web_success.finished_at|dashboard_time).strftime('%d %b') }} · Prague time{% endif %}</small></article>
       <article><span>{% if last_youtube_success and last_youtube_success.finished_at %}{{ (last_youtube_success.finished_at|dashboard_time).strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest YouTube success{% if last_youtube_success and last_youtube_success.finished_at %} · {{ (last_youtube_success.finished_at|dashboard_time).strftime('%d %b') }} · Prague time{% endif %}</small></article>
+      {% if dashboard_view == 'youtube' %}
+      <article><span>{{ bought_domain_count }}</span><small>Bought domains · held outside every ranking view</small></article>
+      {% else %}
       <article><span>{{ decision_counts.get('shortlisted', 0) }}</span><small>Shortlisted · {{ decision_counts.get('bought', 0) }} bought · {{ decision_counts.get('ignored', 0) }} ignored</small></article>
+      {% endif %}
     </section>
 
     {% if not registrar_enabled or not email_enabled %}
@@ -121,7 +125,7 @@
           <tbody>
           {% for candidate, domain, video in candidate_rows %}
             {% set signal = youtube_signal_by_domain.get(domain.id) %}
-            <tr{% if decision_by_domain.get(domain.id) == 'ignored' %} class="decision-ignored"{% endif %}>
+            <tr>
               <td><strong>{{ domain.name }}</strong>{% if candidate.buy_ready %}<small><span class="pill qualified">Day 7 buy-ready</span></small>{% endif %}{% if domain.registrar_price_usd %}<small>${{ "%.2f"|format(domain.registrar_price_usd) }}</small>{% endif %}</td>
               <td><span class="pill {{ candidate.tier }}">{{ candidate.tier }}</span><small>buy score {{ "%.1f"|format(signal.buy_score if signal else 0) }} · evidence score {{ "%.1f"|format(candidate.score) }}</small></td>
               <td>
@@ -135,16 +139,20 @@
               <td>{{ candidate.link_count }}<small>{{ candidate.video_count }} video{% if candidate.video_count != 1 %}s{% endif %}</small></td>
               <td>
                 <div class="decision-actions">
-                  {% for decision_value, decision_label in [('shortlisted', 'Shortlist'), ('bought', 'Bought'), ('ignored', 'Ignore')] %}
-                  <form action="/admin/dashboard-decision" method="post">
-                    <input type="hidden" name="system" value="youtube">
+                  <form action="/admin/youtube-domain-action" method="post" onsubmit="return confirm('Permanently delete {{ domain.name }} and prevent it being rediscovered? This cannot be undone.');">
                     <input type="hidden" name="domain_id" value="{{ domain.id }}">
-                    <input type="hidden" name="decision_status" value="{{ decision_value }}">
+                    <input type="hidden" name="domain_action" value="delete">
                     <input type="hidden" name="return_to" value="{{ return_to }}">
-                    <button class="decision-button {{ decision_value }}{% if decision_by_domain.get(domain.id) == decision_value %} active{% endif %}" type="submit">{{ decision_label }}</button>
+                    <button class="decision-button delete" type="submit">Delete</button>
                   </form>
-                  {% endfor %}
+                  <form action="/admin/youtube-domain-action" method="post" onsubmit="return confirm('Move {{ domain.name }} to the Bought database and remove it from all ranking views?');">
+                    <input type="hidden" name="domain_id" value="{{ domain.id }}">
+                    <input type="hidden" name="domain_action" value="bought">
+                    <input type="hidden" name="return_to" value="{{ return_to }}">
+                    <button class="decision-button bought" type="submit">Bought</button>
+                  </form>
                 </div>
+                <small>Delete is permanent</small>
               </td>
             </tr>
           {% else %}

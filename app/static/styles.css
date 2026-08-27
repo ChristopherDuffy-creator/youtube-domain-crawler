@@ -98,6 +98,8 @@ tbody tr:hover { background: rgba(124,92,255,.05); }
 .decision-actions form { margin: 0; }
 .decision-button { border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; background: #0a1020; color: var(--muted); font-size: 11px; font-weight: 750; cursor: pointer; }
 .decision-button:hover { border-color: #56688c; color: var(--text); }
+.decision-button.delete { border-color: var(--danger); color: #ff9ca6; }
+.decision-button.delete:hover { background: rgba(255,107,122,.14); }
 .decision-button.shortlisted.active { border-color: var(--accent); background: rgba(124,92,255,.2); color: #d8d1ff; }
 .decision-button.bought.active { border-color: var(--accent-2); background: rgba(34,201,167,.16); color: #63e0c7; }
 .decision-button.ignored.active { border-color: var(--danger); background: rgba(255,107,122,.14); color: #ff9ca6; }

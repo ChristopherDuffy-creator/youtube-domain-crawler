@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.dataforseo import estimate_provider_proof_max_cost_usd
+from app.domain_lifecycle import bought_domain_names
 from app.models import (
     BacklinkSummary,
     Candidate,
@@ -383,9 +384,7 @@ def _free_signal_row(name: str, context: dict[str, Any]) -> dict[str, int | floa
         "verified_links": int(context["verified_links"].get(name, 0) or 0),
         "observed_live_links": int(observations.get("observed_live_links", 0) or 0),
         "clickable_live_links": int(observations.get("clickable_live_links", 0) or 0),
-        "max_observed_survival_days": float(
-            observations.get("max_observed_survival_days", 0.0) or 0.0
-        ),
+        "max_observed_survival_days": float(observations.get("max_observed_survival_days", 0.0) or 0.0),
         "commoncrawl_hits": int(context["commoncrawl"].get(name, 0) or 0),
         "youtube_monthly_views": int(yt.get("monthly_views", 0) or 0),
         "youtube_video_count": int(yt.get("video_count", 0) or 0),
@@ -397,9 +396,7 @@ def _free_signal_row(name: str, context: dict[str, Any]) -> dict[str, int | floa
         "summary_rescue_points": _summary_rescue_points(summary_signal),
         "cached_summary_rank": float(summary_signal.get("rank", 0.0) or 0.0),
         "cached_referring_pages": int(summary_signal.get("referring_pages", 0) or 0),
-        "cached_referring_domains": int(
-            summary_signal.get("referring_domains", 0) or 0
-        ),
+        "cached_referring_domains": int(summary_signal.get("referring_domains", 0) or 0),
         "source_focus_bonus": max(
             0.0,
             float(focus_signal.get("best_weight", 0.0) or 0.0),
@@ -430,9 +427,7 @@ def _free_score_for_name(name: str, context: dict[str, Any]) -> tuple[float, dic
         screening_risk=float(row["screening_risk"]),
     )
     score = round(
-        score
-        + min(25.0, float(row["summary_rescue_points"]))
-        + min(8.0, float(row["source_focus_bonus"])),
+        score + min(25.0, float(row["summary_rescue_points"])) + min(8.0, float(row["source_focus_bonus"])),
         2,
     )
     return score, row
@@ -474,24 +469,16 @@ def _rank_free_candidates(
 
 
 def _priority_candidate_names(context: dict[str, Any]) -> set[str]:
-    names = {
-        name for name, count in context["exact_links"].items() if int(count or 0) > 0
-    }
-    names.update(
-        name for name, count in context["verified_links"].items() if int(count or 0) > 0
-    )
+    names = {name for name, count in context["exact_links"].items() if int(count or 0) > 0}
+    names.update(name for name, count in context["verified_links"].items() if int(count or 0) > 0)
     names.update(
         name
         for name, values in context["observations"].items()
         if int(values.get("observed_live_links", 0) or 0) > 0
     )
+    names.update(name for name, count in context["commoncrawl"].items() if int(count or 0) > 0)
     names.update(
-        name for name, count in context["commoncrawl"].items() if int(count or 0) > 0
-    )
-    names.update(
-        name
-        for name, values in context["youtube"].items()
-        if int(values.get("monthly_views", 0)) > 0
+        name for name, values in context["youtube"].items() if int(values.get("monthly_views", 0)) > 0
     )
     names.update(context["screening"].keys())
     return names
@@ -510,9 +497,7 @@ def _select_provider_summary_targets_with_ranking(
     availability: dict[str, str] = context["availability"]
 
     recent_drops = db.scalars(
-        select(DroppedDomain)
-        .order_by(DroppedDomain.first_seen_at.desc())
-        .limit(_RECENT_FALLBACK_POOL)
+        select(DroppedDomain).order_by(DroppedDomain.first_seen_at.desc()).limit(_RECENT_FALLBACK_POOL)
     ).all()
     priority_names = _priority_candidate_names(context)
     priority_drops = _dropped_domains_for_names(db, priority_names)
@@ -523,12 +508,15 @@ def _select_provider_summary_targets_with_ranking(
         candidate_map.setdefault(drop.name, drop)
     pooled = list(candidate_map.values())
     pooled_names = {drop.name for drop in pooled}
+    bought_names = bought_domain_names(db, pooled_names)
     already_checked = _checked_targets_for_names(
         db,
         pooled_names,
         endpoint=_summary_selection_checked_endpoint(),
     )
-    unchecked = [drop for drop in pooled if drop.name not in already_checked]
+    unchecked = [
+        drop for drop in pooled if drop.name not in already_checked and drop.name not in bought_names
+    ]
 
     locally_blocked = _blocked_screening_for_names(
         db,
@@ -538,8 +526,7 @@ def _select_provider_summary_targets_with_ranking(
     blocked_names = {
         drop.name
         for drop in unchecked
-        if availability.get(drop.name, "unknown") in _BLOCKED_AVAILABILITY
-        or drop.name in locally_blocked
+        if availability.get(drop.name, "unknown") in _BLOCKED_AVAILABILITY or drop.name in locally_blocked
     }
     candidates = [drop for drop in unchecked if drop.name not in blocked_names]
     ordered, scores, signals = _rank_free_candidates(candidates, context)
@@ -615,6 +602,7 @@ def select_cached_deep_proof_targets_with_ranking(
         .where(
             BacklinkSummary.provider == "dataforseo",
             BacklinkSummary.referring_pages > 0,
+            Domain.excluded_reason.is_(None),
             ~detailed_proof_exists,
             ~blocked_screening_exists,
             or_(
@@ -651,9 +639,7 @@ def select_cached_deep_proof_targets_with_ranking(
             )
         )
 
-    sort_rows.sort(
-        key=lambda row: (-row[1], -row[2], -row[3], -row[4], -row[5], row[0])
-    )
+    sort_rows.sort(key=lambda row: (-row[1], -row[2], -row[3], -row[4], -row[5], row[0]))
     ordered = [row[0] for row in sort_rows]
     if limit is not None:
         ordered = ordered[: max(0, limit)]
@@ -684,9 +670,7 @@ def _summary_signal_score(summary: dict[str, Any]) -> float:
     domain_points = min(10.0, 2.2 * math.log2(1 + referring_domains))
     page_points = min(7.0, 1.4 * math.log2(1 + referring_pages))
     backlink_points = min(3.0, 0.5 * math.log2(1 + backlinks))
-    diversity_points = (
-        min(2.0, 2.0 * referring_domains / referring_pages) if referring_pages else 0.0
-    )
+    diversity_points = min(2.0, 2.0 * referring_domains / referring_pages) if referring_pages else 0.0
     return round(
         rank_points + domain_points + page_points + backlink_points + diversity_points,
         2,
@@ -731,11 +715,7 @@ def _proof_readiness(
         blockers.append("estimated_cost_exceeds_configured_cap")
     # The database reservation holds the full configured per-run envelope.
     # Stop before Railway paid mode is enabled when that reservation cannot fit.
-    if (
-        work_available
-        and float(daily_budget.get("remaining_usd") or 0.0) + 1e-9
-        < run_cap
-    ):
+    if work_available and float(daily_budget.get("remaining_usd") or 0.0) + 1e-9 < run_cap:
         blockers.append("daily_budget_exhausted")
     if settings.link_hunter_enabled:
         warnings.append("link_hunter_already_enabled")
@@ -768,15 +748,13 @@ def _has_meaningful_free_signal(signal: dict[str, int | float | str]) -> bool:
 
 def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, Any]:
     """Describe the next provider proof without making any network/provider calls."""
-    targets, scores, signals, blocked_count, context = (
-        _select_provider_summary_targets_with_ranking(db, settings)
+    targets, scores, signals, blocked_count, context = _select_provider_summary_targets_with_ranking(
+        db, settings
     )
-    cached_targets, cached_combined, _, _, _ = (
-        select_cached_deep_proof_targets_with_ranking(
-            db,
-            settings,
-            context=context,
-        )
+    cached_targets, cached_combined, _, _, _ = select_cached_deep_proof_targets_with_ranking(
+        db,
+        settings,
+        context=context,
     )
     commoncrawl: dict[str, int] = context["commoncrawl"]
     exact_links: dict[str, int] = context["exact_links"]
@@ -802,9 +780,7 @@ def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, A
     max_source_pages = deep_target_count * settings.link_hunter_backlinks_per_domain
     target_cc = {target: commoncrawl.get(target) for target in targets}
     target_exact = {target: exact_links.get(target, 0) for target in targets}
-    free_positive_count = sum(
-        1 for target in targets if _has_meaningful_free_signal(signals.get(target, {}))
-    )
+    free_positive_count = sum(1 for target in targets if _has_meaningful_free_signal(signals.get(target, {})))
     daily_budget = provider_daily_budget_snapshot(db, settings)
     work_available_count = len(targets) + len(cached_targets)
 
@@ -841,9 +817,7 @@ def build_provider_proof_preview(db: Session, settings: Settings) -> dict[str, A
         "target_free_exact_links": target_exact,
         "commoncrawl_signal_count": len(commoncrawl),
         "commoncrawl_positive_count": sum(1 for value in commoncrawl.values() if value > 0),
-        "commoncrawl_positive_targets": [
-            target for target in targets if (commoncrawl.get(target) or 0) > 0
-        ],
+        "commoncrawl_positive_targets": [target for target in targets if (commoncrawl.get(target) or 0) > 0],
         "target_commoncrawl_hits": target_cc,
         **_proof_readiness(
             settings=settings,

@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.domain_lifecycle import get_or_create_unsuppressed_domain
 from app.free_source_candidates import (
     completed_target_exists,
     load_candidate_lanes,
@@ -81,13 +82,8 @@ def _exact_links(body: str, domain: str) -> list[tuple[str, str, tuple[str, ...]
     ]
 
 
-def _get_or_create_domain(db: Session, name: str) -> Domain:
-    domain = db.scalar(select(Domain).where(Domain.name == name))
-    if domain is None:
-        domain = Domain(name=name)
-        db.add(domain)
-        db.flush()
-    return domain
+def _get_or_create_domain(db: Session, name: str) -> Domain | None:
+    return get_or_create_unsuppressed_domain(db, name)
 
 
 def _get_or_create_site(db: Session, hostname: str) -> SourceSite:
@@ -165,6 +161,8 @@ def _save_question_links(
     if not page_host:
         return 0, 0
     domain = _get_or_create_domain(db, domain_name)
+    if domain is None:
+        return 0, 0
     site = _get_or_create_site(db, page_host)
     page = _get_or_create_page(db, site, question)
     if page is None:
@@ -224,9 +222,7 @@ def _candidate_drops(db: Session, sites: tuple[str, ...], limit: int) -> list[Dr
             ~completed_target_exists(provider="dataforseo", endpoint="bulk_backlink_summary"),
             or_(
                 *(
-                    ~completed_target_exists(
-                        provider="stackexchange", endpoint=f"url_search:{site}"
-                    )
+                    ~completed_target_exists(provider="stackexchange", endpoint=f"url_search:{site}")
                     for site in sites
                 )
             ),

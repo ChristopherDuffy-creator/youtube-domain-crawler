@@ -58,3 +58,21 @@ def test_dashboard_exposes_status_strip_and_action_workflow() -> None:
     assert "Acquisition money cases" in template
     assert "predicted outbound clicks" in template
     assert "The system never buys automatically" in template
+
+
+def test_youtube_rankings_offer_only_permanent_delete_and_bought_actions() -> None:
+    template = Path("app/templates/dashboard.html").read_text(encoding="utf-8")
+    youtube_start = template.index('<p class="eyebrow">YOUTUBE</p>')
+    web_start = template.index('<p class="eyebrow">WEB-WIDE</p>')
+    youtube = template[youtube_start:web_start]
+    web = template[web_start:]
+
+    assert youtube.count('action="/admin/youtube-domain-action"') == 2
+    assert 'name="domain_action" value="delete"' in youtube
+    assert 'name="domain_action" value="bought"' in youtube
+    assert ">Delete<" in youtube
+    assert ">Bought<" in youtube
+    assert "This cannot be undone" in youtube
+    assert "Shortlist" not in youtube
+    assert "Ignore" not in youtube
+    assert 'action="/admin/dashboard-decision"' in web

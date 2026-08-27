@@ -317,6 +317,48 @@ class DashboardDecision(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class BoughtDomain(Base):
+    """A purchased domain removed from every acquisition queue."""
+
+    __tablename__ = "bought_domains"
+    __table_args__ = (
+        UniqueConstraint("domain_id", name="uq_bought_domains_domain"),
+        UniqueConstraint("domain_name", name="uq_bought_domains_name"),
+        Index("ix_bought_domains_source_purchased", "source_system", "purchased_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="CASCADE"), index=True)
+    domain_name: Mapped[str] = mapped_column(String(255), index=True)
+    source_system: Mapped[str] = mapped_column(String(16), default="youtube", index=True)
+    original_tier: Mapped[str] = mapped_column(String(32), default="pending")
+    monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    start_monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    day3_monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    day7_monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    evidence_score: Mapped[float] = mapped_column(Float, default=0.0)
+    buy_score: Mapped[float] = mapped_column(Float, default=0.0)
+    monthly_revenue_low_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    monthly_revenue_high_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    suggested_purchase_ceiling_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    registrar_price_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    purchase_price_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    best_video_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DeletedDomainFingerprint(Base):
+    """One-way tombstone that prevents a hard-deleted domain being re-ingested."""
+
+    __tablename__ = "deleted_domain_fingerprints"
+
+    domain_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reason: Mapped[str] = mapped_column(String(32), default="dashboard_delete")
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class EmailSubscriber(Base):
     """Consent record for a public-site email subscriber."""
 
