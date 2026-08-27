@@ -4,9 +4,10 @@ An always-on crawler that finds exact external domains in older YouTube video de
 
 This project is configured for Christy's final rules:
 
-- **Watchlist:** 5,000+ projected monthly views.
-- **Qualified:** 20,000+ views measured over a real 27–35 day window.
-- **Priority:** 100,000+ verified monthly views.
+- **Watchlist:** 10,000+ current long-form views/month.
+- **Qualified:** 50,000+ current long-form views/month plus exact ordinary-registration confirmation.
+- **Priority:** 100,000+ current long-form views/month plus exact ordinary-registration confirmation.
+- **Buy-ready:** a stable Day 7 comparison, exact availability and a visible buy score/potential value.
 - **Target before buying:** 100 qualified/priority domains.
 - Personal, creator and brand names are not automatically removed.
 - Social sites, link shorteners, affiliate redirectors, registered domains, aftermarket inventory and expensive registry-premium domains do not qualify.
@@ -36,9 +37,9 @@ The crawler automatically downloads WhoisFreaks' public daily feed of 10,000 rec
 
 ### Traffic verification
 
-YouTube supplies a cumulative view count, not “views in the last month.” The crawler therefore takes its own snapshots. Only videos with useful outbound links enter the refresh queue: fast-growing/high-exposure videos refresh frequently, slower videos back off, and repeatedly stagnant videos can fall to a 30-day interval. Early numbers are clearly marked **projected**. At 15 days the dashboard exposes a separate **measured** decision checkpoint, but never mislabels it as verified; a candidate cannot become Qualified or Priority until the crawler has a genuine 27–35 day measurement window.
+YouTube supplies a cumulative view count, not “views in the last month.” The crawler therefore takes immutable daily snapshots and converts actual observed growth into a conservative monthly run-rate. Every candidate gets a starting estimate, a Day 3 recheck and a Day 7 evaluation. Adaptive refresh can run more often, but it is never allowed to skip either checkpoint. The dashboard shows all three figures and their change rather than presenting one projection without context.
 
-Projection safety is fail-closed. Before 15 days, the dashboard shows only the actual observed view gain and does not display a monthly projection. Once three snapshot intervals exist, the internal pace uses the median interval velocity and quarantines isolated counter spikes while preserving every raw snapshot for audit. No click, revenue or decision-score estimate is shown before 15 days. Videos of 180 seconds or less are treated as short-form discovery exposure—not assumed clickable-description traffic—and a purchase ceiling is withheld until click-eligible exposure has a verified 27–35 day window.
+Projection safety is fail-closed. Once two independent intervals exist, the internal pace uses the lower median interval velocity and quarantines isolated counter jumps while preserving every raw snapshot for audit. Provisional buy score, expected clicks and potential monthly value remain visible from the starting estimate, with explicit confidence penalties at Start and Day 3. A purchase ceiling appears only after a stable Day 7 result. Videos of 180 seconds or less remain in the permanent evidence ledger but are excluded from all buying tiers because their description traffic is not assumed clickable.
 
 ### Registration verification
 
@@ -127,7 +128,7 @@ Five permanent YouTube intelligence upgrades sit behind that capacity:
 - search-as-seed channel fan-out with resumable pagination and yield-based hot/warm/cold allocation;
 - a permanent exact outbound-domain index plus acquisition-facing exposure, click, revenue, purchase-ceiling and monetization signals;
 - instant dropped-domain joins in either arrival order, retained as permanent match proof;
-- adaptive view refresh using the separate granular statistics bucket, with honest 15-day measured and 30-day verified confidence states.
+- adaptive view refresh using the separate granular statistics bucket, with guaranteed Start/Day 3/Day 7 comparisons and an additional 30-day verification state.
 
 Scale controls:
 
@@ -146,7 +147,7 @@ The dashboard shows:
 
 - separate Web Link Hunter and YouTube views, with Web Link Hunter as the default;
 - clickable All, Priority, Qualified, Watchlist and Pending totals that filter the result table;
-- a clickable 15-day measured checkpoint that remains distinct from 30-day verification;
+- clickable Day 3 and Day 7 checkpoint views;
 - a visit-aware New filter, persistent Shortlist/Bought/Ignore decisions and an action queue;
 - free-screening, permanent-backlink-index and acquisition-money-case totals;
 - conservative predicted clicks, revenue range, risk, confidence, maximum purchase price and payback estimates;
@@ -156,7 +157,7 @@ The dashboard shows:
 - a signed seven-day dashboard session with an explicit logout button;
 - progress toward 100 very good domains;
 - qualified, priority, watchlist and pending candidates;
-- verified versus projected 30-day views;
+- current, starting, Day 3 and Day 7 monthly run-rates;
 - linked-video exposure, modelled outbound clicks, revenue range, suggested purchase ceiling and monetization route;
 - hot/warm channel counts, permanent YouTube evidence records, instant local dropped matches and remaining quota in every bucket;
 - exact registration status and price;

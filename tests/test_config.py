@@ -8,9 +8,19 @@ def test_public_daily_dropped_feed_is_connected_by_default() -> None:
     settings = Settings()
 
     assert settings.dropped_domain_feed_urls == DEFAULT_DROPPED_DOMAIN_FEED_URLS
-    assert settings.dropped_domain_feed_urls[0].endswith(
-        "/0-latest-free-dropped-domains.csv"
+    assert settings.dropped_domain_feed_urls[0].endswith("/0-latest-free-dropped-domains.csv")
+
+
+def test_stale_environment_values_cannot_lower_approved_youtube_bands() -> None:
+    settings = Settings(
+        watchlist_monthly_views=5_000,
+        qualified_monthly_views=20_000,
+        priority_monthly_views=75_000,
     )
+
+    assert settings.watchlist_monthly_views == 10_000
+    assert settings.qualified_monthly_views == 50_000
+    assert settings.priority_monthly_views == 100_000
 
 
 def test_dropped_feed_can_still_be_overridden() -> None:

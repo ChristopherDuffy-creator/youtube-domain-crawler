@@ -37,7 +37,17 @@ async def _dashboard_exception_fallback(request: Request, call_next):
         if view not in {"web", "youtube"}:
             view = "web"
         tier = request.query_params.get("tier", "all")
-        if tier not in {"all", "new", "measured", "priority", "qualified", "watchlist", "pending"}:
+        if tier not in {
+            "all",
+            "new",
+            "measured",
+            "day3",
+            "day7",
+            "priority",
+            "qualified",
+            "watchlist",
+            "pending",
+        }:
             tier = "all"
 
         with SessionLocal() as db:
@@ -86,9 +96,7 @@ def dashboard_smoke(
     try:
         signed = main_module._create_dashboard_session()
         auth_scope = dict(scope)
-        auth_scope["headers"] = [
-            (b"cookie", f"{main_module.DASHBOARD_SESSION_COOKIE}={signed}".encode())
-        ]
+        auth_scope["headers"] = [(b"cookie", f"{main_module.DASHBOARD_SESSION_COOKIE}={signed}".encode())]
         main_module.require_dashboard_auth(Request(auth_scope))
 
         with SessionLocal() as db:

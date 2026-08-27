@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.database import Base
 from app.jobs import (
+    _checkpoint_refresh_interval_hours,
     _domains_due_for_check,
     _dropped_domains_due_for_youtube_search,
     _initial_refresh_interval_hours,
@@ -155,21 +156,16 @@ def test_granular_statistics_fetch_uses_a_bounded_parallel_worker_pool(monkeypat
             active -= 1
         return {
             "items": [
-                {"id": video_id, "statistics": {"viewCount": "42"}}
-                for video_id in params["id"].split(",")
+                {"id": video_id, "statistics": {"viewCount": "42"}} for video_id in params["id"].split(",")
             ]
         }
 
     monkeypatch.setattr(client, "_get", fake_get)
 
-    statistics = client.fetch_video_statistics_batch(
-        [f"statistics-video-{index}" for index in range(200)]
-    )
+    statistics = client.fetch_video_statistics_batch([f"statistics-video-{index}" for index in range(200)])
 
     assert peak == 4
-    assert [item.id for item in statistics] == [
-        f"statistics-video-{index}" for index in range(200)
-    ]
+    assert [item.id for item in statistics] == [f"statistics-video-{index}" for index in range(200)]
 
 
 def test_granular_statistics_pacer_spaces_requests_across_client_instances(monkeypatch) -> None:
@@ -209,6 +205,8 @@ def test_granular_statistics_pacer_spaces_requests_across_client_instances(monke
 
     assert sleep_calls == [0.5]
     assert request_times == [1_000.0, 1_000.5]
+
+
 class FakeFanoutClient:
     def __init__(self) -> None:
         self.playlist_tokens: list[str | None] = []
@@ -359,9 +357,7 @@ def test_snapshot_refresh_bulk_inserts_only_missing_daily_snapshots() -> None:
     video_ids = ["snapshot0001", "snapshot0002", "snapshot0003"]
 
     with Session(engine) as db:
-        db.add_all(
-            [Video(id=video_id, lifetime_views=200_000, active=True) for video_id in video_ids]
-        )
+        db.add_all([Video(id=video_id, lifetime_views=200_000, active=True) for video_id in video_ids])
         db.add_all(
             [
                 VideoRefreshState(
@@ -385,9 +381,7 @@ def test_snapshot_refresh_bulk_inserts_only_missing_daily_snapshots() -> None:
         client = FakeStatisticsClient()
         counters = run_view_snapshot_batch(db, settings, client)  # type: ignore[arg-type]
         snapshots = db.scalars(
-            select(ViewSnapshot)
-            .where(ViewSnapshot.video_id.in_(video_ids))
-            .order_by(ViewSnapshot.video_id)
+            select(ViewSnapshot).where(ViewSnapshot.video_id.in_(video_ids)).order_by(ViewSnapshot.video_id)
         ).all()
 
         assert client.requested == video_ids
@@ -398,7 +392,10 @@ def test_snapshot_refresh_bulk_inserts_only_missing_daily_snapshots() -> None:
         assert len(snapshots) == 3
         assert {snapshot.video_id for snapshot in snapshots} == set(video_ids)
         assert all(snapshot.capture_date == now.date() for snapshot in snapshots)
-        assert all(snapshot.view_count == 252_500 for snapshot in snapshots)
+        counts = {snapshot.video_id: snapshot.view_count for snapshot in snapshots}
+        assert counts["snapshot0001"] == 200_000
+        assert counts["snapshot0002"] == 252_500
+        assert counts["snapshot0003"] == 252_500
 
 
 def test_every_linked_video_gets_first_follow_up_within_one_day() -> None:
@@ -406,6 +403,28 @@ def test_every_linked_video_gets_first_follow_up_within_one_day() -> None:
     assert _initial_refresh_interval_hours(99_999) == 24
     assert _initial_refresh_interval_hours(999_999) == 24
     assert _initial_refresh_interval_hours(1_000_000) == 6
+
+
+def test_adaptive_backoff_cannot_skip_day3_or_day7_rechecks() -> None:
+    started = datetime(2026, 8, 20, tzinfo=UTC)
+    video = Video(id="checkpoint01", first_seen_at=started)
+
+    assert (
+        _checkpoint_refresh_interval_hours(
+            video,
+            started + timedelta(days=1),
+            720,
+        )
+        == 48
+    )
+    assert (
+        _checkpoint_refresh_interval_hours(
+            video,
+            started + timedelta(days=4),
+            720,
+        )
+        == 72
+    )
 
 
 def test_never_checked_domains_are_first_in_capped_availability_queue() -> None:
@@ -471,9 +490,7 @@ def test_rate_limited_availability_is_negative_cached_for_three_days() -> None:
         assert _domains_due_for_check(db, 10) == []
         domain.last_checked_at = now - timedelta(days=4)
         db.commit()
-        assert [item.name for item in _domains_due_for_check(db, 10)] == [
-            "rate-limited.example"
-        ]
+        assert [item.name for item in _domains_due_for_check(db, 10)] == ["rate-limited.example"]
 
 
 def test_removed_links_are_included_in_targeted_candidate_refresh() -> None:

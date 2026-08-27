@@ -54,8 +54,7 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
         .limit(750)
     ).all()
     candidate_state = {
-        int(domain_id): (str(tier), updated_at)
-        for domain_id, tier, updated_at in candidate_rows
+        int(domain_id): (str(tier), updated_at) for domain_id, tier, updated_at in candidate_rows
     }
 
     removed = 0
@@ -73,10 +72,7 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
             plausible = is_plausible_youtube_link(link.raw_url)
             state = candidate_state.get(link.domain_id)
             recent_rejected = bool(
-                state
-                and state[0] == "rejected"
-                and state[1] is not None
-                and state[1] >= recent_cutoff
+                state and state[0] == "rejected" and state[1] is not None and state[1] >= recent_cutoff
             )
             if link.active and not plausible:
                 link.active = False
@@ -110,6 +106,12 @@ def purge_legacy_bare_youtube_links(db: Session, settings: Settings) -> dict[str
             .values(
                 tier="rejected",
                 monthly_views=0,
+                start_monthly_views=0,
+                day3_monthly_views=0,
+                day7_monthly_views=0,
+                evaluation_stage="collecting",
+                trend_percent=0.0,
+                buy_ready=False,
                 verified_30d=False,
                 observation_days=0.0,
                 score=0.0,
@@ -225,7 +227,7 @@ def enforce_candidate_signal_consistency(
                 Candidate.domain_id.in_(invalid_domains),
                 Candidate.tier.in_(ranked),
             )
-            .values(tier="pending", updated_at=utcnow())
+            .values(tier="pending", buy_ready=False, updated_at=utcnow())
         )
         changed += int(result.rowcount or 0)
         db.execute(
@@ -269,7 +271,7 @@ def enforce_candidate_signal_consistency(
         sufficient_signal = exists(
             select(YouTubeDomainSignal.domain_id).where(
                 YouTubeDomainSignal.domain_id == Candidate.domain_id,
-                YouTubeDomainSignal.monthly_linked_video_exposure >= threshold,
+                YouTubeDomainSignal.click_eligible_exposure >= threshold,
             )
         )
         result = db.execute(
@@ -279,7 +281,7 @@ def enforce_candidate_signal_consistency(
                 ~sufficient_signal,
                 *scope,
             )
-            .values(tier="pending", updated_at=utcnow())
+            .values(tier="pending", buy_ready=False, updated_at=utcnow())
         )
         changed += int(result.rowcount or 0)
 

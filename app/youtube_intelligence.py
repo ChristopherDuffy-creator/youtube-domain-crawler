@@ -27,7 +27,7 @@ _PACIFIC = ZoneInfo("America/Los_Angeles")
 _BLOCKED_AVAILABILITY = {"registered", "premium", "aftermarket", "reserved"}
 _SIGNAL_DOMAIN_CHUNK = 5
 _SIGNAL_UNSCOPED_LIMIT = 25
-_SIGNAL_MODEL_VERSION = 3
+_SIGNAL_MODEL_VERSION = 4
 
 
 def _chunks(values: list[int], size: int = 5_000) -> Iterable[list[int]]:
@@ -49,9 +49,7 @@ def youtube_quota_snapshot(db: Session, settings: Settings) -> dict[str, int | s
         "data_used": data_used,
         "data_remaining": max(0, settings.youtube_data_daily_limit - data_used),
         "fanout_data_used": fanout_used,
-        "fanout_data_remaining": max(
-            0, settings.youtube_fanout_daily_data_limit - fanout_used
-        ),
+        "fanout_data_remaining": max(0, settings.youtube_fanout_daily_data_limit - fanout_used),
         "stats_used": stats_used,
         "stats_remaining": max(0, settings.youtube_stats_daily_limit - stats_used),
     }
@@ -72,9 +70,7 @@ def consume_youtube_quota(
     stats_units = max(0, int(stats_units))
     quota_date = datetime.now(_PACIFIC).date()
     ledger = db.scalar(
-        select(YouTubeQuotaLedger)
-        .where(YouTubeQuotaLedger.quota_date == quota_date)
-        .with_for_update()
+        select(YouTubeQuotaLedger).where(YouTubeQuotaLedger.quota_date == quota_date).with_for_update()
     )
     if ledger is None:
         ledger = YouTubeQuotaLedger(quota_date=quota_date)
@@ -86,10 +82,7 @@ def consume_youtube_quota(
     if ledger.data_units + data_units > settings.youtube_data_daily_limit:
         db.rollback()
         return False
-    if fanout and (
-        ledger.fanout_data_units + data_units
-        > settings.youtube_fanout_daily_data_limit
-    ):
+    if fanout and (ledger.fanout_data_units + data_units > settings.youtube_fanout_daily_data_limit):
         db.rollback()
         return False
     if ledger.stats_units + stats_units > settings.youtube_stats_daily_limit:
@@ -147,9 +140,7 @@ def update_channel_intelligence(
     intelligence.consecutive_empty_pages = (
         intelligence.consecutive_empty_pages + 1 if external_links == 0 else 0
     )
-    intelligence.pages_without_new_video = (
-        intelligence.pages_without_new_video + 1 if new_videos == 0 else 0
-    )
+    intelligence.pages_without_new_video = intelligence.pages_without_new_video + 1 if new_videos == 0 else 0
     intelligence.failure_count = 0
 
     if intelligence.ema_yield >= 0.12 or linked_videos >= 3 or external_links >= 5:
@@ -170,9 +161,7 @@ def update_channel_intelligence(
         recrawl_hours = 168
 
     now = datetime.now(UTC)
-    intelligence.next_crawl_at = (
-        now + timedelta(hours=recrawl_hours) if completed else now
-    )
+    intelligence.next_crawl_at = now + timedelta(hours=recrawl_hours) if completed else now
     intelligence.evaluated_at = now
     return intelligence
 
@@ -190,9 +179,7 @@ def record_channel_failure(
 
 
 def _monetization_route(domain: Domain, links: list[VideoDomain]) -> str:
-    text = " ".join(
-        [domain.name, *(link.context or "" for link in links)]
-    ).lower()
+    text = " ".join([domain.name, *(link.context or "" for link in links)]).lower()
     if any(term in text for term in ("insurance", "loan", "mortgage", "finance", "tax")):
         return "lead_generation"
     if any(term in text for term in ("software", "app", "tool", "shop", "deal", "travel")):
@@ -209,9 +196,7 @@ def _refresh_youtube_domain_signal_chunk(
     *,
     limit: int | None = None,
 ) -> int:
-    statement = select(Domain).where(
-        Domain.video_links.any(VideoDomain.active.is_(True))
-    )
+    statement = select(Domain).where(Domain.video_links.any(VideoDomain.active.is_(True)))
     if domain_ids is not None:
         if not domain_ids:
             return 0
@@ -222,9 +207,7 @@ def _refresh_youtube_domain_signal_chunk(
     domains = db.scalars(
         statement.options(
             selectinload(Domain.candidate),
-            selectinload(Domain.video_links)
-            .selectinload(VideoDomain.video)
-            .selectinload(Video.snapshots)
+            selectinload(Domain.video_links).selectinload(VideoDomain.video).selectinload(Video.snapshots),
         )
     ).all()
     now = datetime.now(UTC)
@@ -268,75 +251,61 @@ def _refresh_youtube_domain_signal_chunk(
             continue
         unique_videos = {link.video_id: link.video for link in links}
         metrics_by_video_id = {
-            video_id: calculate_monthly_views(video.snapshots)
-            for video_id, video in unique_videos.items()
+            video_id: calculate_monthly_views(video.snapshots) for video_id, video in unique_videos.items()
         }
         metrics = list(metrics_by_video_id.values())
         observed_view_gain = sum(metric.delta_views for metric in metrics)
         monthly_exposure = sum(metric.monthly_views for metric in metrics)
         observation_days = max((metric.observation_days for metric in metrics), default=0.0)
-        measured = any(
-            metric.observation_days >= settings.youtube_measured_window_days
-            for metric in metrics
-        )
         short_video_ids = {
             video_id
             for video_id, video in unique_videos.items()
             if is_short_form_duration(video.duration_seconds)
         }
-        measured_click_video_ids = {
+        click_eligible_video_ids = {
             video_id
             for video_id, metric in metrics_by_video_id.items()
-            if video_id not in short_video_ids
-            and metric.observation_days >= settings.youtube_measured_window_days
+            if video_id not in short_video_ids and metric.evaluation_stage != "collecting"
         }
         click_eligible_exposure = sum(
-            metrics_by_video_id[video_id].monthly_views
-            for video_id in measured_click_video_ids
+            metrics_by_video_id[video_id].monthly_views for video_id in click_eligible_video_ids
         )
-        short_form_exposure = sum(
-            metrics_by_video_id[video_id].monthly_views
-            for video_id in short_video_ids
+        short_form_exposure = sum(metrics_by_video_id[video_id].monthly_views for video_id in short_video_ids)
+        measured = any(
+            metrics_by_video_id[video_id].observation_days >= settings.youtube_measured_window_days
+            for video_id in click_eligible_video_ids
         )
-        verified = any(
-            metrics_by_video_id[video_id].verified_30d
-            for video_id in measured_click_video_ids
-        )
+        verified = any(metrics_by_video_id[video_id].verified_30d for video_id in click_eligible_video_ids)
         if verified:
             confidence_label = "verified_30d"
             confidence_factor = 1.0
         elif measured:
             confidence_label = "measured_15d"
-            confidence_factor = 0.78
-        elif observation_days >= 7:
-            confidence_label = "measured_7d"
-            confidence_factor = 0.55
-        elif observation_days >= 1:
-            confidence_label = "early_projection"
-            confidence_factor = 0.30
+            confidence_factor = 0.92
+        elif domain.candidate is not None and domain.candidate.evaluation_stage == "day7":
+            confidence_label = "day7_evaluated"
+            confidence_factor = 0.82
+        elif domain.candidate is not None and domain.candidate.evaluation_stage == "day3":
+            confidence_label = "day3_recheck"
+            confidence_factor = 0.60
+        elif domain.candidate is not None and domain.candidate.evaluation_stage == "day0":
+            confidence_label = "day0_estimate"
+            confidence_factor = 0.35
         else:
             confidence_label = "collecting"
             confidence_factor = 0.10
 
-        click_eligible_links = [
-            link for link in links if link.video_id in measured_click_video_ids
-        ]
+        click_eligible_links = [link for link in links if link.video_id in click_eligible_video_ids]
         if click_eligible_links:
-            cta_rate = sum(int(link.has_cta) for link in click_eligible_links) / len(
+            cta_rate = sum(int(link.has_cta) for link in click_eligible_links) / len(click_eligible_links)
+            clickable_rate = sum(int(link.clickable) for link in click_eligible_links) / len(
                 click_eligible_links
             )
-            clickable_rate = sum(
-                int(link.clickable) for link in click_eligible_links
-            ) / len(click_eligible_links)
-            best_position = min(
-                link.description_position for link in click_eligible_links
-            )
+            best_position = min(link.description_position for link in click_eligible_links)
             ctr = 0.0015 + 0.005 * cta_rate + 0.003 * clickable_rate
             ctr += max(0.0, 0.003 * (1.0 - min(1.0, best_position)))
             ctr = min(0.02, ctr)
-            expected_clicks = int(
-                round(click_eligible_exposure * ctr * confidence_factor)
-            )
+            expected_clicks = int(round(click_eligible_exposure * ctr * confidence_factor))
         else:
             cta_rate = 0.0
             clickable_rate = 0.0
@@ -353,17 +322,31 @@ def _refresh_youtube_domain_signal_chunk(
         available = domain.availability_status == "available"
         max_purchase = round(
             min(500.0, revenue_low * 3.0 * confidence_factor)
-            if available and verified
+            if available and domain.candidate is not None and domain.candidate.buy_ready
             else 0.0,
             2,
         )
         base_score = float(domain.candidate.score if domain.candidate is not None else 0.0)
         exposure_points = min(18.0, math.log10(click_eligible_exposure + 1) * 3.0)
+        maturity_penalty = {
+            "collecting": 20.0,
+            "day0": 12.0,
+            "day3": 6.0,
+            "day7": 0.0,
+        }.get(
+            domain.candidate.evaluation_stage if domain.candidate is not None else "collecting",
+            0.0,
+        )
         buy_score = (
-            max(0.0, min(100.0, base_score * 0.78 + exposure_points))
-            if measured and click_eligible_exposure > 0
+            max(
+                0.0,
+                min(100.0, base_score * 0.78 + exposure_points - maturity_penalty),
+            )
+            if click_eligible_exposure > 0
             else 0.0
         )
+        if any(metric.spike_detected for metric in metrics):
+            buy_score = max(0.0, buy_score - 8.0)
         if domain.availability_status in _BLOCKED_AVAILABILITY:
             buy_score = 0.0
 
@@ -373,9 +356,7 @@ def _refresh_youtube_domain_signal_chunk(
             db.add(signal)
         signal.active_video_count = len(unique_videos)
         signal.active_link_count = len(links)
-        signal.channel_count = len(
-            {video.channel_id for video in unique_videos.values() if video.channel_id}
-        )
+        signal.channel_count = len({video.channel_id for video in unique_videos.values() if video.channel_id})
         signal.lifetime_linked_video_views = sum(
             max(0, video.lifetime_views) for video in unique_videos.values()
         )
@@ -384,9 +365,7 @@ def _refresh_youtube_domain_signal_chunk(
         signal.click_eligible_exposure = click_eligible_exposure
         signal.short_form_exposure = short_form_exposure
         signal.short_form_video_count = len(short_video_ids)
-        signal.spike_video_count = sum(
-            int(metric.spike_detected) for metric in metrics
-        )
+        signal.spike_video_count = sum(int(metric.spike_detected) for metric in metrics)
         signal.observation_days = observation_days
         signal.traffic_confidence = confidence_label
         signal.measured_15d = measured
@@ -408,6 +387,7 @@ def _refresh_youtube_domain_signal_chunk(
 
 def quarantine_stale_youtube_signals(db: Session, settings: Settings) -> int:
     """Fail closed before stale or under-observed economics reach the dashboard."""
+    del settings
     stale = db.execute(
         update(YouTubeDomainSignal)
         .where(YouTubeDomainSignal.model_version < _SIGNAL_MODEL_VERSION)
@@ -420,22 +400,8 @@ def quarantine_stale_youtube_signals(db: Session, settings: Settings) -> int:
             buy_score=0.0,
         )
     )
-    early = db.execute(
-        update(YouTubeDomainSignal)
-        .where(
-            YouTubeDomainSignal.observation_days
-            < settings.youtube_measured_window_days
-        )
-        .values(
-            expected_clicks_monthly=0,
-            monthly_revenue_low_usd=0.0,
-            monthly_revenue_high_usd=0.0,
-            max_purchase_price_usd=0.0,
-            buy_score=0.0,
-        )
-    )
     db.commit()
-    return max(int(stale.rowcount or 0), int(early.rowcount or 0))
+    return int(stale.rowcount or 0)
 
 
 def _release_signal_orm_memory(db: Session) -> None:
@@ -471,9 +437,7 @@ def refresh_youtube_domain_signals(
         return updated
 
     effective_limit = (
-        _SIGNAL_UNSCOPED_LIMIT
-        if limit is None
-        else min(max(0, int(limit)), _SIGNAL_UNSCOPED_LIMIT)
+        _SIGNAL_UNSCOPED_LIMIT if limit is None else min(max(0, int(limit)), _SIGNAL_UNSCOPED_LIMIT)
     )
     updated = _refresh_youtube_domain_signal_chunk(
         db,
@@ -521,13 +485,9 @@ def refresh_local_dropped_matches(
     now = datetime.now(UTC)
     reset_statement = None
     if domain_ids:
-        reset_statement = update(DroppedDomainMatch).where(
-            DroppedDomainMatch.domain_id.in_(domain_ids)
-        )
+        reset_statement = update(DroppedDomainMatch).where(DroppedDomainMatch.domain_id.in_(domain_ids))
     elif names:
-        relevant_dropped_ids = db.scalars(
-            select(DroppedDomain.id).where(DroppedDomain.name.in_(names))
-        ).all()
+        relevant_dropped_ids = db.scalars(select(DroppedDomain.id).where(DroppedDomain.name.in_(names))).all()
         if relevant_dropped_ids:
             reset_statement = update(DroppedDomainMatch).where(
                 DroppedDomainMatch.dropped_domain_id.in_(relevant_dropped_ids)
@@ -542,9 +502,7 @@ def refresh_local_dropped_matches(
         )
 
     rows = db.execute(
-        statement.group_by(DroppedDomain.id, Domain.id)
-        .order_by(DroppedDomain.id.asc())
-        .limit(limit)
+        statement.group_by(DroppedDomain.id, Domain.id).order_by(DroppedDomain.id.asc()).limit(limit)
     ).all()
     if not rows:
         db.commit()
@@ -554,13 +512,9 @@ def refresh_local_dropped_matches(
     existing: dict[tuple[int, int], DroppedDomainMatch] = {}
     for chunk in _chunks(dropped_ids):
         matches = db.scalars(
-            select(DroppedDomainMatch).where(
-                DroppedDomainMatch.dropped_domain_id.in_(chunk)
-            )
+            select(DroppedDomainMatch).where(DroppedDomainMatch.dropped_domain_id.in_(chunk))
         ).all()
-        existing.update(
-            {(match.dropped_domain_id, match.domain_id): match for match in matches}
-        )
+        existing.update({(match.dropped_domain_id, match.domain_id): match for match in matches})
 
     new_matches = 0
     refreshed = 0
@@ -584,14 +538,10 @@ def refresh_local_dropped_matches(
         domain_id_values.append(key[1])
     for chunk in _chunks(dropped_ids):
         db.execute(
-            update(DroppedDomain)
-            .where(DroppedDomain.id.in_(chunk))
-            .values(matched_existing_index=True)
+            update(DroppedDomain).where(DroppedDomain.id.in_(chunk)).values(matched_existing_index=True)
         )
     for chunk in _chunks(domain_id_values):
-        db.execute(
-            update(Domain).where(Domain.id.in_(chunk)).values(last_checked_at=None)
-        )
+        db.execute(update(Domain).where(Domain.id.in_(chunk)).values(last_checked_at=None))
     db.commit()
     return {
         "matched": len(rows),

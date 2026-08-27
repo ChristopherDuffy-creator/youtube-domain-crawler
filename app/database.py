@@ -42,6 +42,9 @@ _BIGINT_COLUMNS = (
     ("videos", "lifetime_views"),
     ("view_snapshots", "view_count"),
     ("candidates", "monthly_views"),
+    ("candidates", "start_monthly_views"),
+    ("candidates", "day3_monthly_views"),
+    ("candidates", "day7_monthly_views"),
     ("video_refresh_states", "last_view_count"),
     ("youtube_domain_signals", "lifetime_linked_video_views"),
     ("youtube_domain_signals", "observed_view_gain"),
@@ -53,6 +56,36 @@ _BIGINT_COLUMNS = (
 
 _ADDITIVE_COLUMNS = (
     ("videos", "duration_seconds", "INTEGER"),
+    (
+        "candidates",
+        "start_monthly_views",
+        "BIGINT NOT NULL DEFAULT 0",
+    ),
+    (
+        "candidates",
+        "day3_monthly_views",
+        "BIGINT NOT NULL DEFAULT 0",
+    ),
+    (
+        "candidates",
+        "day7_monthly_views",
+        "BIGINT NOT NULL DEFAULT 0",
+    ),
+    (
+        "candidates",
+        "evaluation_stage",
+        "VARCHAR(16) NOT NULL DEFAULT 'collecting'",
+    ),
+    (
+        "candidates",
+        "trend_percent",
+        "DOUBLE PRECISION NOT NULL DEFAULT 0",
+    ),
+    (
+        "candidates",
+        "buy_ready",
+        "BOOLEAN NOT NULL DEFAULT FALSE",
+    ),
     (
         "youtube_domain_signals",
         "observed_view_gain",
@@ -85,6 +118,7 @@ _ADDITIVE_COLUMNS = (
     ),
 )
 
+
 def ensure_runtime_schema(bind: Engine = engine) -> None:
     """Apply safe additive/widening migrations missed by ``create_all``."""
     if bind.dialect.name != "postgresql":
@@ -102,10 +136,7 @@ def ensure_runtime_schema(bind: Engine = engine) -> None:
         for table_name, column_name, column_type in _ADDITIVE_COLUMNS:
             # Every identifier and SQL type comes from the static allow-list.
             connection.execute(
-                text(
-                    f'ALTER TABLE "{table_name}" '
-                    f'ADD COLUMN IF NOT EXISTS "{column_name}" {column_type}'
-                )
+                text(f'ALTER TABLE "{table_name}" ADD COLUMN IF NOT EXISTS "{column_name}" {column_type}')
             )
         for table_name, column_name in _BIGINT_COLUMNS:
             data_type = connection.execute(
@@ -115,16 +146,19 @@ def ensure_runtime_schema(bind: Engine = engine) -> None:
             if data_type == "integer":
                 # Identifiers come only from the static allow-list above.
                 connection.execute(
-                    text(
-                        f'ALTER TABLE "{table_name}" '
-                        f'ALTER COLUMN "{column_name}" TYPE BIGINT'
-                    )
+                    text(f'ALTER TABLE "{table_name}" ALTER COLUMN "{column_name}" TYPE BIGINT')
                 )
         connection.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_youtube_domain_signals_model_version "
                 "ON youtube_domain_signals (model_version)"
             )
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_candidates_evaluation_stage ON candidates (evaluation_stage)")
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_candidates_buy_ready ON candidates (buy_ready)")
         )
         connection.execute(
             text(

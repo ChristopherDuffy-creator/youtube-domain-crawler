@@ -56,6 +56,22 @@ def test_daily_digest_reports_real_work_pending_candidates_errors_and_web_hits()
                 view_count=100_000,
             )
         )
+        db.add_all(
+            [
+                ViewSnapshot(
+                    video_id="digest12345",
+                    captured_at=now - timedelta(days=6),
+                    capture_date=(now - timedelta(days=6)).date(),
+                    view_count=101_000,
+                ),
+                ViewSnapshot(
+                    video_id="digest12345",
+                    captured_at=now - timedelta(days=4),
+                    capture_date=(now - timedelta(days=4)).date(),
+                    view_count=104_000,
+                ),
+            ]
+        )
         domain = db.scalar(select(Domain).where(Domain.name == "pending-example.com"))
         assert domain is not None
         domain.availability_status = "likely_available"
@@ -186,7 +202,8 @@ def test_daily_digest_reports_real_work_pending_candidates_errors_and_web_hits()
     assert report.work["availability_checked"] == 100
     assert report.work["availability_errors"] == 2
     assert report.watchlist_count == 1
-    assert report.pending["verification"] == 1
+    assert report.pending["verification"] == 0
+    assert report.pending["day7"] == 1
     assert report.pending["registrar"] == 1
     assert report.pending_candidates[0].domain == "pending-example.com"
     assert report.issues[0].job == "availability_checks"

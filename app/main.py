@@ -95,7 +95,15 @@ DASHBOARD_VISIT_GAP_SECONDS = 2 * 60 * 60
 DASHBOARD_VISIT_COOKIE_SECONDS = 365 * 24 * 60 * 60
 DASHBOARD_TIMEZONE = ZoneInfo("Europe/Prague")
 ResultTier = Literal[
-    "all", "new", "measured", "priority", "qualified", "watchlist", "pending"
+    "all",
+    "new",
+    "measured",
+    "day3",
+    "day7",
+    "priority",
+    "qualified",
+    "watchlist",
+    "pending",
 ]
 DashboardSystem = Literal["web", "youtube"]
 DecisionStatus = Literal["shortlisted", "bought", "ignored"]
@@ -159,19 +167,26 @@ async def lifespan(_: FastAPI):
                 if storage_guard_allows_writes(db, settings, "startup_maintenance"):
                     ensure_seed_data(db)
                     quarantined = quarantine_stale_youtube_signals(db, settings)
-                    visible_youtube_ids = set(
+                    retained_youtube_ids = set(
                         db.scalars(
                             select(Candidate.domain_id).where(
-                                Candidate.tier.in_(
-                                    {"priority", "qualified", "watchlist"}
+                                or_(
+                                    Candidate.tier.in_({"priority", "qualified", "watchlist"}),
+                                    Candidate.notified_tier.in_({"priority", "qualified", "watchlist"}),
+                                    Candidate.domain_id.in_(
+                                        select(DashboardDecision.domain_id).where(
+                                            DashboardDecision.system == "youtube",
+                                            DashboardDecision.status.in_({"shortlisted", "bought"}),
+                                        )
+                                    ),
                                 )
                             )
                         ).all()
                     )
-                    refreshed_youtube = refresh_candidates(db, visible_youtube_ids)
+                    refreshed_youtube = refresh_candidates(db, retained_youtube_ids)
                     logger.info(
                         "YouTube projection safety gate quarantined %s and "
-                        "recalculated %s visible candidates",
+                        "recalculated %s retained candidates",
                         quarantined,
                         refreshed_youtube,
                     )
@@ -738,16 +753,12 @@ def _valid_dashboard_credentials(username: str, password: str) -> bool:
     supplied_user = username.encode()
     supplied_password = password.encode()
     valid_user = hmac.compare_digest(supplied_user, b"admin")
-    valid_password = hmac.compare_digest(
-        supplied_password, settings.dashboard_password.encode()
-    )
+    valid_password = hmac.compare_digest(supplied_password, settings.dashboard_password.encode())
     return valid_user and valid_password
 
 
 def _dashboard_session_secret() -> bytes:
-    material = (
-        f"expandosaurus-dashboard:{settings.admin_token}:{settings.dashboard_password}"
-    ).encode()
+    material = (f"expandosaurus-dashboard:{settings.admin_token}:{settings.dashboard_password}").encode()
     return hashlib.sha256(material).digest()
 
 
@@ -767,12 +778,8 @@ def _dashboard_session_valid(token: str, *, now: int | None = None) -> bool:
         payload_padding = "=" * (-len(encoded_payload) % 4)
         signature_padding = "=" * (-len(encoded_signature) % 4)
         payload = base64.urlsafe_b64decode(encoded_payload + payload_padding)
-        supplied_signature = base64.urlsafe_b64decode(
-            encoded_signature + signature_padding
-        )
-        expected_signature = hmac.new(
-            _dashboard_session_secret(), payload, hashlib.sha256
-        ).digest()
+        supplied_signature = base64.urlsafe_b64decode(encoded_signature + signature_padding)
+        expected_signature = hmac.new(_dashboard_session_secret(), payload, hashlib.sha256).digest()
         if not hmac.compare_digest(supplied_signature, expected_signature):
             return False
         username, expires_text = payload.decode().split(":", 1)
@@ -816,10 +823,7 @@ def _dashboard_visit_window(
     )
     if last_activity is None:
         baseline = current_timestamp - 24 * 60 * 60
-    elif (
-        current_timestamp - last_activity > DASHBOARD_VISIT_GAP_SECONDS
-        or baseline is None
-    ):
+    elif current_timestamp - last_activity > DASHBOARD_VISIT_GAP_SECONDS or baseline is None:
         baseline = last_activity
     return datetime.fromtimestamp(baseline, UTC), baseline, current_timestamp
 
@@ -1002,9 +1006,7 @@ def _load_web_evidence_rows(
                     .order_by(LinkObservation.observed_at.desc())
                     .limit(1)
                 )
-        rows.append(
-            (opportunity, domain, page, site, link, verification, economics, observation)
-        )
+        rows.append((opportunity, domain, page, site, link, verification, economics, observation))
     return rows
 
 
@@ -1075,35 +1077,23 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         proof_budget = proof_budget if isinstance(proof_budget, dict) else {}
         proof_failure_label = None
         if latest_proof is not None and latest_proof.error:
-            proof_failure_label = (
-                str(latest_proof.error).split(":", 1)[0].splitlines()[0][:120]
-            )
+            proof_failure_label = str(latest_proof.error).split(":", 1)[0].splitlines()[0][:120]
         web_intelligence_summary = {
             "screened": int(db.scalar(select(func.count()).select_from(WebScreening)) or 0),
             "blocked_free": int(
                 db.scalar(
-                    select(func.count())
-                    .select_from(WebScreening)
-                    .where(WebScreening.status == "blocked")
+                    select(func.count()).select_from(WebScreening).where(WebScreening.status == "blocked")
                 )
                 or 0
             ),
-            "permanent_summaries": int(
-                db.scalar(select(func.count()).select_from(BacklinkSummary)) or 0
-            ),
-            "link_observations": int(
-                db.scalar(select(func.count()).select_from(LinkObservation)) or 0
-            ),
-            "money_cases": int(
-                db.scalar(select(func.count()).select_from(OpportunityEconomics)) or 0
-            ),
+            "permanent_summaries": int(db.scalar(select(func.count()).select_from(BacklinkSummary)) or 0),
+            "link_observations": int(db.scalar(select(func.count()).select_from(LinkObservation)) or 0),
+            "money_cases": int(db.scalar(select(func.count()).select_from(OpportunityEconomics)) or 0),
             "latest_screening": {
                 "status": latest_screening.status,
                 "screened": int(screening_counters.get("screened") or 0),
                 "blocked": int(screening_counters.get("blocked") or 0),
-                "provider_cost_usd": float(
-                    screening_counters.get("provider_cost_usd") or 0.0
-                ),
+                "provider_cost_usd": float(screening_counters.get("provider_cost_usd") or 0.0),
             }
             if latest_screening is not None
             else None,
@@ -1116,12 +1106,8 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 # without exposing provider response bodies, targets, or credentials.
                 "failure_label": proof_failure_label,
                 "summary_screened": int(proof_counters.get("summary_screened") or 0),
-                "deep_proof_target_count": int(
-                    proof_counters.get("deep_proof_target_count") or 0
-                ),
-                "source_links_verified": int(
-                    proof_counters.get("source_links_verified") or 0
-                ),
+                "deep_proof_target_count": int(proof_counters.get("deep_proof_target_count") or 0),
+                "source_links_verified": int(proof_counters.get("source_links_verified") or 0),
                 "errors": int(proof_counters.get("errors") or 0),
                 "provider_cost_usd": float(proof_counters.get("provider_cost_usd") or 0.0),
                 "daily_budget_limit_usd": float(proof_budget.get("limit_usd") or 0.0),
@@ -1131,9 +1117,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                     6,
                 ),
                 "finished_at": (
-                    latest_proof.finished_at.isoformat()
-                    if latest_proof.finished_at is not None
-                    else None
+                    latest_proof.finished_at.isoformat() if latest_proof.finished_at is not None else None
                 ),
             }
             if latest_proof is not None
@@ -1204,10 +1188,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         latest_youtube_runs: dict[str, object] = {}
         for job, counter_keys in youtube_job_keys.items():
             latest = db.scalar(
-                select(RunLog)
-                .where(RunLog.job == job)
-                .order_by(RunLog.started_at.desc())
-                .limit(1)
+                select(RunLog).where(RunLog.job == job).order_by(RunLog.started_at.desc()).limit(1)
             )
             if latest is None:
                 latest_youtube_runs[job] = None
@@ -1215,23 +1196,15 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
             raw_counters = latest.counters if isinstance(latest.counters, dict) else {}
             latest_youtube_runs[job] = {
                 "status": latest.status,
-                "counters": {
-                    key: int(raw_counters.get(key) or 0) for key in counter_keys
-                },
-                "finished_at": (
-                    latest.finished_at.isoformat()
-                    if latest.finished_at is not None
-                    else None
-                ),
+                "counters": {key: int(raw_counters.get(key) or 0) for key in counter_keys},
+                "finished_at": (latest.finished_at.isoformat() if latest.finished_at is not None else None),
                 "failure_stage": raw_counters.get("failure_stage"),
                 "error_summary": _sanitized_job_error(latest.error),
             }
 
         tier_counts = {
             tier: int(count)
-            for tier, count in db.execute(
-                select(Candidate.tier, func.count()).group_by(Candidate.tier)
-            ).all()
+            for tier, count in db.execute(select(Candidate.tier, func.count()).group_by(Candidate.tier)).all()
         }
         now = datetime.now(UTC)
         youtube_summary = {
@@ -1240,15 +1213,11 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 "domains": int(db.scalar(select(func.count()).select_from(Domain)) or 0),
                 "exact_links": int(
                     db.scalar(
-                        select(func.count())
-                        .select_from(VideoDomain)
-                        .where(VideoDomain.active.is_(True))
+                        select(func.count()).select_from(VideoDomain).where(VideoDomain.active.is_(True))
                     )
                     or 0
                 ),
-                "channels": int(
-                    db.scalar(select(func.count()).select_from(YouTubeChannel)) or 0
-                ),
+                "channels": int(db.scalar(select(func.count()).select_from(YouTubeChannel)) or 0),
                 "channels_complete": int(
                     db.scalar(
                         select(func.count())
@@ -1281,9 +1250,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                     )
                     or 0
                 ),
-                "domain_signals": int(
-                    db.scalar(select(func.count()).select_from(YouTubeDomainSignal)) or 0
-                ),
+                "domain_signals": int(db.scalar(select(func.count()).select_from(YouTubeDomainSignal)) or 0),
                 "measured_15d": int(
                     db.scalar(
                         select(func.count())
@@ -1324,22 +1291,15 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
         }
 
         latest_digest = db.scalar(
-            select(RunLog)
-            .where(RunLog.job == "daily_digest")
-            .order_by(RunLog.started_at.desc())
-            .limit(1)
+            select(RunLog).where(RunLog.job == "daily_digest").order_by(RunLog.started_at.desc()).limit(1)
         )
         if latest_digest is not None:
-            digest_counters = (
-                latest_digest.counters if isinstance(latest_digest.counters, dict) else {}
-            )
+            digest_counters = latest_digest.counters if isinstance(latest_digest.counters, dict) else {}
             email_summary["latest_digest"] = {
                 "status": latest_digest.status,
                 "emailed": int(digest_counters.get("emailed") or 0),
                 "finished_at": (
-                    latest_digest.finished_at.isoformat()
-                    if latest_digest.finished_at is not None
-                    else None
+                    latest_digest.finished_at.isoformat() if latest_digest.finished_at is not None else None
                 ),
             }
         last_commoncrawl = db.scalar(
@@ -1483,14 +1443,10 @@ def dashboard(
         )
         if tier == "new":
             candidate_statement = candidate_statement.where(Candidate.updated_at >= new_since)
-        elif tier == "measured":
-            candidate_statement = candidate_statement.join(
-                YouTubeDomainSignal,
-                YouTubeDomainSignal.domain_id == Domain.id,
-            ).where(
-                YouTubeDomainSignal.measured_15d.is_(True),
-                YouTubeDomainSignal.verified_30d.is_(False),
-            )
+        elif tier in {"measured", "day7"}:
+            candidate_statement = candidate_statement.where(Candidate.evaluation_stage == "day7")
+        elif tier == "day3":
+            candidate_statement = candidate_statement.where(Candidate.evaluation_stage == "day3")
         elif tier != "all":
             candidate_statement = candidate_statement.where(Candidate.tier == tier)
         candidate_rows = db.execute(
@@ -1503,8 +1459,7 @@ def dashboard(
                 ),
                 Candidate.score.desc(),
                 Candidate.monthly_views.desc(),
-            )
-            .limit(100)
+            ).limit(100)
         ).all()
     else:
         web_evidence_rows = _load_web_evidence_rows(
@@ -1583,23 +1538,26 @@ def dashboard(
         )
         or 0
     )
-    youtube_measured_count = (
-        db.scalar(
-            select(func.count())
-            .select_from(YouTubeDomainSignal)
-            .join(Candidate, Candidate.domain_id == YouTubeDomainSignal.domain_id)
-            .join(Domain, Domain.id == Candidate.domain_id)
-            .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
-            .where(
-                Candidate.tier != "rejected",
-                YouTubeDomainSignal.measured_15d.is_(True),
-                YouTubeDomainSignal.verified_30d.is_(False),
-                Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
-                or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+
+    def youtube_stage_count(stage: str) -> int:
+        return int(
+            db.scalar(
+                select(func.count())
+                .select_from(Candidate)
+                .join(Domain, Domain.id == Candidate.domain_id)
+                .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+                .where(
+                    Candidate.tier != "rejected",
+                    Candidate.evaluation_stage == stage,
+                    Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
+                    or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+                )
             )
+            or 0
         )
-        or 0
-    )
+
+    youtube_day3_count = youtube_stage_count("day3")
+    youtube_day7_count = youtube_stage_count("day7")
     web_new_count = (
         db.scalar(
             select(func.count())
@@ -1614,9 +1572,7 @@ def dashboard(
         )
         or 0
     )
-    qualified = youtube_tier_counts.get("qualified", 0) + youtube_tier_counts.get(
-        "priority", 0
-    )
+    qualified = youtube_tier_counts.get("qualified", 0) + youtube_tier_counts.get("priority", 0)
     youtube_results = sum(
         youtube_tier_counts.get(tier_name, 0)
         for tier_name in ("priority", "qualified", "watchlist", "pending")
@@ -1624,8 +1580,7 @@ def dashboard(
     crawler_videos = db.scalar(select(func.count()).select_from(Video)) or 0
     crawler_domains = db.scalar(select(func.count()).select_from(Domain)) or 0
     exact_links = (
-        db.scalar(select(func.count()).select_from(VideoDomain).where(VideoDomain.active.is_(True)))
-        or 0
+        db.scalar(select(func.count()).select_from(VideoDomain).where(VideoDomain.active.is_(True))) or 0
     )
     youtube_channels = db.scalar(select(func.count()).select_from(YouTubeChannel)) or 0
     youtube_channels_complete = (
@@ -1652,12 +1607,8 @@ def dashboard(
         )
         or 0
     )
-    youtube_domain_signals = (
-        db.scalar(select(func.count()).select_from(YouTubeDomainSignal)) or 0
-    )
-    youtube_local_matches = (
-        db.scalar(select(func.count()).select_from(DroppedDomainMatch)) or 0
-    )
+    youtube_domain_signals = db.scalar(select(func.count()).select_from(YouTubeDomainSignal)) or 0
+    youtube_local_matches = db.scalar(select(func.count()).select_from(DroppedDomainMatch)) or 0
     youtube_quota = youtube_quota_snapshot(db, settings)
     adaptive_refresh_due = (
         db.scalar(
@@ -1673,17 +1624,11 @@ def dashboard(
     web_source_sites = db.scalar(select(func.count()).select_from(SourceSite)) or 0
     web_source_pages = db.scalar(select(func.count()).select_from(SourcePage)) or 0
     web_source_links = (
-        db.scalar(select(func.count()).select_from(SourceLink).where(SourceLink.provider_live.is_(True)))
-        or 0
+        db.scalar(select(func.count()).select_from(SourceLink).where(SourceLink.provider_live.is_(True))) or 0
     )
     web_screened = db.scalar(select(func.count()).select_from(WebScreening)) or 0
     web_screened_blocked = (
-        db.scalar(
-            select(func.count())
-            .select_from(WebScreening)
-            .where(WebScreening.status == "blocked")
-        )
-        or 0
+        db.scalar(select(func.count()).select_from(WebScreening).where(WebScreening.status == "blocked")) or 0
     )
     web_summary_indexed = db.scalar(select(func.count()).select_from(BacklinkSummary)) or 0
     web_money_cases = db.scalar(select(func.count()).select_from(OpportunityEconomics)) or 0
@@ -1702,13 +1647,9 @@ def dashboard(
     youtube_signal_by_domain: dict[int, YouTubeDomainSignal] = {}
     if view == "youtube" and displayed_domain_ids:
         youtube_signals = db.scalars(
-            select(YouTubeDomainSignal).where(
-                YouTubeDomainSignal.domain_id.in_(displayed_domain_ids)
-            )
+            select(YouTubeDomainSignal).where(YouTubeDomainSignal.domain_id.in_(displayed_domain_ids))
         ).all()
-        youtube_signal_by_domain = {
-            signal.domain_id: signal for signal in youtube_signals
-        }
+        youtube_signal_by_domain = {signal.domain_id: signal for signal in youtube_signals}
     decision_counts = {
         decision_status: int(count)
         for decision_status, count in db.execute(
@@ -1738,7 +1679,8 @@ def dashboard(
             "youtube_tier_counts": youtube_tier_counts,
             "web_tier_counts": web_tier_counts,
             "youtube_new_count": youtube_new_count,
-            "youtube_measured_count": youtube_measured_count,
+            "youtube_day3_count": youtube_day3_count,
+            "youtube_day7_count": youtube_day7_count,
             "web_new_count": web_new_count,
             "new_since": new_since,
             "decision_by_domain": decision_by_domain,
@@ -1804,9 +1746,7 @@ def export_subscribers(
     ).all()
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(
-        ["site", "email", "status", "source", "consent_version", "consented_at"]
-    )
+    writer.writerow(["site", "email", "status", "source", "consent_version", "consented_at"])
     for row in rows:
         writer.writerow(
             [
@@ -1883,11 +1823,10 @@ def export_candidates(
             Candidate.tier != "rejected",
             Candidate.updated_at >= new_since,
         )
-    elif tier == "measured":
-        statement = statement.where(
-            YouTubeDomainSignal.measured_15d.is_(True),
-            YouTubeDomainSignal.verified_30d.is_(False),
-        )
+    elif tier in {"measured", "day7"}:
+        statement = statement.where(Candidate.evaluation_stage == "day7")
+    elif tier == "day3":
+        statement = statement.where(Candidate.evaluation_stage == "day3")
     else:
         statement = statement.where(Candidate.tier == tier)
     rows = db.execute(statement.order_by(Candidate.score.desc())).all()
@@ -1897,10 +1836,16 @@ def export_candidates(
         [
             "domain",
             "tier",
-            "verified_30_day_views",
-            "verified",
+            "current_monthly_run_rate",
+            "start_monthly_run_rate",
+            "day3_monthly_run_rate",
+            "day7_monthly_run_rate",
+            "evaluation_stage",
+            "trend_percent",
+            "buy_ready",
+            "verified_30_day_window",
             "observation_days",
-            "score",
+            "evidence_score",
             "availability",
             "registration_price_usd",
             "linked_videos",
@@ -1908,7 +1853,7 @@ def export_candidates(
             "best_video_title",
             "best_video_url",
             "traffic_confidence",
-            "monthly_linked_video_exposure",
+            "click_eligible_monthly_exposure",
             "expected_outbound_clicks_monthly",
             "monthly_revenue_low_usd",
             "monthly_revenue_high_usd",
@@ -1923,6 +1868,12 @@ def export_candidates(
                 domain.name,
                 candidate.tier,
                 candidate.monthly_views,
+                candidate.start_monthly_views,
+                candidate.day3_monthly_views,
+                candidate.day7_monthly_views,
+                candidate.evaluation_stage,
+                candidate.trend_percent,
+                candidate.buy_ready,
                 candidate.verified_30d,
                 candidate.observation_days,
                 candidate.score,
@@ -1933,7 +1884,7 @@ def export_candidates(
                 video.title,
                 f"https://www.youtube.com/watch?v={video.id}",
                 signal.traffic_confidence if signal is not None else "collecting",
-                signal.monthly_linked_video_exposure if signal is not None else 0,
+                signal.click_eligible_exposure if signal is not None else 0,
                 signal.expected_clicks_monthly if signal is not None else 0,
                 signal.monthly_revenue_low_usd if signal is not None else 0.0,
                 signal.monthly_revenue_high_usd if signal is not None else 0.0,
@@ -2075,15 +2026,11 @@ def set_dashboard_decision(
         raise HTTPException(status_code=404, detail="Domain not found")
     if system == "youtube":
         result_exists = db.scalar(
-            select(func.count())
-            .select_from(Candidate)
-            .where(Candidate.domain_id == domain_id)
+            select(func.count()).select_from(Candidate).where(Candidate.domain_id == domain_id)
         )
     else:
         result_exists = db.scalar(
-            select(func.count())
-            .select_from(Opportunity)
-            .where(Opportunity.domain_id == domain_id)
+            select(func.count()).select_from(Opportunity).where(Opportunity.domain_id == domain_id)
         )
     if not result_exists:
         raise HTTPException(status_code=404, detail="Dashboard result not found")

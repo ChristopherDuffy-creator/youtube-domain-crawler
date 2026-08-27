@@ -119,9 +119,7 @@ def run_web_free_screening_job() -> None:
             "error_details": [],
         }
         try:
-            counters.update(
-                screen_dropped_domains(db, settings.link_hunter_free_screen_batch_size)
-            )
+            counters.update(screen_dropped_domains(db, settings.link_hunter_free_screen_batch_size))
             counters.update(backfill_existing_web_intelligence(db))
             _finish_run(db, run, "complete", counters)
         except Exception as exc:
@@ -201,8 +199,8 @@ def _upsert_snapshot(db: Session, video_id: str, view_count: int, captured_at: d
         )
     )
     if snapshot:
-        snapshot.captured_at = captured_at
-        snapshot.view_count = view_count
+        # Preserve the first count captured on each day. Overwriting it moves
+        # the Day 0/3/7 baseline and destroys the audit trail.
         return False
     db.add(
         ViewSnapshot(
@@ -287,8 +285,7 @@ def _ensure_video_refresh_state(
     state = db.get(VideoRefreshState, video.id)
     interval = _initial_refresh_interval_hours(video.lifetime_views)
     priority = round(
-        10.0 * math.log10(1 + max(0, video.lifetime_views))
-        + 5.0 * math.log2(1 + external_link_count),
+        10.0 * math.log10(1 + max(0, video.lifetime_views)) + 5.0 * math.log2(1 + external_link_count),
         2,
     )
     if state is None:
@@ -452,9 +449,7 @@ def seed_manual_checkpoint() -> None:
             affected_domain_ids: set[int] = set()
             for video in videos:
                 exact_domain = MANUAL_CHECKPOINTS.get(video.id, "")
-                if exact_domain and not exact_domain_in_description(
-                    exact_domain, video.description
-                ):
+                if exact_domain and not exact_domain_in_description(exact_domain, video.description):
                     logger.info("Manual checkpoint link no longer appears in %s", video.id)
                 result, error = _process_video_isolated(
                     db,
@@ -527,9 +522,7 @@ def run_discovery() -> None:
         try:
             client = YouTubeClient(settings.youtube_api_key)
             affected_domain_ids: set[int] = set()
-            published_before = datetime.now(UTC) - timedelta(
-                days=365 * settings.published_before_years
-            )
+            published_before = datetime.now(UTC) - timedelta(days=365 * settings.published_before_years)
             for _ in range(settings.search_calls_per_run):
                 state = _next_search_state(db)
                 if state is None:
@@ -554,9 +547,7 @@ def run_discovery() -> None:
                         db.scalars(select(Video.id).where(Video.id.in_(page.video_ids))).all()
                     )
                     new_video_ids = [
-                        video_id
-                        for video_id in page.video_ids
-                        if video_id not in known_video_ids
+                        video_id for video_id in page.video_ids if video_id not in known_video_ids
                     ]
                     counters["known_videos_skipped"] += len(page.video_ids) - len(new_video_ids)
                     detail_calls = (len(new_video_ids) + 49) // 50
@@ -617,9 +608,7 @@ def run_discovery() -> None:
             _finish_run(
                 db,
                 run,
-                "partial"
-                if counters["invalid_videos"] or counters["api_errors"]
-                else "complete",
+                "partial" if counters["invalid_videos"] or counters["api_errors"] else "complete",
                 counters,
             )
         except Exception as exc:
@@ -819,9 +808,7 @@ def run_channel_fanout_batch(
             counters["playlist_calls"] += 1
             counters["videos_discovered"] += len(page.video_ids)
 
-            known_ids = set(
-                db.scalars(select(Video.id).where(Video.id.in_(page.video_ids))).all()
-            )
+            known_ids = set(db.scalars(select(Video.id).where(Video.id.in_(page.video_ids))).all())
             candidate_ids = page.video_ids
             stopped_on_known = False
             if channel.inventory_complete and known_ids:
@@ -979,6 +966,27 @@ def _adaptive_refresh_interval_hours(
     return interval, low_growth_runs, priority
 
 
+def _checkpoint_refresh_interval_hours(
+    video: Video,
+    captured_at: datetime,
+    adaptive_interval: int,
+) -> int:
+    """Prevent adaptive backoff from skipping the Day 3 or Day 7 check."""
+    first_seen = video.first_seen_at
+    if first_seen.tzinfo is None:
+        first_seen = first_seen.replace(tzinfo=UTC)
+    for checkpoint_hours in (72, 168):
+        checkpoint_at = first_seen + timedelta(hours=checkpoint_hours)
+        if checkpoint_at <= captured_at:
+            continue
+        hours_remaining = max(
+            1,
+            math.ceil((checkpoint_at - captured_at).total_seconds() / 3600),
+        )
+        return min(adaptive_interval, hours_remaining)
+    return adaptive_interval
+
+
 def run_view_snapshot_batch(
     db: Session,
     settings: Settings,
@@ -988,9 +996,7 @@ def run_view_snapshot_batch(
     quota_before = youtube_quota_snapshot(db, settings)
     batch_stats = getattr(client, "fetch_video_statistics_batch", None)
     use_granular_stats = callable(batch_stats)
-    remaining_units = int(
-        quota_before["stats_remaining" if use_granular_stats else "data_remaining"]
-    )
+    remaining_units = int(quota_before["stats_remaining" if use_granular_stats else "data_remaining"])
     allowed_ids = min(
         settings.youtube_view_refresh_batch_size,
         remaining_units * 50,
@@ -1025,9 +1031,7 @@ def run_view_snapshot_batch(
         "videos_inactive": 0,
         "snapshots": 0,
         "statistics_calls": 0,
-        "statistics_endpoint": (
-            "videos.batchGetStats" if use_granular_stats else "videos.list"
-        ),
+        "statistics_endpoint": ("videos.batchGetStats" if use_granular_stats else "videos.list"),
         "quota_units_estimate": 0,
         "quota_exhausted": int(allowed_ids == 0 or not quota_granted),
     }
@@ -1040,8 +1044,7 @@ def run_view_snapshot_batch(
         captured_at = utcnow()
         capture_date = captured_at.date()
         videos_by_id = {
-            video.id: video
-            for video in db.scalars(select(Video).where(Video.id.in_(batch))).all()
+            video.id: video for video in db.scalars(select(Video).where(Video.id.in_(batch))).all()
         }
         states_by_video_id = {
             state.video_id: state
@@ -1073,8 +1076,11 @@ def run_view_snapshot_batch(
                 counters["videos_inactive"] += 1
                 continue
 
-            interval, low_growth_runs, priority = _adaptive_refresh_interval_hours(
-                state, item.view_count
+            interval, low_growth_runs, priority = _adaptive_refresh_interval_hours(state, item.view_count)
+            interval = _checkpoint_refresh_interval_hours(
+                video,
+                captured_at,
+                interval,
             )
             video.lifetime_views = item.view_count
             if item.duration_seconds is not None:
@@ -1095,9 +1101,6 @@ def run_view_snapshot_batch(
                         "view_count": item.view_count,
                     }
                 )
-            else:
-                existing_snapshot.captured_at = captured_at
-                existing_snapshot.view_count = item.view_count
             counters["videos_updated"] += 1
         if new_snapshots:
             db.execute(insert(ViewSnapshot), new_snapshots)
@@ -1234,8 +1237,7 @@ def run_availability_checks() -> None:
                             domain.availability_status == "available"
                             or (
                                 domain.candidate
-                                and domain.candidate.monthly_views
-                                >= settings.watchlist_monthly_views
+                                and domain.candidate.monthly_views >= settings.watchlist_monthly_views
                             )
                         ),
                     ): domain.id
@@ -1268,9 +1270,7 @@ def run_availability_checks() -> None:
                     if result.error:
                         counters["errors"] += 1
                         if len(counters["error_details"]) < 20:
-                            counters["error_details"].append(
-                                f"{domain.name}: {result.error}"[:500]
-                            )
+                            counters["error_details"].append(f"{domain.name}: {result.error}"[:500])
             db.commit()
             refresh_candidates(db, {domain.id for domain in domains})
             send_new_candidate_alerts(db)
@@ -1322,6 +1322,12 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
         stale_candidates.values(
             tier="rejected",
             monthly_views=0,
+            start_monthly_views=0,
+            day3_monthly_views=0,
+            day7_monthly_views=0,
+            evaluation_stage="collecting",
+            trend_percent=0.0,
+            buy_ready=False,
             verified_30d=False,
             observation_days=0.0,
             score=0.0,
@@ -1335,9 +1341,7 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
     statement = statement.where(Domain.id.in_(domain_ids))
     domains = db.scalars(
         statement.options(
-            selectinload(Domain.video_links)
-            .selectinload(VideoDomain.video)
-            .selectinload(Video.snapshots)
+            selectinload(Domain.video_links).selectinload(VideoDomain.video).selectinload(Video.snapshots)
         )
     ).all()
     updated = 0
@@ -1354,9 +1358,25 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
         best_video: Video | None = None
         best_link: VideoDomain | None = None
         best_metric = ViewMetric(0, False, 0.0, 0)
+        best_short_video: Video | None = None
+        best_short_link: VideoDomain | None = None
+        best_short_metric = ViewMetric(0, False, 0.0, 0)
         for video_links in by_video.values():
             video = video_links[0].video
             metric = calculate_monthly_views(video.snapshots)
+            if is_short_form_duration(video.duration_seconds):
+                if (
+                    best_short_video is None
+                    or metric.monthly_views > best_short_metric.monthly_views
+                    or (
+                        metric.monthly_views == best_short_metric.monthly_views
+                        and video.lifetime_views > best_short_video.lifetime_views
+                    )
+                ):
+                    best_short_video = video
+                    best_short_link = _best_link_for_video(video_links)
+                    best_short_metric = metric
+                continue
             if (
                 best_video is None
                 or metric.monthly_views > best_metric.monthly_views
@@ -1369,26 +1389,43 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
                 best_link = _best_link_for_video(video_links)
                 best_metric = metric
 
+        short_form_only = best_video is None
+        if short_form_only:
+            best_video = best_short_video
+            best_link = best_short_link
+            best_metric = best_short_metric
         if best_video is None or best_link is None:
             continue
-        short_form = is_short_form_duration(best_video.duration_seconds)
+        ranked_monthly_views = 0 if short_form_only else best_metric.monthly_views
         tier = determine_tier(
-            best_metric.monthly_views,
-            best_metric.verified_30d and not short_form,
+            ranked_monthly_views,
+            best_metric.evaluation_stage != "collecting" and not short_form_only,
             domain.availability_status,
             settings,
         )
-        score = calculate_score(
-            ScoreInputs(
-                monthly_views=best_metric.monthly_views,
-                lifetime_views=best_video.lifetime_views,
-                link_position=best_link.description_position,
-                has_cta=best_link.has_cta,
-                clickable=best_link.clickable and not short_form,
-                video_count=len(by_video),
-                link_count=len(active_links),
-                published_at=best_video.published_at,
-                availability_status=domain.availability_status,
+        score = (
+            calculate_score(
+                ScoreInputs(
+                    monthly_views=ranked_monthly_views,
+                    lifetime_views=best_video.lifetime_views,
+                    link_position=best_link.description_position,
+                    has_cta=best_link.has_cta,
+                    clickable=best_link.clickable,
+                    video_count=len(by_video),
+                    link_count=len(active_links),
+                    published_at=best_video.published_at,
+                    availability_status=domain.availability_status,
+                )
+            )
+            if not short_form_only
+            else 0.0
+        )
+        day7_stable = (
+            best_metric.evaluation_stage == "day7"
+            and best_metric.day7_monthly_views >= settings.watchlist_monthly_views
+            and (
+                best_metric.day3_monthly_views <= 0
+                or best_metric.day7_monthly_views >= round(best_metric.day3_monthly_views * 0.5)
             )
         )
         candidate = domain.candidate
@@ -1396,8 +1433,14 @@ def _refresh_candidate_chunk(db: Session, domain_ids: set[int]) -> int:
             candidate = Candidate(domain_id=domain.id)
             db.add(candidate)
         candidate.tier = tier
-        candidate.monthly_views = best_metric.monthly_views
-        candidate.verified_30d = best_metric.verified_30d and not short_form
+        candidate.monthly_views = ranked_monthly_views
+        candidate.start_monthly_views = 0 if short_form_only else best_metric.start_monthly_views
+        candidate.day3_monthly_views = 0 if short_form_only else best_metric.day3_monthly_views
+        candidate.day7_monthly_views = 0 if short_form_only else best_metric.day7_monthly_views
+        candidate.evaluation_stage = "short_form_only" if short_form_only else best_metric.evaluation_stage
+        candidate.trend_percent = 0.0 if short_form_only else best_metric.trend_percent
+        candidate.buy_ready = bool(day7_stable and domain.availability_status == "available")
+        candidate.verified_30d = best_metric.verified_30d and not short_form_only
         candidate.observation_days = best_metric.observation_days
         candidate.score = score
         candidate.video_count = len(by_video)
@@ -1423,9 +1466,7 @@ def refresh_candidates(db: Session, domain_ids: set[int] | None = None) -> int:
     if domain_ids is None:
         candidate_ids = db.scalars(select(Candidate.domain_id)).all()
         active_ids = db.scalars(
-            select(VideoDomain.domain_id)
-            .where(VideoDomain.active.is_(True))
-            .distinct()
+            select(VideoDomain.domain_id).where(VideoDomain.active.is_(True)).distinct()
         ).all()
         ids = sorted({int(value) for value in [*candidate_ids, *active_ids]})
     else:
@@ -1450,9 +1491,7 @@ def ingest_dropped_text(db: Session, text: str, source: str) -> dict[str, int]:
     dropped_by_name: dict[str, DroppedDomain] = {}
     for start in range(0, len(domains), 500):
         batch = domains[start : start + 500]
-        existing = db.scalars(
-            select(DroppedDomain).where(DroppedDomain.name.in_(batch))
-        ).all()
+        existing = db.scalars(select(DroppedDomain).where(DroppedDomain.name.in_(batch))).all()
         dropped_by_name.update({item.name: item for item in existing})
 
     for name in domains:
@@ -1563,9 +1602,7 @@ def run_dropped_youtube_search(max_searches: int = 10) -> None:
             affected_domain_ids: set[int] = set()
             candidates = _dropped_domains_due_for_youtube_search(db, max_searches)
             client = YouTubeClient(settings.youtube_api_key)
-            published_before = datetime.now(UTC) - timedelta(
-                days=365 * settings.published_before_years
-            )
+            published_before = datetime.now(UTC) - timedelta(days=365 * settings.published_before_years)
             for dropped in candidates:
                 if not consume_youtube_quota(
                     db,
@@ -1657,9 +1694,7 @@ def run_youtube_intelligence_maintenance() -> None:
             logger.exception("YouTube intelligence maintenance failed")
 
 
-def _email_candidates(
-    db: Session, only_unnotified: bool = False
-) -> list[tuple[Candidate, Domain, Video]]:
+def _email_candidates(db: Session, only_unnotified: bool = False) -> list[tuple[Candidate, Domain, Video]]:
     statement = (
         select(Candidate, Domain, Video)
         .join(Domain, Domain.id == Candidate.domain_id)
@@ -1667,9 +1702,7 @@ def _email_candidates(
         .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
         .where(
             Candidate.tier.in_(["priority", "qualified"]),
-            Domain.availability_status.notin_(
-                ["registered", "aftermarket", "premium", "reserved"]
-            ),
+            Domain.availability_status.notin_(["registered", "aftermarket", "premium", "reserved"]),
             or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
         )
         .order_by(
@@ -1689,11 +1722,7 @@ def _to_email_candidates(
 ) -> list[EmailCandidate]:
     domain_ids = [domain.id for _, domain, _ in rows]
     signals = (
-        db.scalars(
-            select(YouTubeDomainSignal).where(
-                YouTubeDomainSignal.domain_id.in_(domain_ids)
-            )
-        ).all()
+        db.scalars(select(YouTubeDomainSignal).where(YouTubeDomainSignal.domain_id.in_(domain_ids))).all()
         if domain_ids
         else []
     )
@@ -1701,22 +1730,24 @@ def _to_email_candidates(
     items: list[EmailCandidate] = []
     for candidate, domain, video in rows:
         signal = by_domain.get(domain.id)
-        items.append(EmailCandidate(
-            domain=domain.name,
-            tier=candidate.tier,
-            monthly_views=candidate.monthly_views,
-            score=candidate.score,
-            video_title=video.title,
-            video_id=video.id,
-            price_usd=domain.registrar_price_usd,
-            traffic_confidence=(signal.traffic_confidence if signal else "collecting"),
-            expected_clicks_monthly=(signal.expected_clicks_monthly if signal else 0),
-            monthly_revenue_low_usd=(signal.monthly_revenue_low_usd if signal else 0.0),
-            monthly_revenue_high_usd=(signal.monthly_revenue_high_usd if signal else 0.0),
-            max_purchase_price_usd=(signal.max_purchase_price_usd if signal else 0.0),
-            buy_score=(signal.buy_score if signal else candidate.score),
-            monetization_route=(signal.monetization_route if signal else ""),
-        ))
+        items.append(
+            EmailCandidate(
+                domain=domain.name,
+                tier=candidate.tier,
+                monthly_views=candidate.monthly_views,
+                score=candidate.score,
+                video_title=video.title,
+                video_id=video.id,
+                price_usd=domain.registrar_price_usd,
+                traffic_confidence=(signal.traffic_confidence if signal else "collecting"),
+                expected_clicks_monthly=(signal.expected_clicks_monthly if signal else 0),
+                monthly_revenue_low_usd=(signal.monthly_revenue_low_usd if signal else 0.0),
+                monthly_revenue_high_usd=(signal.monthly_revenue_high_usd if signal else 0.0),
+                max_purchase_price_usd=(signal.max_purchase_price_usd if signal else 0.0),
+                buy_score=(signal.buy_score if signal else 0.0),
+                monetization_route=(signal.monetization_route if signal else ""),
+            )
+        )
     return items
 
 
@@ -1732,7 +1763,8 @@ def send_new_candidate_alerts(db: Session) -> int:
     body = (
         "<h2>New YouTube expired-domain hit</h2>"
         "<p>These domains passed ordinary-registration availability and the "
-        "verified 30-day view threshold.</p>" + render_candidate_table(items)
+        "current long-form traffic threshold. The table shows the present "
+        "Day 0/3/7 confidence and potential value.</p>" + render_candidate_table(items)
     )
     send_email(settings, subject, body)
     now = utcnow()
@@ -1756,17 +1788,23 @@ def _counter_total(runs: list[RunLog], key: str, job: str | None = None) -> int:
 
 
 def _pending_reason(candidate: Candidate, domain: Domain, settings: Settings) -> str:
-    if candidate.observation_days < 1:
+    if candidate.evaluation_stage == "short_form_only":
+        return "A long-form linked video; Shorts are evidence-only"
+    if candidate.evaluation_stage == "collecting":
         return "A second daily view snapshot"
-    if (
-        candidate.monthly_views >= settings.watchlist_monthly_views
-        and domain.availability_status in {"unknown", "likely_available", "conflicting"}
-    ):
+    if candidate.monthly_views >= settings.watchlist_monthly_views and domain.availability_status in {
+        "unknown",
+        "likely_available",
+        "conflicting",
+    }:
         return "Exact registrar confirmation"
-    if not candidate.verified_30d and candidate.monthly_views >= settings.watchlist_monthly_views:
-        if candidate.observation_days >= settings.youtube_measured_window_days:
-            return "Full 30-day verification (15-day measured signal is ready)"
-        return f"The {settings.youtube_measured_window_days}-day measured checkpoint"
+    if candidate.monthly_views >= settings.watchlist_monthly_views:
+        if candidate.evaluation_stage == "day0":
+            return "The Day 3 traffic recheck"
+        if candidate.evaluation_stage == "day3":
+            return "The Day 7 buy decision"
+        if candidate.evaluation_stage == "day7" and not candidate.buy_ready:
+            return "A stable Day 7 trend and exact availability"
     if candidate.monthly_views < settings.watchlist_monthly_views:
         return f"Traffic to reach {settings.watchlist_monthly_views:,}/month"
     return "Final traffic and availability verification"
@@ -1788,18 +1826,12 @@ def _build_daily_digest_report(
 
     qualified_rows = _email_candidates(db)
     priority_count = sum(1 for candidate, _, _ in qualified_rows if candidate.tier == "priority")
-    qualified_count = sum(
-        1 for candidate, _, _ in qualified_rows if candidate.tier == "qualified"
-    )
+    qualified_count = sum(1 for candidate, _, _ in qualified_rows if candidate.tier == "qualified")
     watchlist_count = (
-        db.scalar(
-            select(func.count()).select_from(Candidate).where(Candidate.tier == "watchlist")
-        )
-        or 0
+        db.scalar(select(func.count()).select_from(Candidate).where(Candidate.tier == "watchlist")) or 0
     )
     pending_count = (
-        db.scalar(select(func.count()).select_from(Candidate).where(Candidate.tier == "pending"))
-        or 0
+        db.scalar(select(func.count()).select_from(Candidate).where(Candidate.tier == "pending")) or 0
     )
 
     pipeline_rows = db.execute(
@@ -1808,28 +1840,20 @@ def _build_daily_digest_report(
         .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
         .where(
             Candidate.tier.in_(["pending", "watchlist"]),
-            Domain.availability_status.notin_(
-                ["registered", "aftermarket", "premium", "reserved"]
-            ),
+            Domain.availability_status.notin_(["registered", "aftermarket", "premium", "reserved"]),
             or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
         )
     ).all()
     pending_summary = {
         "total": len(pipeline_rows),
         "initial": sum(1 for candidate, _ in pipeline_rows if candidate.observation_days < 1),
-        "projected": sum(
-            1 for candidate, _ in pipeline_rows if 1 <= candidate.observation_days < 27
-        ),
-        "measured_15d": sum(
-            1
-            for candidate, _ in pipeline_rows
-            if candidate.observation_days >= settings.youtube_measured_window_days
-            and not candidate.verified_30d
-        ),
+        "projected": sum(1 for candidate, _ in pipeline_rows if 1 <= candidate.observation_days < 27),
+        "day3": sum(1 for candidate, _ in pipeline_rows if candidate.evaluation_stage == "day3"),
+        "day7": sum(1 for candidate, _ in pipeline_rows if candidate.evaluation_stage == "day7"),
         "verification": sum(
             1
             for candidate, _ in pipeline_rows
-            if not candidate.verified_30d
+            if candidate.evaluation_stage != "day7"
             and candidate.monthly_views >= settings.qualified_monthly_views
         ),
         "registrar": sum(
@@ -1847,9 +1871,7 @@ def _build_daily_digest_report(
         .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
         .where(
             Candidate.tier.in_(["watchlist", "pending"]),
-            Domain.availability_status.notin_(
-                ["registered", "aftermarket", "premium", "reserved"]
-            ),
+            Domain.availability_status.notin_(["registered", "aftermarket", "premium", "reserved"]),
             or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
         )
         .order_by(
@@ -1887,9 +1909,7 @@ def _build_daily_digest_report(
         .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
         .where(
             Opportunity.tier.in_(["priority", "qualified", "watchlist", "pending"]),
-            Domain.availability_status.notin_(
-                ["registered", "aftermarket", "premium", "reserved"]
-            ),
+            Domain.availability_status.notin_(["registered", "aftermarket", "premium", "reserved"]),
             or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
         )
         .order_by(
@@ -1919,21 +1939,11 @@ def _build_daily_digest_report(
             source_site=site.hostname if site is not None else "",
             source_title=page.title if page is not None else "",
             source_url=page.url if page is not None else "",
-            expected_clicks_monthly=(
-                economics.expected_clicks_monthly if economics is not None else 0
-            ),
-            monthly_revenue_low_usd=(
-                economics.monthly_revenue_low_usd if economics is not None else 0.0
-            ),
-            monthly_revenue_high_usd=(
-                economics.monthly_revenue_high_usd if economics is not None else 0.0
-            ),
-            max_purchase_price_usd=(
-                economics.max_purchase_price_usd if economics is not None else 0.0
-            ),
-            monetization_route=(
-                economics.monetization_route if economics is not None else ""
-            ),
+            expected_clicks_monthly=(economics.expected_clicks_monthly if economics is not None else 0),
+            monthly_revenue_low_usd=(economics.monthly_revenue_low_usd if economics is not None else 0.0),
+            monthly_revenue_high_usd=(economics.monthly_revenue_high_usd if economics is not None else 0.0),
+            max_purchase_price_usd=(economics.max_purchase_price_usd if economics is not None else 0.0),
+            monetization_route=(economics.monetization_route if economics is not None else ""),
             economics_confidence=(economics.confidence if economics is not None else 0.0),
         )
         for opportunity, domain, page, site, economics in web_rows
@@ -1998,32 +2008,18 @@ def _build_daily_digest_report(
         "new_videos": _counter_total(recent_runs, "new_videos"),
         "new_domains": _counter_total(recent_runs, "new_domains"),
         "new_links": _counter_total(recent_runs, "new_links"),
-        "playlist_calls": _counter_total(
-            recent_runs, "playlist_calls", "youtube_channel_fanout"
-        ),
-        "fanout_videos_fetched": _counter_total(
-            recent_runs, "videos_fetched", "youtube_channel_fanout"
-        ),
-        "youtube_signals": _counter_total(
-            recent_runs, "domain_signals_backfilled", "youtube_intelligence"
-        ),
+        "playlist_calls": _counter_total(recent_runs, "playlist_calls", "youtube_channel_fanout"),
+        "fanout_videos_fetched": _counter_total(recent_runs, "videos_fetched", "youtube_channel_fanout"),
+        "youtube_signals": _counter_total(recent_runs, "domain_signals_backfilled", "youtube_intelligence"),
         "local_matches": _counter_total(recent_runs, "new_matches"),
         "videos_updated": _counter_total(recent_runs, "videos_updated"),
         "availability_checked": _counter_total(recent_runs, "checked", "availability_checks"),
         "availability_errors": _counter_total(recent_runs, "errors", "availability_checks"),
         "drops_loaded": _counter_total(recent_runs, "new", "dropped_feeds"),
-        "drops_searched": _counter_total(
-            recent_runs, "drops_checked", "dropped_youtube_search"
-        ),
-        "dropped_matches": _counter_total(
-            recent_runs, "exact_matches", "dropped_youtube_search"
-        ),
-        "web_free_screened": _counter_total(
-            recent_runs, "screened", "web_free_screening"
-        ),
-        "web_free_blocked": _counter_total(
-            recent_runs, "blocked", "web_free_screening"
-        ),
+        "drops_searched": _counter_total(recent_runs, "drops_checked", "dropped_youtube_search"),
+        "dropped_matches": _counter_total(recent_runs, "exact_matches", "dropped_youtube_search"),
+        "web_free_screened": _counter_total(recent_runs, "screened", "web_free_screening"),
+        "web_free_blocked": _counter_total(recent_runs, "blocked", "web_free_screening"),
     }
 
     issues: list[EmailRunIssue] = []
@@ -2046,16 +2042,13 @@ def _build_daily_digest_report(
             message = f"{int(error_count)} item-level error(s)"
             if detail_text:
                 message += f": {detail_text}"
-            issues.append(
-                EmailRunIssue(job=item.job, occurred_at=occurred_at, message=message)
-            )
+            issues.append(EmailRunIssue(job=item.job, occurred_at=occurred_at, message=message))
 
     crawler_videos = db.scalar(select(func.count()).select_from(Video)) or 0
     crawler_domains = db.scalar(select(func.count()).select_from(Domain)) or 0
     dropped_ingested = db.scalar(select(func.count()).select_from(DroppedDomain)) or 0
     exact_links = (
-        db.scalar(select(func.count()).select_from(VideoDomain).where(VideoDomain.active.is_(True)))
-        or 0
+        db.scalar(select(func.count()).select_from(VideoDomain).where(VideoDomain.active.is_(True))) or 0
     )
     longest_observation = db.scalar(select(func.max(Candidate.observation_days))) or 0.0
 
@@ -2169,8 +2162,7 @@ def _run_daily_digest_catchup() -> None:
         for run in runs:
             counters = run.counters if isinstance(run.counters, dict) else {}
             if run.status == "complete" and (
-                not settings.email_enabled
-                or int(counters.get("emailed", 0) or 0) >= 1
+                not settings.email_enabled or int(counters.get("emailed", 0) or 0) >= 1
             ):
                 return
             if run.status == "running":

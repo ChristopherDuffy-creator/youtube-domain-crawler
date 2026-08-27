@@ -96,6 +96,9 @@ DEFAULT_DROPPED_DOMAIN_FEED_URLS = [
 ]
 
 DEFAULT_STACKEXCHANGE_SITES = ["stackoverflow", "superuser", "webmasters"]
+YOUTUBE_WATCHLIST_MINIMUM = 10_000
+YOUTUBE_QUALIFIED_MINIMUM = 50_000
+YOUTUBE_PRIORITY_MINIMUM = 100_000
 
 
 class Settings(BaseSettings):
@@ -116,10 +119,28 @@ class Settings(BaseSettings):
     dashboard_password: str = "change-me"
     admin_token: str = "change-me-too"
 
-    watchlist_monthly_views: int = Field(default=5_000, ge=0)
-    qualified_monthly_views: int = Field(default=20_000, ge=1)
+    watchlist_monthly_views: int = Field(default=10_000, ge=0)
+    qualified_monthly_views: int = Field(default=50_000, ge=1)
     priority_monthly_views: int = Field(default=100_000, ge=1)
     target_qualified_domains: int = Field(default=100, ge=1)
+
+    def model_post_init(self, __context: object) -> None:
+        """Keep the approved YouTube traffic bands immune to stale env values."""
+        del __context
+        self.watchlist_monthly_views = max(
+            YOUTUBE_WATCHLIST_MINIMUM,
+            self.watchlist_monthly_views,
+        )
+        self.qualified_monthly_views = max(
+            YOUTUBE_QUALIFIED_MINIMUM,
+            self.watchlist_monthly_views,
+            self.qualified_monthly_views,
+        )
+        self.priority_monthly_views = max(
+            YOUTUBE_PRIORITY_MINIMUM,
+            self.qualified_monthly_views,
+            self.priority_monthly_views,
+        )
 
     discovery_interval_minutes: int = Field(default=60, ge=15)
     search_calls_per_run: int = Field(default=3, ge=1, le=10)
@@ -176,15 +197,11 @@ class Settings(BaseSettings):
     commoncrawl_prefilter_index_count: int = Field(default=2, ge=1, le=5)
     stackexchange_prefilter_batch_size: int = Field(default=20, ge=1, le=20)
     stackexchange_min_views: int = Field(default=1_000, ge=0)
-    stackexchange_sites: CsvList = Field(
-        default_factory=lambda: list(DEFAULT_STACKEXCHANGE_SITES)
-    )
+    stackexchange_sites: CsvList = Field(default_factory=lambda: list(DEFAULT_STACKEXCHANGE_SITES))
     hackernews_prefilter_batch_size: int = Field(default=25, ge=1, le=25)
     hackernews_prefilter_hits_per_page: int = Field(default=50, ge=1, le=100)
 
-    dropped_domain_feed_urls: CsvList = Field(
-        default_factory=lambda: list(DEFAULT_DROPPED_DOMAIN_FEED_URLS)
-    )
+    dropped_domain_feed_urls: CsvList = Field(default_factory=lambda: list(DEFAULT_DROPPED_DOMAIN_FEED_URLS))
 
     legacy_dropped_checked: int = 120
     legacy_videos_checked: int = 214

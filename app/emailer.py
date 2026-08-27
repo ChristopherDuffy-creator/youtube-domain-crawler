@@ -133,9 +133,7 @@ def send_email(
     except httpx.HTTPError as exc:
         raise EmailError(f"Email request failed: {exc}") from exc
     if response.status_code >= 400:
-        raise EmailError(
-            f"Email service returned HTTP {response.status_code}: {response.text[:300]}"
-        )
+        raise EmailError(f"Email service returned HTTP {response.status_code}: {response.text[:300]}")
     try:
         return response.json().get("id")
     except ValueError:
@@ -153,7 +151,8 @@ def render_candidate_table(candidates: list[EmailCandidate]) -> str:
             f"<td><strong>{html.escape(item.domain)}</strong></td>"
             f"<td>{html.escape(item.tier.title())}</td>"
             f"<td>{item.monthly_views:,}</td>"
-            f"<td>{item.buy_score or item.score:.1f}</td>"
+            f"<td>{item.buy_score:.1f}</td>"
+            f"<td>{item.score:.1f}</td>"
             f"<td>{item.expected_clicks_monthly:,}<br><small>modelled outbound clicks</small></td>"
             f"<td>${item.monthly_revenue_low_usd:,.0f}–"
             f"${item.monthly_revenue_high_usd:,.0f}<br><small>ceiling "
@@ -168,8 +167,8 @@ def render_candidate_table(candidates: list[EmailCandidate]) -> str:
     return (
         "<table cellpadding='8' cellspacing='0' border='1' "
         "style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px'>"
-        "<thead><tr><th>Domain</th><th>Tier</th><th>Linked-video exposure</th>"
-        "<th>Buy score</th><th>Predicted clicks</th><th>Money case</th>"
+        "<thead><tr><th>Domain</th><th>Tier</th><th>Current monthly run-rate</th>"
+        "<th>Buy score</th><th>Evidence score</th><th>Predicted clicks</th><th>Money case</th>"
         "<th>Price</th><th>Best linked video</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
@@ -181,11 +180,7 @@ def render_pending_candidate_table(candidates: list[EmailPendingCandidate]) -> s
     rows: list[str] = []
     for item in candidates:
         traffic = f"{item.monthly_views:,}" if item.monthly_views else "Collecting"
-        observation = (
-            f"{item.observation_days:.1f} days"
-            if item.observation_days >= 1
-            else "Under 1 day"
-        )
+        observation = f"{item.observation_days:.1f} days" if item.observation_days >= 1 else "Under 1 day"
         rows.append(
             "<tr>"
             f"<td><strong>{html.escape(item.domain)}</strong></td>"
@@ -202,7 +197,7 @@ def render_pending_candidate_table(candidates: list[EmailPendingCandidate]) -> s
         "<table cellpadding='7' cellspacing='0' border='1' "
         "style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;"
         "width:100%;border-color:#d7dce5'>"
-        "<thead><tr><th>Domain</th><th>Tier</th><th>30-day views</th>"
+        "<thead><tr><th>Domain</th><th>Tier</th><th>Current monthly run-rate</th>"
         "<th>Availability</th><th>Score</th><th>What it is waiting for</th>"
         "<th>Best linked video</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
@@ -302,8 +297,9 @@ def render_daily_digest(report: DailyDigest) -> str:
         ("All pending exact-link domains", report.pending.get("total", 0)),
         ("Collecting the first 24-hour baseline", report.pending.get("initial", 0)),
         ("Early traffic projection available", report.pending.get("projected", 0)),
-        ("15-day measured decision signal ready", report.pending.get("measured_15d", 0)),
-        ("Waiting for full 27-day verification", report.pending.get("verification", 0)),
+        ("Day 3 rechecks ready", report.pending.get("day3", 0)),
+        ("Day 7 evaluations ready", report.pending.get("day7", 0)),
+        ("High-traffic cases waiting for Day 7", report.pending.get("verification", 0)),
         ("Waiting for exact registrar confirmation", report.pending.get("registrar", 0)),
     ]
     availability_labels = [
@@ -327,13 +323,17 @@ def render_daily_digest(report: DailyDigest) -> str:
 
     issues_html = "<p>No crawler errors were recorded in the last 24 hours.</p>"
     if report.issues:
-        issues_html = "<ul>" + "".join(
-            "<li>"
-            f"<strong>{html.escape(issue.job.replace('_', ' '))}</strong> "
-            f"({html.escape(issue.occurred_at)}): {html.escape(issue.message[:500])}"
-            "</li>"
-            for issue in report.issues
-        ) + "</ul>"
+        issues_html = (
+            "<ul>"
+            + "".join(
+                "<li>"
+                f"<strong>{html.escape(issue.job.replace('_', ' '))}</strong> "
+                f"({html.escape(issue.occurred_at)}): {html.escape(issue.message[:500])}"
+                "</li>"
+                for issue in report.issues
+            )
+            + "</ul>"
+        )
 
     feed_note = (
         f"{report.feed_count} automatic fresh dropped-domain feed"
@@ -378,8 +378,8 @@ def render_daily_digest(report: DailyDigest) -> str:
         + "<h2>Current YouTube pending pipeline</h2>"
         + _metric_table(pending_labels)
         + f"<p>Longest YouTube traffic observation: <strong>{report.longest_observation_days:.1f} "
-        "days</strong>. A YouTube candidate needs 27–35 days of measured traffic before it can be "
-        "called Qualified or Priority.</p>"
+        "days</strong>. Start, Day 3 and Day 7 monthly run-rates are compared before a candidate "
+        "is marked buy-ready.</p>"
         + render_pending_candidate_table(report.pending_candidates)
         + "<h2>Availability position</h2>"
         + _metric_table(availability_labels)
@@ -398,8 +398,9 @@ def render_daily_digest(report: DailyDigest) -> str:
         + "<h2>Errors and warnings</h2>"
         + issues_html
         + "<p style='font-size:12px;color:#596579;margin-top:24px'>YouTube Watchlist starts at "
-        "5,000 projected monthly views. YouTube qualification requires ordinary registration "
-        "confirmation plus at least 20,000 views measured over a real 27–35 day window. "
+        "10,000 current long-form views/month. Qualified starts at 50,000 with ordinary "
+        "registration confirmed; Priority starts at 100,000. A stable Day 7 comparison is "
+        "required before a purchase ceiling is shown. "
         "Web Link Hunter qualification separately requires an ordinary registration, a directly "
         "verified live backlink, and the configured web evidence score.</p>"
         "</div>"

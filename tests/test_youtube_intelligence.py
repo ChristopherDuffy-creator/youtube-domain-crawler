@@ -124,9 +124,7 @@ def test_15_day_signal_is_measured_not_verified_and_builds_a_money_case() -> Non
 
     with Session(engine) as db:
         process_video(db, _linked_video("measured0001", "measured-opportunity.com"), "seed", "test")
-        domain = db.scalar(
-            select(Domain).where(Domain.name == "measured-opportunity.com")
-        )
+        domain = db.scalar(select(Domain).where(Domain.name == "measured-opportunity.com"))
         assert domain is not None
         domain.availability_status = "available"
         db.add(
@@ -136,6 +134,28 @@ def test_15_day_signal_is_measured_not_verified_and_builds_a_money_case() -> Non
                 capture_date=(now - timedelta(days=15)).date(),
                 view_count=120_000,
             )
+        )
+        db.add_all(
+            [
+                ViewSnapshot(
+                    video_id="measured0001",
+                    captured_at=now - timedelta(days=14),
+                    capture_date=(now - timedelta(days=14)).date(),
+                    view_count=123_000,
+                ),
+                ViewSnapshot(
+                    video_id="measured0001",
+                    captured_at=now - timedelta(days=12),
+                    capture_date=(now - timedelta(days=12)).date(),
+                    view_count=129_000,
+                ),
+                ViewSnapshot(
+                    video_id="measured0001",
+                    captured_at=now - timedelta(days=8),
+                    capture_date=(now - timedelta(days=8)).date(),
+                    view_count=141_000,
+                ),
+            ]
         )
         db.commit()
 
@@ -149,12 +169,13 @@ def test_15_day_signal_is_measured_not_verified_and_builds_a_money_case() -> Non
         assert signal.monthly_linked_video_exposure >= 70_000
         assert signal.expected_clicks_monthly > 0
         assert signal.monthly_revenue_high_usd > signal.monthly_revenue_low_usd
-        assert signal.max_purchase_price_usd == 0
+        assert signal.max_purchase_price_usd > 0
         assert signal.buy_score > 0
+        assert domain.candidate is not None
+        assert domain.candidate.evaluation_stage == "day7"
+        assert domain.candidate.buy_ready is True
 
-        links = db.scalars(
-            select(VideoDomain).where(VideoDomain.domain_id == domain.id)
-        ).all()
+        links = db.scalars(select(VideoDomain).where(VideoDomain.domain_id == domain.id)).all()
         for link in links:
             link.active = False
         db.commit()
@@ -165,7 +186,7 @@ def test_15_day_signal_is_measured_not_verified_and_builds_a_money_case() -> Non
         assert signal.buy_score == 0
 
 
-def test_early_signal_has_no_click_revenue_or_decision_case() -> None:
+def test_day3_signal_restores_provisional_score_and_potential_value() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     now = datetime.now(UTC)
@@ -183,6 +204,22 @@ def test_early_signal_has_no_click_revenue_or_decision_case() -> None:
                 view_count=10_000,
             )
         )
+        db.add_all(
+            [
+                ViewSnapshot(
+                    video_id="early0000001",
+                    captured_at=now - timedelta(days=5),
+                    capture_date=(now - timedelta(days=5)).date(),
+                    view_count=35_000,
+                ),
+                ViewSnapshot(
+                    video_id="early0000001",
+                    captured_at=now - timedelta(days=3),
+                    capture_date=(now - timedelta(days=3)).date(),
+                    view_count=85_000,
+                ),
+            ]
+        )
         db.commit()
 
         refresh_candidates(db, {domain.id})
@@ -192,11 +229,14 @@ def test_early_signal_has_no_click_revenue_or_decision_case() -> None:
         assert signal.measured_15d is False
         assert signal.observed_view_gain == 150_000
         assert signal.monthly_linked_video_exposure > 0
-        assert signal.expected_clicks_monthly == 0
-        assert signal.monthly_revenue_low_usd == 0
-        assert signal.monthly_revenue_high_usd == 0
+        assert signal.expected_clicks_monthly > 0
+        assert signal.monthly_revenue_low_usd > 0
+        assert signal.monthly_revenue_high_usd > signal.monthly_revenue_low_usd
         assert signal.max_purchase_price_usd == 0
-        assert signal.buy_score == 0
+        assert signal.buy_score > 0
+        assert domain.candidate is not None
+        assert domain.candidate.evaluation_stage == "day3"
+        assert domain.candidate.buy_ready is False
 
 
 def test_short_form_exposure_never_becomes_assumed_clickable_traffic() -> None:
@@ -215,9 +255,7 @@ def test_short_form_exposure_never_becomes_assumed_clickable_traffic() -> None:
             "seed",
             "test",
         )
-        domain = db.scalar(
-            select(Domain).where(Domain.name == "short-description.com")
-        )
+        domain = db.scalar(select(Domain).where(Domain.name == "short-description.com"))
         assert domain is not None
         domain.availability_status = "available"
         db.add(
@@ -234,13 +272,17 @@ def test_short_form_exposure_never_becomes_assumed_clickable_traffic() -> None:
         signal = db.get(YouTubeDomainSignal, domain.id)
 
         assert signal is not None
-        assert signal.measured_15d is True
+        assert signal.measured_15d is False
         assert signal.short_form_video_count == 1
         assert signal.short_form_exposure > 0
         assert signal.click_eligible_exposure == 0
         assert signal.expected_clicks_monthly == 0
         assert signal.monthly_revenue_high_usd == 0
         assert signal.buy_score == 0
+        assert domain.candidate is not None
+        assert domain.candidate.tier == "pending"
+        assert domain.candidate.monthly_views == 0
+        assert domain.candidate.evaluation_stage == "short_form_only"
 
 
 def test_dropped_domain_matching_works_in_both_arrival_orders_and_is_permanent() -> None:
@@ -277,26 +319,18 @@ def test_dropped_domain_matching_works_in_both_arrival_orders_and_is_permanent()
 
         drop_first = db.scalar(select(Domain).where(Domain.name == "drop-first.com"))
         assert drop_first is not None
-        for link in db.scalars(
-            select(VideoDomain).where(VideoDomain.domain_id == drop_first.id)
-        ).all():
+        for link in db.scalars(select(VideoDomain).where(VideoDomain.domain_id == drop_first.id)).all():
             link.active = False
         db.commit()
         refresh_local_dropped_matches(db, domain_ids={drop_first.id})
-        retained = db.scalar(
-            select(DroppedDomainMatch).where(
-                DroppedDomainMatch.domain_id == drop_first.id
-            )
-        )
+        retained = db.scalar(select(DroppedDomainMatch).where(DroppedDomainMatch.domain_id == drop_first.id))
         assert retained is not None
         assert retained.active_video_count == 0
         assert retained.active_link_count == 0
 
 
 class _GranularStatsClient:
-    def fetch_video_statistics_batch(
-        self, video_ids: list[str]
-    ) -> list[VideoStatistics]:
+    def fetch_video_statistics_batch(self, video_ids: list[str]) -> list[VideoStatistics]:
         return [VideoStatistics(video_id, 200_000) for video_id in video_ids]
 
 

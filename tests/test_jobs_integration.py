@@ -9,7 +9,7 @@ from app.models import Candidate, Domain, DroppedDomain, Video, ViewSnapshot
 from app.youtube import YouTubeVideo
 
 
-def test_video_to_qualified_candidate_and_dropped_match() -> None:
+def test_video_to_watchlist_candidate_and_dropped_match() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     now = datetime.now(UTC)
@@ -46,7 +46,7 @@ def test_video_to_qualified_candidate_and_dropped_match() -> None:
         assert refresh_candidates(db) == 1
         candidate = db.scalar(select(Candidate))
         assert candidate is not None
-        assert candidate.tier == "qualified"
+        assert candidate.tier == "watchlist"
         assert candidate.monthly_views >= 24_000
         assert candidate.verified_30d is True
 
@@ -90,12 +90,8 @@ def test_malformed_video_is_isolated_and_external_text_is_sanitized() -> None:
     )
 
     with Session(engine) as db:
-        failed_result, error = _process_video_isolated(
-            db, bad_video, "seed", "test"
-        )
-        saved_result, saved_error = _process_video_isolated(
-            db, good_video, "seed", "test"
-        )
+        failed_result, error = _process_video_isolated(db, bad_video, "seed", "test")
+        saved_result, saved_error = _process_video_isolated(db, good_video, "seed", "test")
         db.commit()
 
         assert failed_result is None

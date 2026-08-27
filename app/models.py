@@ -43,12 +43,8 @@ class Video(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    links: Mapped[list[VideoDomain]] = relationship(
-        back_populates="video", cascade="all, delete-orphan"
-    )
-    snapshots: Mapped[list[ViewSnapshot]] = relationship(
-        back_populates="video", cascade="all, delete-orphan"
-    )
+    links: Mapped[list[VideoDomain]] = relationship(back_populates="video", cascade="all, delete-orphan")
+    snapshots: Mapped[list[ViewSnapshot]] = relationship(back_populates="video", cascade="all, delete-orphan")
 
 
 class Domain(Base):
@@ -127,6 +123,12 @@ class Candidate(Base):
     )
     tier: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    start_monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    day3_monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    day7_monthly_views: Mapped[int] = mapped_column(BigInteger, default=0)
+    evaluation_stage: Mapped[str] = mapped_column(String(16), default="collecting", index=True)
+    trend_percent: Mapped[float] = mapped_column(Float, default=0.0)
+    buy_ready: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     verified_30d: Mapped[bool] = mapped_column(Boolean, default=False)
     observation_days: Mapped[float] = mapped_column(Float, default=0.0)
     score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
@@ -174,13 +176,9 @@ class YouTubeChannel(Base):
 class VideoRefreshState(Base):
     __tablename__ = "video_refresh_states"
 
-    video_id: Mapped[str] = mapped_column(
-        ForeignKey("videos.id", ondelete="CASCADE"), primary_key=True
-    )
+    video_id: Mapped[str] = mapped_column(ForeignKey("videos.id", ondelete="CASCADE"), primary_key=True)
     next_refresh_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    last_refreshed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     refresh_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
     priority_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
     last_view_count: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -204,9 +202,7 @@ class YouTubeChannelIntelligence(Base):
     """Adaptive crawl allocation kept beside the permanent channel ledger."""
 
     __tablename__ = "youtube_channel_intelligence"
-    __table_args__ = (
-        Index("ix_youtube_channel_intel_queue", "tier", "next_crawl_at", "ema_yield"),
-    )
+    __table_args__ = (Index("ix_youtube_channel_intel_queue", "tier", "next_crawl_at", "ema_yield"),)
 
     channel_id: Mapped[str] = mapped_column(
         ForeignKey("youtube_channels.channel_id", ondelete="CASCADE"), primary_key=True
@@ -228,9 +224,7 @@ class YouTubeDomainSignal(Base):
 
     __tablename__ = "youtube_domain_signals"
 
-    domain_id: Mapped[int] = mapped_column(
-        ForeignKey("domains.id", ondelete="CASCADE"), primary_key=True
-    )
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="CASCADE"), primary_key=True)
     active_video_count: Mapped[int] = mapped_column(Integer, default=0)
     active_link_count: Mapped[int] = mapped_column(Integer, default=0)
     channel_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -253,7 +247,7 @@ class YouTubeDomainSignal(Base):
     max_purchase_price_usd: Mapped[float] = mapped_column(Float, default=0.0)
     buy_score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
     monetization_route: Mapped[str] = mapped_column(String(64), default="content_restore")
-    model_version: Mapped[int] = mapped_column(Integer, default=3, index=True)
+    model_version: Mapped[int] = mapped_column(Integer, default=4, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -264,9 +258,7 @@ class DroppedDomain(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     source: Mapped[str] = mapped_column(Text, default="manual")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    youtube_searched_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    youtube_searched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     matched_existing_index: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
@@ -283,9 +275,7 @@ class DroppedDomainMatch(Base):
     dropped_domain_id: Mapped[int] = mapped_column(
         ForeignKey("dropped_domains.id", ondelete="CASCADE"), index=True
     )
-    domain_id: Mapped[int] = mapped_column(
-        ForeignKey("domains.id", ondelete="CASCADE"), index=True
-    )
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="CASCADE"), index=True)
     active_video_count: Mapped[int] = mapped_column(Integer, default=0)
     active_link_count: Mapped[int] = mapped_column(Integer, default=0)
     matched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -321,9 +311,7 @@ class DashboardDecision(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     system: Mapped[str] = mapped_column(String(16), index=True)
-    domain_id: Mapped[int] = mapped_column(
-        ForeignKey("domains.id", ondelete="CASCADE"), index=True
-    )
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="CASCADE"), index=True)
     status: Mapped[str] = mapped_column(String(16), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -422,9 +410,7 @@ class SourceLink(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_page_id: Mapped[int] = mapped_column(
-        ForeignKey("source_pages.id", ondelete="CASCADE"), index=True
-    )
+    source_page_id: Mapped[int] = mapped_column(ForeignKey("source_pages.id", ondelete="CASCADE"), index=True)
     domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="CASCADE"), index=True)
     target_url: Mapped[str] = mapped_column(Text)
     anchor_text: Mapped[str] = mapped_column(Text, default="")
@@ -442,15 +428,11 @@ class SourceLink(Base):
 class SourceMetricSnapshot(Base):
     __tablename__ = "source_metric_snapshots"
     __table_args__ = (
-        UniqueConstraint(
-            "source_page_id", "provider", "capture_date", name="uq_source_metric_day"
-        ),
+        UniqueConstraint("source_page_id", "provider", "capture_date", name="uq_source_metric_day"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_page_id: Mapped[int] = mapped_column(
-        ForeignKey("source_pages.id", ondelete="CASCADE"), index=True
-    )
+    source_page_id: Mapped[int] = mapped_column(ForeignKey("source_pages.id", ondelete="CASCADE"), index=True)
     provider: Mapped[str] = mapped_column(String(32), default="dataforseo", index=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     capture_date: Mapped[date] = mapped_column(Date, default=lambda: utcnow().date())
@@ -463,9 +445,7 @@ class SourceMetricSnapshot(Base):
 
 class ProviderQuery(Base):
     __tablename__ = "provider_queries"
-    __table_args__ = (
-        Index("ix_provider_queries_target_endpoint", "target", "endpoint"),
-    )
+    __table_args__ = (Index("ix_provider_queries_target_endpoint", "target", "endpoint"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     provider: Mapped[str] = mapped_column(String(32), default="dataforseo", index=True)
@@ -561,9 +541,7 @@ class BacklinkSummary(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    domain_id: Mapped[int] = mapped_column(
-        ForeignKey("domains.id", ondelete="CASCADE"), index=True
-    )
+    domain_id: Mapped[int] = mapped_column(ForeignKey("domains.id", ondelete="CASCADE"), index=True)
     provider: Mapped[str] = mapped_column(String(32), default="dataforseo", index=True)
     backlinks: Mapped[int] = mapped_column(Integer, default=0)
     referring_pages: Mapped[int] = mapped_column(Integer, default=0)
@@ -572,23 +550,17 @@ class BacklinkSummary(Base):
     rank: Mapped[float] = mapped_column(Float, default=0.0, index=True)
     raw_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    last_refreshed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, index=True
-    )
+    last_refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
 class LinkObservation(Base):
     """Append-only direct observations used to measure link survival."""
 
     __tablename__ = "link_observations"
-    __table_args__ = (
-        Index("ix_link_observations_link_time", "source_link_id", "observed_at"),
-    )
+    __table_args__ = (Index("ix_link_observations_link_time", "source_link_id", "observed_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_link_id: Mapped[int] = mapped_column(
-        ForeignKey("source_links.id", ondelete="CASCADE"), index=True
-    )
+    source_link_id: Mapped[int] = mapped_column(ForeignKey("source_links.id", ondelete="CASCADE"), index=True)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     final_url: Mapped[str] = mapped_column(Text, default="")

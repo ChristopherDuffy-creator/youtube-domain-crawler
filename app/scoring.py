@@ -22,7 +22,7 @@ class ScoreInputs:
 
 def determine_tier(
     monthly_views: int,
-    verified_30d: bool,
+    evaluation_started: bool,
     availability_status: str,
     settings: Settings,
 ) -> str:
@@ -30,11 +30,13 @@ def determine_tier(
     plausible_available = availability_status in {"available", "likely_available"}
     if availability_status in {"registered", "premium", "aftermarket", "reserved"}:
         return "rejected"
-    if exact_available and verified_30d and monthly_views >= settings.priority_monthly_views:
+    if not evaluation_started or not plausible_available:
+        return "pending"
+    if exact_available and monthly_views >= settings.priority_monthly_views:
         return "priority"
-    if exact_available and verified_30d and monthly_views >= settings.qualified_monthly_views:
+    if exact_available and monthly_views >= settings.qualified_monthly_views:
         return "qualified"
-    if plausible_available and monthly_views >= settings.watchlist_monthly_views:
+    if monthly_views >= settings.watchlist_monthly_views:
         return "watchlist"
     return "pending"
 
@@ -46,9 +48,7 @@ def calculate_score(inputs: ScoreInputs) -> float:
     prominence = max(0.0, 10.0 * (1 - min(max(inputs.link_position, 0), 1)))
     cta = 8.0 if inputs.has_cta else 0.0
     clickability = 4.0 if inputs.clickable else 0.0
-    repetition = min(
-        15.0, (max(inputs.video_count, 1) - 1) * 5 + (max(inputs.link_count, 1) - 1) * 1.5
-    )
+    repetition = min(15.0, (max(inputs.video_count, 1) - 1) * 5 + (max(inputs.link_count, 1) - 1) * 1.5)
     availability = {
         "available": 8.0,
         "likely_available": 4.0,
@@ -68,14 +68,7 @@ def calculate_score(inputs: ScoreInputs) -> float:
             0.0,
             min(
                 100.0,
-                recent
-                + lifetime
-                + prominence
-                + cta
-                + clickability
-                + repetition
-                + availability
-                + evergreen,
+                recent + lifetime + prominence + cta + clickability + repetition + availability + evergreen,
             ),
         ),
         1,
