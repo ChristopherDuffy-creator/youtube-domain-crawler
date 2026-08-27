@@ -219,11 +219,12 @@ def test_daily_digest_reports_real_work_pending_candidates_errors_and_web_hits()
     assert report.web_opportunities[0].source_page_traffic == 10_000
     assert report.web_opportunities[0].source_site == "publisher.example"
 
-    assert "Web Link Hunter" in body
-    assert "Independent buyer guide" in body
-    assert "web-example.com" in body
-    assert "10,000" in body
-    assert "$0.0500" in body
+    assert "Web Link Hunter" not in body
+    assert "Independent buyer guide" not in body
+    assert "web-example.com" not in body
+    assert "20,000" in body
+    assert "10,000–20,000" in body
+    assert "$0.0500" not in body
     assert "Work completed in the last 24 hours" in body
     assert "Fresh dropped names loaded" in body
     assert "9,975" in body

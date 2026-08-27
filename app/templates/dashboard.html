@@ -1,361 +1,201 @@
-{% macro revenue_band(high) -%}
-  {% set value = high or 0 %}
-  {% if value >= 50 %}<span class="pill priority">Acquisition priority · $50+/mo</span>
-  {% elif value >= 15 %}<span class="pill qualified">Good earner · $15–$50/mo</span>
-  {% elif value >= 5 %}<span class="pill watchlist">Small keeper · $5–$15/mo</span>
-  {% else %}<span class="pill pending">Micro · under $5/mo</span>{% endif %}
-{%- endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Expandosaurus Domain Traffic System</title>
-<link rel="stylesheet" href="/static/styles.css">
+  <title>YouTube Domain Opportunities</title>
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <main class="container">
     <header class="topbar">
       <div>
         <p class="eyebrow">EXPANDOSAURUS</p>
-        <h1>Domain Traffic System</h1>
-        <p class="subtitle">YouTube crawler + Web Link Hunter · permanent deduplication ledger · evidence-first ranking</p>
+        <h1>YouTube Domain Opportunities</h1>
+        <p class="subtitle">One clear 7-day review from traffic evidence to a buying decision.</p>
       </div>
       <div class="topbar-actions">
-        <a class="button secondary" href="/admin/database-backup">Database backup</a>
-        <a class="button secondary" href="/export/subscribers.csv">Email list</a>
-        <a class="button secondary" href="/export/contact-messages.csv">Contact messages</a>
-        <a class="button secondary" href="/export/candidates.csv{% if dashboard_view == 'youtube' and result_tier != 'all' %}?tier={{ result_tier }}{% endif %}">YouTube CSV</a>
-        <a class="button secondary" href="/export/link-hunter.csv{% if dashboard_view == 'web' and result_tier != 'all' %}?tier={{ result_tier }}{% endif %}">Web CSV</a>
+        <a class="button secondary" href="/export/candidates.csv?tier={{ result_tier }}">Export CSV</a>
+        <a class="button secondary" href="/admin/database-backup">Backup</a>
         <form action="/logout" method="post" class="inline-form">
           <button class="button secondary" type="submit">Logout</button>
         </form>
       </div>
     </header>
 
-    <nav class="system-switcher" aria-label="Dashboard system">
+    <section class="crawler-health{% if crawler_running %} healthy{% else %} warning{% endif %}" aria-label="YouTube crawler status">
+      <span class="health-dot" aria-hidden="true"></span>
+      <strong>{% if crawler_running %}YouTube crawler running{% else %}Crawler needs attention{% endif %}</strong>
+      <span class="health-meta">
+        {% if last_youtube_success and last_youtube_success.finished_at %}
+          Last successful work {{ (last_youtube_success.finished_at|dashboard_time).strftime('%d %b, %H:%M') }} Prague time
+        {% else %}
+          Waiting for the first completed run
+        {% endif %}
+      </span>
+      <span class="bought-total">{{ bought_domain_count }} bought</span>
+    </section>
+
+    {% if not registrar_enabled %}
+    <section class="compact-notice">
+      Exact registrar checking is not connected. Results are still measured, but Qualified and Priority wait for confirmed ordinary registration.
+    </section>
+    {% endif %}
+
+    <nav class="stage-nav" aria-label="YouTube review stages">
+      {% for stage in ['watchlist', 'day3', 'day7', 'low'] %}
+      {% set copy = stage_copy[stage] %}
       <a
-        class="system-tab{% if dashboard_view == 'web' %} active{% endif %}"
-        href="/?view=web"
-        {% if dashboard_view == 'web' %}aria-current="page"{% endif %}
+        class="stage-tab {{ stage }}{% if result_tier == stage %} active{% endif %}"
+        href="/?tier={{ stage }}"
+        {% if result_tier == stage %}aria-current="page"{% endif %}
       >
-        <span>Web Link Hunter</span>
-        <small>Web-wide results and paid-run status</small>
+        <span class="stage-count">{{ "{:,}".format(stage_counts[stage]) }}</span>
+        <strong>{{ copy.label }}</strong>
+        <small>{{ copy.short }}</small>
       </a>
-      <a
-        class="system-tab{% if dashboard_view == 'youtube' %} active{% endif %}"
-        href="/?view=youtube"
-        {% if dashboard_view == 'youtube' %}aria-current="page"{% endif %}
-      >
-        <span>YouTube Hunter</span>
-        <small>Video opportunities and crawler totals</small>
-      </a>
+      {% endfor %}
     </nav>
 
-    <section class="status-strip" aria-label="Crawler status">
-      <article><span>${{ "%.4f"|format(daily_budget.spent_usd) }}</span><small>Spent today{% if daily_budget.reserved_usd %} · ${{ "%.4f"|format(daily_budget.reserved_usd) }} reserved{% endif %}</small></article>
-      <article><span>${{ "%.4f"|format(daily_budget.remaining_usd) }}</span><small>Remaining of ${{ "%.2f"|format(daily_budget.limit_usd) }} today</small></article>
-      <article><span>15 min</span><small>Winner queue cadence · budget-aware continuous processing</small></article>
-      <article><span>{% if last_web_success and last_web_success.finished_at %}{{ (last_web_success.finished_at|dashboard_time).strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest Web success{% if last_web_success and last_web_success.finished_at %} · {{ (last_web_success.finished_at|dashboard_time).strftime('%d %b') }} · Prague time{% endif %}</small></article>
-      <article><span>{% if last_youtube_success and last_youtube_success.finished_at %}{{ (last_youtube_success.finished_at|dashboard_time).strftime('%H:%M') }}{% else %}—{% endif %}</span><small>Latest YouTube success{% if last_youtube_success and last_youtube_success.finished_at %} · {{ (last_youtube_success.finished_at|dashboard_time).strftime('%d %b') }} · Prague time{% endif %}</small></article>
-      {% if dashboard_view == 'youtube' %}
-      <article><span>{{ bought_domain_count }}</span><small>Bought domains · held outside every ranking view</small></article>
+    <section class="results-panel">
+      <div class="results-heading">
+        <div>
+          <p class="eyebrow">CURRENT VIEW</p>
+          <h2>{{ selected_stage.heading }}</h2>
+          <p>{{ selected_stage.description }}</p>
+        </div>
+        <span class="result-total">{{ candidate_rows|length }} shown</span>
+      </div>
+
+      {% if result_tier == 'day7' %}
+      <div class="ranking-note">
+        <strong>Final rankings:</strong>
+        Priority needs 100k+ Day 7 traffic and Buy Score 75+; Qualified needs 50k+ and Buy Score 65+. Both also require stable Day 3 → Day 7 traffic and confirmed ordinary registration.
+      </div>
+      {% elif result_tier == 'low' %}
+      <div class="ranking-note">
+        This is the protected lower band: only 10k–20k candidates that completed Day 7 appear here. They remain in the database and keep their full evidence.
+      </div>
+      {% endif %}
+
+      <div class="result-list">
+      {% for candidate, domain, video, signal in candidate_rows %}
+        {% set status = result_status_by_domain[domain.id] %}
+        <article class="result-card">
+          <div class="result-card-head">
+            <div class="domain-title">
+              <h3>{{ domain.name }}</h3>
+              <span class="status-badge {{ status.class }}">{{ status.label }}</span>
+            </div>
+            <div class="availability-block">
+              <span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span>
+              {% if domain.registrar_price_usd %}<small>${{ "%.2f"|format(domain.registrar_price_usd) }} registration</small>{% endif %}
+            </div>
+          </div>
+
+          <div class="checkpoint-grid" aria-label="Traffic review checkpoints">
+            <div>
+              <small>Start</small>
+              <strong>{{ "{:,}".format(candidate.start_monthly_views) }}</strong>
+              <span>views/mo</span>
+            </div>
+            <div{% if candidate.evaluation_stage == 'day0' %} class="due"{% endif %}>
+              <small>Day 3</small>
+              {% if candidate.evaluation_stage in ['day3', 'day7'] %}
+                <strong>{{ "{:,}".format(candidate.day3_monthly_views) }}</strong>
+                <span>views/mo</span>
+              {% else %}
+                <strong>Due</strong>
+                <span>first recheck</span>
+              {% endif %}
+            </div>
+            <div{% if candidate.evaluation_stage != 'day7' %} class="due"{% endif %}>
+              <small>Day 7+</small>
+              {% if candidate.evaluation_stage == 'day7' %}
+                <strong>{{ "{:,}".format(candidate.day7_monthly_views) }}</strong>
+                <span>{{ "%+.1f"|format(candidate.trend_percent) }}% vs start</span>
+              {% else %}
+                <strong>Due</strong>
+                <span>final review</span>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="money-grid">
+            <div>
+              <small>Buy Score</small>
+              <strong>{{ "%.1f"|format(signal.buy_score) }}<span>/100</span></strong>
+            </div>
+            <div>
+              <small>Potential value / month</small>
+              <strong>${{ "%.0f"|format(signal.monthly_revenue_low_usd) }}–${{ "%.0f"|format(signal.monthly_revenue_high_usd) }}</strong>
+            </div>
+            <div>
+              <small>Suggested max buy</small>
+              {% if signal.max_purchase_price_usd > 0 %}
+                <strong>${{ "%.0f"|format(signal.max_purchase_price_usd) }}</strong>
+              {% else %}
+                <strong>Pending</strong>
+                <span>after final checks</span>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="evidence-line">
+            <a href="https://www.youtube.com/watch?v={{ video.id }}" target="_blank" rel="noopener">{{ video.title[:95] }}</a>
+            <span>{{ signal.traffic_confidence.replace('_', ' ') }} · {{ signal.monetization_route.replace('_', ' ') }} · {{ candidate.video_count }} linked video{% if candidate.video_count != 1 %}s{% endif %}</span>
+          </div>
+
+          <div class="result-card-foot">
+            <details>
+              <summary>Evidence details</summary>
+              <p>{{ "{:,}".format(signal.expected_clicks_monthly) }} modelled outbound clicks/month · evidence score {{ "%.1f"|format(candidate.score) }} · {{ candidate.link_count }} exact link{% if candidate.link_count != 1 %}s{% endif %} · {{ "%.1f"|format(candidate.observation_days) }} observed days.</p>
+            </details>
+            <div class="decision-actions">
+              <form action="/admin/youtube-domain-action" method="post" onsubmit="return confirm('Permanently delete {{ domain.name }} and prevent it being rediscovered? This cannot be undone.');">
+                <input type="hidden" name="domain_id" value="{{ domain.id }}">
+                <input type="hidden" name="domain_action" value="delete">
+                <input type="hidden" name="return_to" value="{{ return_to }}">
+                <button class="decision-button delete" type="submit">Delete</button>
+              </form>
+              <form action="/admin/youtube-domain-action" method="post" onsubmit="return confirm('Move {{ domain.name }} to the Bought database and remove it from every watchlist view?');">
+                <input type="hidden" name="domain_id" value="{{ domain.id }}">
+                <input type="hidden" name="domain_action" value="bought">
+                <input type="hidden" name="return_to" value="{{ return_to }}">
+                <button class="decision-button bought" type="submit">Bought</button>
+              </form>
+            </div>
+          </div>
+        </article>
       {% else %}
-      <article><span>{{ decision_counts.get('shortlisted', 0) }}</span><small>Shortlisted · {{ decision_counts.get('bought', 0) }} bought · {{ decision_counts.get('ignored', 0) }} ignored</small></article>
-      {% endif %}
-    </section>
-
-    {% if not registrar_enabled or not email_enabled %}
-    <section class="notice">
-      <strong>Core setup still to finish:</strong>
-      {% if not registrar_enabled %}exact registrar verification{% endif %}
-      {% if not registrar_enabled and not email_enabled %} and {% endif %}
-      {% if not email_enabled %}email delivery{% endif %}.
-      Collection and tracking can continue before these are connected.
-    </section>
-    {% endif %}
-
-    {% if dashboard_view == 'youtube' %}
-    <section class="target-card">
-      <div>
-        <span class="target-number">{{ qualified }}</span>
-        <span class="target-label">of {{ target }} very good YouTube domains</span>
-      </div>
-      <div class="progress"><span style="width: {{ progress }}%"></span></div>
-      <p>Qualified means ordinary registration confirmed and at least {{ "{:,}".format(qualified_threshold) }} current long-form views/month. Day 3 and Day 7 comparisons decide whether the estimate is buy-ready.</p>
-    </section>
-
-    <section class="stats-grid">
-      <a class="stat-card{% if result_tier == 'all' %} active{% endif %}" href="/?view=youtube"><span>{{ "{:,}".format(youtube_results) }}</span><small>All YouTube results</small></a>
-      <a class="stat-card new{% if result_tier == 'new' %} active{% endif %}" href="/?view=youtube&amp;tier=new"><span>{{ "{:,}".format(youtube_new_count) }}</span><small>New since your last visit</small></a>
-      <a class="stat-card qualified{% if result_tier == 'day3' %} active{% endif %}" href="/?view=youtube&amp;tier=day3"><span>{{ "{:,}".format(youtube_day3_count) }}</span><small>Day 3 recheck — click to view</small></a>
-      <a class="stat-card priority{% if result_tier in ['day7', 'measured'] %} active{% endif %}" href="/?view=youtube&amp;tier=day7"><span>{{ "{:,}".format(youtube_day7_count) }}</span><small>Day 7 evaluated — click to view</small></a>
-      <a class="stat-card priority{% if result_tier == 'priority' %} active{% endif %}" href="/?view=youtube&amp;tier=priority"><span>{{ "{:,}".format(youtube_tier_counts.get('priority', 0)) }}</span><small>Priority — click to view</small></a>
-      <a class="stat-card qualified{% if result_tier == 'qualified' %} active{% endif %}" href="/?view=youtube&amp;tier=qualified"><span>{{ "{:,}".format(youtube_tier_counts.get('qualified', 0)) }}</span><small>Qualified — click to view</small></a>
-      <a class="stat-card watchlist{% if result_tier == 'watchlist' %} active{% endif %}" href="/?view=youtube&amp;tier=watchlist"><span>{{ "{:,}".format(youtube_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — click to view</small></a>
-      <a class="stat-card pending{% if result_tier == 'pending' %} active{% endif %}" href="/?view=youtube&amp;tier=pending"><span>{{ "{:,}".format(youtube_tier_counts.get('pending', 0)) }}</span><small>Pending — click to view</small></a>
-      <article><span>{{ "{:,}".format(cumulative_videos) }}</span><small>Videos checked cumulative</small></article>
-      <article><span>{{ "{:,}".format(cumulative_domains) }}</span><small>Domains checked cumulative</small></article>
-      <article><span>{{ "{:,}".format(cumulative_dropped) }}</span><small>Dropped names checked/loaded</small></article>
-      <article><span>{{ "{:,}".format(exact_links) }}</span><small>YouTube exact links indexed</small></article>
-      <article><span>{{ "{:,}".format(youtube_channels) }}</span><small>Seeded channels ({{ "{:,}".format(youtube_channels_complete) }} inventories complete)</small></article>
-      <article><span>{{ "{:,}".format(youtube_hot_channels) }} / {{ "{:,}".format(youtube_warm_channels) }}</span><small>Hot / warm channels getting adaptive priority</small></article>
-      <article><span>{{ "{:,}".format(youtube_domain_signals) }}</span><small>Permanent YouTube evidence records</small></article>
-      <article><span>{{ "{:,}".format(youtube_local_matches) }}</span><small>Dropped names matched locally</small></article>
-      <article><span>{{ "{:,}".format(adaptive_refresh_due) }}</span><small>Linked videos due adaptive refresh</small></article>
-      <article><span>{{ "{:,}".format(youtube_quota.search_remaining) }}</span><small>YouTube searches remaining today (PT)</small></article>
-      <article><span>{{ "{:,}".format(youtube_quota.data_remaining) }}</span><small>YouTube data units remaining today (PT)</small></article>
-      <article><span>{{ "{:,}".format(youtube_quota.stats_remaining) }}</span><small>Granular video-stat units remaining today (PT)</small></article>
-    </section>
-
-    <section class="panel">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">YOUTUBE</p>
-          <h2>YouTube opportunities</h2>
-          <p>Priority {{ "{:,}".format(priority_threshold) }}+ · Qualified {{ "{:,}".format(qualified_threshold) }}+ · Watchlist {{ "{:,}".format(watch_threshold) }}+ · Start, Day 3 and Day 7 monthly run-rates are compared. Shorts never enter the buying tiers.</p>
-          {% if result_tier != 'all' %}<p class="filter-summary">Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> only · <a href="/?view=youtube">Show all results</a></p>{% endif %}
+        <div class="empty-state">
+          <h3>No results in this stage right now</h3>
+          <p>The crawler will place candidates here automatically when they meet this stage's completed traffic checks.</p>
         </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Domain</th><th>Tier / scores</th><th>Start / Day 3 / Day 7</th><th>Potential value</th><th>Availability</th><th>Linked video</th><th>Links</th><th>Action</th></tr>
-          </thead>
-          <tbody>
-          {% for candidate, domain, video in candidate_rows %}
-            {% set signal = youtube_signal_by_domain.get(domain.id) %}
-            <tr>
-              <td><strong>{{ domain.name }}</strong>{% if candidate.buy_ready %}<small><span class="pill qualified">Day 7 buy-ready</span></small>{% endif %}{% if domain.registrar_price_usd %}<small>${{ "%.2f"|format(domain.registrar_price_usd) }}</small>{% endif %}</td>
-              <td><span class="pill {{ candidate.tier }}">{{ candidate.tier }}</span><small>buy score {{ "%.1f"|format(signal.buy_score if signal else 0) }} · evidence score {{ "%.1f"|format(candidate.score) }}</small></td>
-              <td>
-                <strong>{{ "{:,}".format(candidate.monthly_views) }}/mo current</strong>
-                {% if candidate.evaluation_stage == 'short_form_only' %}<small>Short-form exposure kept in the ledger but excluded from buying traffic</small>{% else %}<small>Start {{ "{:,}".format(candidate.start_monthly_views) }} · Day 3 {% if candidate.evaluation_stage in ['day3', 'day7'] %}{{ "{:,}".format(candidate.day3_monthly_views) }}{% else %}due{% endif %} · Day 7 {% if candidate.evaluation_stage == 'day7' %}{{ "{:,}".format(candidate.day7_monthly_views) }}{% else %}due{% endif %}{% if candidate.evaluation_stage in ['day3', 'day7'] %} · {{ "%+.1f"|format(candidate.trend_percent) }}% vs start{% endif %}</small>{% endif %}
-                <small>{% if signal and signal.model_version < 4 %}recalculation required{% elif signal and signal.spike_video_count %}{{ signal.spike_video_count }} counter spike{% if signal.spike_video_count != 1 %}s{% endif %} quarantined from the stable pace{% elif candidate.verified_30d %}also verified over {{ "%.1f"|format(candidate.observation_days) }} days{% else %}{{ candidate.evaluation_stage.replace('_', ' ') }} evidence{% endif %}</small>
-              </td>
-              <td>{% if not signal %}<span>Calculating</span><small>local intelligence maintenance pending</small>{% elif signal.model_version < 4 %}<span class="pill pending">Recalculating</span><strong>Potential value pending</strong><small>the retained record is being rescored</small>{% elif signal.click_eligible_exposure <= 0 %}<span class="pill pending">No clickable traffic case</span><strong>$0 potential value</strong><small>{% if signal.short_form_video_count %}short-form descriptions are excluded{% else %}waiting for a second long-form snapshot{% endif %}</small>{% else %}{{ revenue_band(signal.monthly_revenue_high_usd) }}<strong>${{ "%.0f"|format(signal.monthly_revenue_low_usd) }}–${{ "%.0f"|format(signal.monthly_revenue_high_usd) }}/mo potential</strong><small>{{ "{:,}".format(signal.expected_clicks_monthly) }} modelled outbound clicks · {{ signal.traffic_confidence.replace('_', ' ') }} · {{ signal.monetization_route.replace('_', ' ') }}</small><small>{% if candidate.buy_ready %}suggested purchase ceiling ${{ "%.0f"|format(signal.max_purchase_price_usd) }}{% else %}purchase ceiling waits for a stable Day 7 result and exact availability{% endif %}</small>{% endif %}</td>
-              <td><span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span><small>{{ domain.availability_source or 'not checked' }}</small></td>
-              <td><a href="https://www.youtube.com/watch?v={{ video.id }}" target="_blank" rel="noopener">{{ video.title[:75] }}</a><small>{{ "{:,}".format(video.lifetime_views) }} lifetime views</small></td>
-              <td>{{ candidate.link_count }}<small>{{ candidate.video_count }} video{% if candidate.video_count != 1 %}s{% endif %}</small></td>
-              <td>
-                <div class="decision-actions">
-                  <form action="/admin/youtube-domain-action" method="post" onsubmit="return confirm('Permanently delete {{ domain.name }} and prevent it being rediscovered? This cannot be undone.');">
-                    <input type="hidden" name="domain_id" value="{{ domain.id }}">
-                    <input type="hidden" name="domain_action" value="delete">
-                    <input type="hidden" name="return_to" value="{{ return_to }}">
-                    <button class="decision-button delete" type="submit">Delete</button>
-                  </form>
-                  <form action="/admin/youtube-domain-action" method="post" onsubmit="return confirm('Move {{ domain.name }} to the Bought database and remove it from all ranking views?');">
-                    <input type="hidden" name="domain_id" value="{{ domain.id }}">
-                    <input type="hidden" name="domain_action" value="bought">
-                    <input type="hidden" name="return_to" value="{{ return_to }}">
-                    <button class="decision-button bought" type="submit">Bought</button>
-                  </form>
-                </div>
-                <small>Delete is permanent</small>
-              </td>
-            </tr>
-          {% else %}
-            <tr><td colspan="8" class="empty">No {{ 'new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'ranked') }} YouTube candidates yet.</td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
+      {% endfor %}
       </div>
     </section>
 
-    {% else %}
-
-    <section class="panel">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">WEB-WIDE</p>
-          <h2>Expandosaurus Link Hunter</h2>
-          <p>Permanent web intelligence: free screening → cached backlink evidence → global winner queue → direct link survival → predicted clicks/revenue → human purchase decision. The system never buys automatically.</p>
-          <p><strong>Revenue bands:</strong> Micro under $5 · Small keeper $5–$15 · Good earner $15–$50 · Acquisition priority $50+/month. Bands use the high side of the modelled range for triage, not guaranteed revenue.</p>
-        </div>
-      </div>
-
-      <section class="stats-grid">
-        <a class="stat-card{% if result_tier == 'all' %} active{% endif %}" href="/?view=web"><span>{{ "{:,}".format(web_opportunities) }}</span><small>All Web opportunities</small></a>
-        <a class="stat-card new{% if result_tier == 'new' %} active{% endif %}" href="/?view=web&amp;tier=new"><span>{{ "{:,}".format(web_new_count) }}</span><small>New since your last visit</small></a>
-        <a class="stat-card priority{% if result_tier == 'priority' %} active{% endif %}" href="/?view=web&amp;tier=priority"><span>{{ "{:,}".format(web_tier_counts.get('priority', 0)) }}</span><small>Priority — click to view</small></a>
-        <a class="stat-card qualified{% if result_tier == 'qualified' %} active{% endif %}" href="/?view=web&amp;tier=qualified"><span>{{ "{:,}".format(web_tier_counts.get('qualified', 0)) }}</span><small>Qualified — click to view</small></a>
-        <a class="stat-card watchlist{% if result_tier == 'watchlist' %} active{% endif %}" href="/?view=web&amp;tier=watchlist"><span>{{ "{:,}".format(web_tier_counts.get('watchlist', 0)) }}</span><small>Watchlist — click to view</small></a>
-        <a class="stat-card pending{% if result_tier == 'pending' %} active{% endif %}" href="/?view=web&amp;tier=pending"><span>{{ "{:,}".format(web_tier_counts.get('pending', 0)) }}</span><small>Pending — click to view</small></a>
-        <article><span>{{ "{:,}".format(web_source_sites) }}</span><small>Independent source sites</small></article>
-        <article><span>{{ "{:,}".format(web_source_pages) }}</span><small>Source pages</small></article>
-        <article><span>{{ "{:,}".format(web_source_links) }}</span><small>Provider-live links</small></article>
-        <article><span>{{ "{:,}".format(web_screened) }}</span><small>Free-screened drops</small></article>
-        <article><span>{{ "{:,}".format(web_screened_blocked) }}</span><small>Eliminated before paid calls</small></article>
-        <article><span>{{ "{:,}".format(web_summary_indexed) }}</span><small>Permanent backlink summaries</small></article>
-        <article><span>{{ "{:,}".format(web_money_cases) }}</span><small>Acquisition money cases</small></article>
-        <article><span>{% if dataforseo_enabled %}Ready{% else %}Missing{% endif %}</span><small>DataForSEO credentials</small></article>
-        <article><span>{% if link_hunter_enabled %}On{% else %}Safe{% endif %}</span><small>{% if link_hunter_enabled %}Proof calls enabled{% else %}Paid calls disabled{% endif %}</small></article>
-      </section>
-
-      {% if result_tier != 'all' %}
-      <section class="filter-summary panel-filter">
-        Showing <strong>{{ 'new since your last visit' if result_tier == 'new' else result_tier }}</strong> Web opportunities only · <a href="/?view=web">Show all results</a>
-      </section>
-      {% endif %}
-
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Domain</th><th>Tier / buy score</th><th>Money case</th><th>Best source</th><th>Traffic</th><th>Link survival / clickability</th><th>Referrers</th><th>Availability</th><th>Action</th></tr>
-          </thead>
-          <tbody>
-          {% for opportunity, domain, page, site, link, verification, economics, observation in web_evidence_rows %}
-            <tr{% if decision_by_domain.get(domain.id) == 'ignored' %} class="decision-ignored"{% endif %}>
-              <td>
-                <strong>{{ domain.name }}</strong>
-                {% if opportunity.niche %}<small>{{ opportunity.niche }}</small>{% endif %}
-                {% if domain.registrar_price_usd %}<small>${{ "%.2f"|format(domain.registrar_price_usd) }}</small>{% endif %}
-              </td>
-              <td>
-                <span class="pill {{ opportunity.tier }}">{{ opportunity.tier }}</span>
-                <small>buy score {{ "%.1f"|format(opportunity.score) }} · evidence strength {{ "%.1f"|format(opportunity.link_strength) }}</small>
-              </td>
-              <td>
-                {% if economics %}
-                  {{ revenue_band(economics.monthly_revenue_high_usd) }}
-                  <strong>${{ "%.0f"|format(economics.monthly_revenue_low_usd) }}–${{ "%.0f"|format(economics.monthly_revenue_high_usd) }}/mo</strong>
-                  <small>{{ "{:,}".format(economics.expected_clicks_monthly) }} predicted outbound clicks</small>
-                  <small>suggested ceiling ${{ "%.0f"|format(economics.max_purchase_price_usd) }} · {{ economics.monetization_route.replace('_', ' ') }}</small>
-                  <small>{{ "%.0f"|format(economics.confidence * 100) }}% confidence · risk {{ "%.0f"|format(economics.risk_score) }}/100{% if economics.estimated_payback_months %} · {{ "%.1f"|format(economics.estimated_payback_months) }}mo payback{% endif %}</small>
-                  {% if economics.safety_flags %}<small class="risk-flags">{{ economics.safety_flags|join(' · ') }}</small>{% endif %}
-                {% else %}
-                  <span class="empty">awaiting deep proof</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if page %}
-                  <a href="{{ page.url }}" target="_blank" rel="noopener">{{ (page.title or page.url)[:70] }}</a>
-                  <small>{{ site.hostname if site else page.url[:70] }}</small>
-                {% else %}
-                  <span class="empty">collecting evidence</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if opportunity.source_page_traffic_estimate %}
-                  <strong>{{ "{:,}".format(opportunity.source_page_traffic_estimate) }}</strong>
-                  <small>estimated monthly organic</small>
-                {% else %}
-                  <span class="empty">not yet measured</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if link %}
-                  <strong>{{ (link.anchor_text or '[no anchor text]')[:60] }}</strong>
-                  <small>{{ ((link.context_before or '') ~ ' ' ~ (link.context_after or ''))[:120] }}</small>
-                  <small>{% if link.dofollow %}dofollow{% else %}nofollow/other{% endif %} · provider rank {{ "%.1f"|format(link.provider_rank or 0) }}{% if link.spam_score is not none %} · spam {{ "%.1f"|format(link.spam_score) }}{% endif %}</small>
-                  <small>{% if verification and verification.link_present %}✓ fetched and link still present{% elif verification %}✗ fetched but link not found{% else %}provider evidence only{% endif %}</small>
-                  {% if observation %}
-                    <small>clickability {{ "%.0f"|format(observation.clickability_score) }}/100 · {{ observation.semantic_location }} · survived {{ "%.1f"|format(observation.survival_days) }}d</small>
-                  {% endif %}
-                {% else %}
-                  <span class="empty">no saved live link</span>
-                {% endif %}
-              </td>
-              <td>
-                <strong>{{ "{:,}".format(opportunity.referring_page_count) }} pages</strong>
-                <small>{{ "{:,}".format(opportunity.independent_site_count) }} independent sites</small>
-              </td>
-              <td>
-                <span class="availability {{ domain.availability_status }}">{{ domain.availability_status.replace('_', ' ') }}</span>
-                <small>{{ domain.availability_source or 'not checked' }}</small>
-              </td>
-              <td>
-                <div class="decision-actions">
-                  {% for decision_value, decision_label in [('shortlisted', 'Shortlist'), ('bought', 'Bought'), ('ignored', 'Ignore')] %}
-                  <form action="/admin/dashboard-decision" method="post">
-                    <input type="hidden" name="system" value="web">
-                    <input type="hidden" name="domain_id" value="{{ domain.id }}">
-                    <input type="hidden" name="decision_status" value="{{ decision_value }}">
-                    <input type="hidden" name="return_to" value="{{ return_to }}">
-                    <button class="decision-button {{ decision_value }}{% if decision_by_domain.get(domain.id) == decision_value %} active{% endif %}" type="submit">{{ decision_label }}</button>
-                  </form>
-                  {% endfor %}
-                </div>
-              </td>
-            </tr>
-          {% else %}
-            <tr><td colspan="9" class="empty">No {{ 'new' if result_tier == 'new' else (result_tier if result_tier != 'all' else 'web-wide proof') }} results yet.</td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-
-      <details class="system-details">
-        <summary>Web crawler technical details</summary>
-        <div class="system-details-body">
-          {% set proof_state = namespace(found=false) %}
-          {% for run in latest_runs %}
-            {% if not proof_state.found and run.job == 'link_hunter_proof' %}
-          <section class="technical-note">
-            <strong>Latest controlled proof: {{ run.status }}.</strong>
-            {% if run.counters %}
-              Cost ${{ "%.4f"|format(run.counters.get('provider_cost_usd', 0.0)) }} · {{ run.counters.get('summary_screened', run.counters.get('targets', 0)) }} cheaply screened · {{ run.counters.get('deep_proof_target_count', run.counters.get('backlink_calls', 0)) }} selected for deep proof · {{ run.counters.get('source_links_verified', 0) }} verified source link{% if run.counters.get('source_links_verified', 0) != 1 %}s{% endif %}.
-              {% if run.counters.get('deep_proof_targets') %}<small>Deep-proof domains: {{ run.counters.get('deep_proof_targets')|join(', ') }}</small>{% endif %}
-            {% endif %}
-            <small>{% if run.finished_at %}Finished {{ (run.finished_at|dashboard_time).strftime('%d %b %Y %H:%M') }} Prague time.{% else %}Proof is still running.{% endif %} Paid calls return to safe/off after the controlled run.</small>
-          </section>
-              {% set proof_state.found = true %}
-            {% endif %}
-          {% endfor %}
-          {% if not proof_state.found %}
-          <section class="technical-note">
-            <strong>No controlled proof is visible in the latest run window.</strong> The guarded scheduler remains responsible for enabling and disabling paid calls.
-          </section>
-          {% endif %}
-
-          {% if dataforseo_enabled and not link_hunter_enabled %}
-          <section class="technical-note">
-            <strong>Provider ready; safe/off between guarded batches.</strong> The approved winner controller checks every 15 minutes, processes the highest-ranked cached/new candidates first, then automatically disables paid calls and checks production health. The database ledger still enforces $0.18/run and $2.16/UTC day; once the daily reservation cannot fit, the zero-cost preview pauses paid work until reset.
-          </section>
-          {% endif %}
-
-          <section class="technical-note">
-            <strong>Next proof preview — zero provider calls.</strong>
-            {% if proof_preview.work_available_count %}
-              {{ proof_preview.summary_target_count }} new domain{% if proof_preview.summary_target_count != 1 %}s{% endif %} ready for the cheap summary screen + {{ proof_preview.cached_deep_target_count }} cached-summary winner candidate{% if proof_preview.cached_deep_target_count != 1 %}s{% endif %} waiting for deep proof → up to {{ proof_preview.deep_proof_target_count }} deep proofs → up to {{ proof_preview.max_source_pages }} source pages. Conservative maximum spend ${{ "%.4f"|format(proof_preview.estimated_max_cost_usd) }} against a ${{ "%.2f"|format(proof_preview.configured_cost_cap_usd) }} cap.
-              <small>UTC daily ledger: ${{ "%.4f"|format(proof_preview.daily_budget.spent_usd) }} spent + ${{ "%.4f"|format(proof_preview.daily_budget.reserved_usd) }} reserved · ${{ "%.4f"|format(proof_preview.daily_budget.remaining_usd) }} remaining of ${{ "%.2f"|format(proof_preview.daily_budget.limit_usd) }}.</small>
-              <small>Provisional global leaders: {{ proof_preview.provisional_deep_targets|join(', ') }}. Cached summaries compete continuously with fresh discoveries; detailed proof always takes the strongest available names.</small>
-              {% if proof_preview.cached_deep_targets_sample %}<small>Cached winner sample: {{ proof_preview.cached_deep_targets_sample|join(', ') }}{% if proof_preview.cached_deep_target_count > proof_preview.cached_deep_targets_sample|length %}, …{% endif %}</small>{% endif %}
-              {% if proof_preview.summary_targets_sample %}<small>Next new summary targets: {{ proof_preview.summary_targets_sample|join(', ') }}{% if proof_preview.summary_target_count > proof_preview.summary_targets_sample|length %}, …{% endif %}</small>{% endif %}
-              <small>{% if proof_preview.within_cost_cap %}✓ preflight is inside the configured cap{% else %}✗ preflight exceeds the cap and the paid proof will refuse to start{% endif %} · paid requests made by this preview: {{ proof_preview.paid_requests_made }}</small>
-            {% else %}
-              No new summaries or cached winner candidates are currently queued for proof.
-            {% endif %}
-            <small><a href="/admin/link-hunter/proof-preview">View JSON preview</a></small>
-          </section>
-        </div>
-      </details>
-    </section>
-    {% endif %}
-
-    <section class="two-column">
-      <article class="panel">
-        <div class="panel-heading"><div><h2>Latest crawler runs</h2><p>YouTube and Link Hunter jobs share the permanent operational ledger.</p></div></div>
+    <details class="crawler-details">
+      <summary>Crawler details</summary>
+      <div class="crawler-details-body">
+        <p>The active system is YouTube-only. Web crawling is disabled. Stored historical records have not been deleted.</p>
+        <p>Visible 20k+ results are capped at 1,000,000 monthly views and exclude detected counter spikes. The 10k–20k tab requires a completed Day 7 review.</p>
         <div class="runs">
         {% for run in latest_runs %}
           <div class="run-row">
-            <div><strong>{{ run.job.replace('_', ' ') }}</strong><small>{{ (run.started_at|dashboard_time).strftime('%d %b %Y %H:%M') }} Prague time</small></div>
-            <span class="pill {{ run.status }}">{{ run.status }}</span>
+            <div>
+              <strong>{{ run.job.replace('_', ' ') }}</strong>
+              <small>{{ (run.started_at|dashboard_time).strftime('%d %b %Y %H:%M') }} Prague time</small>
+            </div>
+            <span class="status-badge {{ run.status }}">{{ run.status }}</span>
           </div>
-        {% else %}<p class="empty">No runs yet.</p>{% endfor %}
+        {% else %}
+          <p class="empty">No YouTube crawler runs recorded yet.</p>
+        {% endfor %}
         </div>
-      </article>
-
-      <article class="panel">
-        <div class="panel-heading"><div><h2>Add a dropped-domain list</h2><p>Optional. Paste names or upload a TXT/CSV file; duplicates are ignored forever.</p></div></div>
-        <form action="/admin/dropped-domains" method="post" enctype="multipart/form-data" class="drop-form">
-          <textarea name="domains" rows="5" placeholder="example.com&#10;anotherdomain.net"></textarea>
-          <input type="file" name="file" accept=".txt,.csv,text/plain,text/csv">
-          <button class="button" type="submit">Add domains</button>
-        </form>
-      </article>
-    </section>
+      </div>
+    </details>
   </main>
 </body>
 </html>

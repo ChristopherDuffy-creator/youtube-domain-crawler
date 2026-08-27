@@ -21,13 +21,17 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import case, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.affiliate_links import AFFILIATE_LINKS, PublicSite, public_site_for_host
 from app.backup import build_logical_snapshot
-from app.config import get_settings
+from app.config import (
+    YOUTUBE_PRIORITY_BUY_SCORE,
+    YOUTUBE_QUALIFIED_BUY_SCORE,
+    get_settings,
+)
 from app.database import Base, SessionLocal, engine, ensure_runtime_schema, get_db
 from app.domain_lifecycle import (
     hard_delete_domain,
@@ -42,7 +46,6 @@ from app.jobs import (
     ingest_dropped_text,
     refresh_candidates,
 )
-from app.link_hunter import _score_opportunity, run_provider_proof_job
 from app.link_hunter_preview import build_provider_proof_preview
 from app.models import (
     BacklinkSummary,
@@ -73,7 +76,6 @@ from app.models import (
 )
 from app.provider_budget import provider_daily_budget_snapshot
 from app.storage_guard import database_storage_status, storage_guard_allows_writes
-from app.web_hunter_upgrade import regrade_existing_web_opportunities
 from app.youtube_intelligence import (
     quarantine_stale_youtube_signals,
     youtube_quota_snapshot,
@@ -106,6 +108,7 @@ ResultTier = Literal[
     "measured",
     "day3",
     "day7",
+    "low",
     "priority",
     "qualified",
     "watchlist",
@@ -128,6 +131,9 @@ WebEvidenceRow = tuple[
 
 _HIDDEN_WEB_AVAILABILITY = {"registered", "aftermarket", "premium", "reserved"}
 _HIDDEN_YOUTUBE_AVAILABILITY = _HIDDEN_WEB_AVAILABILITY
+_VISIBLE_YOUTUBE_AVAILABILITY = {"available", "likely_available", "unknown"}
+_YOUTUBE_RESERVE_MINIMUM = 10_000
+_YOUTUBE_VISIBLE_MAXIMUM = 1_000_000
 
 
 def _sanitized_job_error(value: str | None) -> str | None:
@@ -198,15 +204,6 @@ async def lifespan(_: FastAPI):
                         migrated_bought,
                         quarantined,
                         refreshed_youtube,
-                    )
-                    regraded = regrade_existing_web_opportunities(
-                        db,
-                        _score_opportunity,
-                        limit=250,
-                    )
-                    logger.info(
-                        "Traffic-first Web Hunter regraded %s existing opportunities",
-                        regraded,
                     )
             if settings.scheduler_enabled:
                 with scheduler_lock:
@@ -1418,17 +1415,230 @@ def download_database_backup(_: str = Depends(require_dashboard_auth)) -> Respon
 @app.get("/admin/link-hunter/proof-preview")
 def link_hunter_proof_preview(
     _: str = Depends(require_dashboard_auth),
-    db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return {
-        "status": "preview",
-        "provider_calls_made": 0,
-        "preview": build_provider_proof_preview(db, settings),
-    }
+    raise HTTPException(status_code=410, detail="Web Link Hunter has been retired")
+
+
+def _youtube_stage_conditions(tier: str) -> tuple[object, ...]:
+    """Return the exact, checkpoint-specific rules used by cards and counts."""
+    if tier == "day3":
+        return (
+            Candidate.evaluation_stage == "day3",
+            Candidate.day3_monthly_views >= settings.watchlist_monthly_views,
+            Candidate.day3_monthly_views <= _YOUTUBE_VISIBLE_MAXIMUM,
+        )
+    if tier == "day7":
+        return (
+            Candidate.evaluation_stage == "day7",
+            Candidate.day7_monthly_views >= settings.watchlist_monthly_views,
+            Candidate.day7_monthly_views <= _YOUTUBE_VISIBLE_MAXIMUM,
+        )
+    if tier == "low":
+        return (
+            Candidate.evaluation_stage == "day7",
+            Candidate.day7_monthly_views >= _YOUTUBE_RESERVE_MINIMUM,
+            Candidate.day7_monthly_views < settings.watchlist_monthly_views,
+        )
+    return (
+        Candidate.evaluation_stage == "day0",
+        Candidate.start_monthly_views >= settings.watchlist_monthly_views,
+        Candidate.start_monthly_views <= _YOUTUBE_VISIBLE_MAXIMUM,
+    )
+
+
+def _youtube_result_status(
+    candidate: Candidate,
+    domain: Domain,
+    signal: YouTubeDomainSignal,
+    tier: str,
+) -> dict[str, str]:
+    if tier == "watchlist":
+        return {"label": "Waiting for Day 3", "class": "review"}
+    if tier == "day3":
+        return {"label": "Day 3 checked", "class": "review"}
+    if tier == "low":
+        return {"label": "10k–20k value play", "class": "value"}
+
+    day7_stable = bool(
+        candidate.day3_monthly_views > 0
+        and candidate.day7_monthly_views >= round(candidate.day3_monthly_views * 0.5)
+        and candidate.day7_monthly_views <= round(candidate.day3_monthly_views * 2.0)
+    )
+    if domain.availability_status != "available":
+        return {"label": "Availability pending", "class": "pending"}
+    if not day7_stable:
+        return {"label": "Hold — unstable", "class": "hold"}
+    if (
+        candidate.day7_monthly_views >= settings.priority_monthly_views
+        and signal.buy_score >= YOUTUBE_PRIORITY_BUY_SCORE
+    ):
+        return {"label": "Priority", "class": "priority"}
+    if (
+        candidate.day7_monthly_views >= settings.qualified_monthly_views
+        and signal.buy_score >= YOUTUBE_QUALIFIED_BUY_SCORE
+    ):
+        return {"label": "Qualified", "class": "qualified"}
+    return {"label": "Reviewed", "class": "reviewed"}
 
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(
+    request: Request,
+    tier: ResultTier = "watchlist",
+    view: str | None = None,
+    _: str = Depends(require_dashboard_auth),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    del view  # Old bookmarked URLs now land on the YouTube-only dashboard.
+    selected_tier = tier if tier in {"watchlist", "day3", "day7", "low"} else "watchlist"
+    _, visit_baseline, current_timestamp = _dashboard_visit_window(request)
+
+    common_conditions = (
+        Candidate.tier != "rejected",
+        ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
+        Domain.availability_status.in_(_VISIBLE_YOUTUBE_AVAILABILITY),
+        YouTubeDomainSignal.model_version >= 4,
+        YouTubeDomainSignal.click_eligible_exposure > 0,
+        YouTubeDomainSignal.buy_score > 0,
+        YouTubeDomainSignal.monthly_revenue_high_usd > 0,
+        YouTubeDomainSignal.spike_video_count == 0,
+    )
+    candidate_statement = (
+        select(Candidate, Domain, Video, YouTubeDomainSignal)
+        .join(Domain, Domain.id == Candidate.domain_id)
+        .join(Video, Video.id == Candidate.best_video_id)
+        .join(YouTubeDomainSignal, YouTubeDomainSignal.domain_id == Candidate.domain_id)
+        .where(*common_conditions, *_youtube_stage_conditions(selected_tier))
+        .order_by(
+            case(
+                (Domain.availability_status == "available", 0),
+                (Domain.availability_status == "likely_available", 1),
+                else_=2,
+            ),
+            YouTubeDomainSignal.buy_score.desc(),
+            YouTubeDomainSignal.monthly_revenue_high_usd.desc(),
+            Candidate.monthly_views.desc(),
+        )
+        .limit(100)
+    )
+    candidate_rows = db.execute(candidate_statement).all()
+
+    stage_counts: dict[str, int] = {}
+    for stage in ("watchlist", "day3", "day7", "low"):
+        stage_counts[stage] = int(
+            db.scalar(
+                select(func.count())
+                .select_from(Candidate)
+                .join(Domain, Domain.id == Candidate.domain_id)
+                .join(YouTubeDomainSignal, YouTubeDomainSignal.domain_id == Candidate.domain_id)
+                .where(*common_conditions, *_youtube_stage_conditions(stage))
+            )
+            or 0
+        )
+
+    youtube_jobs = (
+        "youtube_discovery",
+        "youtube_channel_fanout",
+        "availability_checks",
+        "view_snapshots",
+        "dropped_feeds",
+        "dropped_youtube_search",
+        "youtube_intelligence",
+    )
+    latest_runs = db.scalars(
+        select(RunLog)
+        .where(RunLog.job.in_(youtube_jobs))
+        .order_by(RunLog.started_at.desc())
+        .limit(8)
+    ).all()
+    last_youtube_success = db.scalar(
+        select(RunLog)
+        .where(
+            RunLog.job.in_(youtube_jobs),
+            RunLog.status.in_(("complete", "partial")),
+        )
+        .order_by(RunLog.finished_at.desc())
+        .limit(1)
+    )
+    crawler_running = bool(settings.scheduler_enabled)
+    if last_youtube_success is not None and last_youtube_success.finished_at is not None:
+        finished_at = last_youtube_success.finished_at
+        if finished_at.tzinfo is None:
+            finished_at = finished_at.replace(tzinfo=UTC)
+        crawler_running = crawler_running and datetime.now(UTC) - finished_at < timedelta(hours=12)
+
+    result_status_by_domain = {
+        domain.id: _youtube_result_status(candidate, domain, signal, selected_tier)
+        for candidate, domain, _, signal in candidate_rows
+    }
+    bought_domain_count = int(
+        db.scalar(
+            select(func.count()).select_from(BoughtDomain).where(BoughtDomain.source_system == "youtube")
+        )
+        or 0
+    )
+    stage_copy = {
+        "watchlist": {
+            "label": "Watchlist",
+            "short": "Before Day 3",
+            "heading": "Watchlist",
+            "description": "20k+ candidates waiting for their Day 3 comparison.",
+        },
+        "day3": {
+            "label": "3 Day Results",
+            "short": "First comparison",
+            "heading": "3 Day Results",
+            "description": "20k+ candidates after the first traffic recheck.",
+        },
+        "day7": {
+            "label": "7+ Day Results",
+            "short": "Full review",
+            "heading": "7+ Day Results",
+            "description": "Completed week reviews. Qualified and Priority are decided here.",
+        },
+        "low": {
+            "label": "10k–20k",
+            "short": "7+ day value plays",
+            "heading": "10k–20k Value Plays",
+            "description": "Only lower-band candidates that completed the full 7+ day review.",
+        },
+    }
+
+    return_to = request.url.path
+    if request.url.query:
+        return_to += f"?{request.url.query}"
+    response = templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={
+            "result_tier": selected_tier,
+            "candidate_rows": candidate_rows,
+            "stage_counts": stage_counts,
+            "stage_copy": stage_copy,
+            "selected_stage": stage_copy[selected_tier],
+            "result_status_by_domain": result_status_by_domain,
+            "latest_runs": latest_runs,
+            "last_youtube_success": last_youtube_success,
+            "crawler_running": crawler_running,
+            "bought_domain_count": bought_domain_count,
+            "return_to": return_to,
+            "registrar_enabled": settings.registrar_enabled,
+            "watch_threshold": settings.watchlist_monthly_views,
+            "qualified_threshold": settings.qualified_monthly_views,
+            "priority_threshold": settings.priority_monthly_views,
+            "reserve_threshold": _YOUTUBE_RESERVE_MINIMUM,
+            "visible_maximum": _YOUTUBE_VISIBLE_MAXIMUM,
+        },
+    )
+    _set_dashboard_visit_cookies(
+        response,
+        baseline=visit_baseline,
+        current_timestamp=current_timestamp,
+    )
+    return response
+
+
+def _retired_dashboard(
     request: Request,
     view: DashboardSystem = "web",
     tier: ResultTier = "all",
@@ -1835,26 +2045,37 @@ def export_candidates(
         select(Candidate, Domain, Video, YouTubeDomainSignal)
         .join(Domain, Domain.id == Candidate.domain_id)
         .join(Video, Video.id == Candidate.best_video_id)
-        .outerjoin(YouTubeDomainSignal, YouTubeDomainSignal.domain_id == Domain.id)
-        .outerjoin(WebScreening, WebScreening.domain_name == Domain.name)
+        .join(YouTubeDomainSignal, YouTubeDomainSignal.domain_id == Domain.id)
         .where(
+            Candidate.tier != "rejected",
             ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
-            Domain.availability_status.notin_(_HIDDEN_YOUTUBE_AVAILABILITY),
-            or_(WebScreening.id.is_(None), WebScreening.status != "blocked"),
+            Domain.availability_status.in_(_VISIBLE_YOUTUBE_AVAILABILITY),
+            YouTubeDomainSignal.model_version >= 4,
+            YouTubeDomainSignal.click_eligible_exposure > 0,
+            YouTubeDomainSignal.buy_score > 0,
+            YouTubeDomainSignal.monthly_revenue_high_usd > 0,
+            YouTubeDomainSignal.spike_video_count == 0,
         )
     )
     if tier == "all":
-        statement = statement.where(Candidate.tier.in_(["priority", "qualified", "watchlist"]))
+        statement = statement.where(
+            or_(
+                *[
+                    and_(*_youtube_stage_conditions(stage))
+                    for stage in ("watchlist", "day3", "day7", "low")
+                ]
+            )
+        )
     elif tier == "new":
         new_since, _, _ = _dashboard_visit_window(request)
         statement = statement.where(
             Candidate.tier != "rejected",
             Candidate.updated_at >= new_since,
         )
-    elif tier in {"measured", "day7"}:
-        statement = statement.where(Candidate.evaluation_stage == "day7")
-    elif tier == "day3":
-        statement = statement.where(Candidate.evaluation_stage == "day3")
+    elif tier in {"watchlist", "day3", "day7", "low"}:
+        statement = statement.where(*_youtube_stage_conditions(tier))
+    elif tier == "measured":
+        statement = statement.where(*_youtube_stage_conditions("day7"))
     else:
         statement = statement.where(Candidate.tier == tier)
     rows = db.execute(statement.order_by(Candidate.score.desc())).all()
@@ -2113,16 +2334,7 @@ def apply_youtube_domain_action(
 
 @app.post("/api/link-hunter/proof")
 def trigger_link_hunter_proof(_: None = Depends(require_admin_token)) -> dict[str, object]:
-    if not settings.link_hunter_enabled:
-        raise HTTPException(status_code=503, detail="Link Hunter is disabled")
-    if not settings.dataforseo_enabled:
-        raise HTTPException(status_code=503, detail="DataForSEO credentials are not configured")
-    try:
-        counters = run_provider_proof_job()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    status_value = "skipped" if counters.get("run_in_progress") else "complete"
-    return {"status": status_value, "job": "link_hunter_proof", "counters": counters}
+    raise HTTPException(status_code=410, detail="Web Link Hunter has been retired")
 
 
 @app.post("/api/run/{job_name}")

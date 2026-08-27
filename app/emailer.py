@@ -290,8 +290,6 @@ def render_daily_digest(report: DailyDigest) -> str:
         ("Fresh dropped names loaded", report.work.get("drops_loaded", 0)),
         ("Dropped names searched on YouTube", report.work.get("drops_searched", 0)),
         ("Exact dropped-domain matches", report.work.get("dropped_matches", 0)),
-        ("Web names screened locally at zero provider cost", report.work.get("web_free_screened", 0)),
-        ("Web names eliminated before paid calls", report.work.get("web_free_blocked", 0)),
     ]
     pending_labels = [
         ("All pending exact-link domains", report.pending.get("total", 0)),
@@ -342,7 +340,6 @@ def render_daily_digest(report: DailyDigest) -> str:
         else "No automatic dropped-domain feed is configured."
     )
     qualifying_total = report.priority_count + report.qualified_count
-    web_qualifying_total = report.web_priority_count + report.web_qualified_count
     return (
         "<div style='max-width:1100px;margin:auto;color:#172033;font-family:Arial,sans-serif'>"
         "<h1 style='margin-bottom:5px'>Daily Expandosaurus domain report</h1>"
@@ -358,22 +355,7 @@ def render_daily_digest(report: DailyDigest) -> str:
         )
         + f"<p><strong>{qualifying_total}</strong> of the target "
         f"<strong>{report.target}</strong> YouTube-route domains currently qualify.</p>"
-        "<h2>Web Link Hunter</h2>"
-        + _stat_cards(
-            [
-                ("Web priority", report.web_priority_count),
-                ("Web qualified", report.web_qualified_count),
-                ("Web watchlist", report.web_watchlist_count),
-                ("Web pending", report.web_pending_count),
-            ]
-        )
-        + f"<p><strong>{web_qualifying_total}</strong> web-wide domains currently qualify. "
-        f"In the last 24 hours Link Hunter checked <strong>{report.web_domains_checked_24h:,}</strong> "
-        f"dropped domains, directly verified <strong>{report.web_links_verified_24h:,}</strong> "
-        f"live backlink{'s' if report.web_links_verified_24h != 1 else ''}, and recorded "
-        f"<strong>${report.web_provider_cost_usd_24h:.4f}</strong> in provider spend.</p>"
-        + render_web_opportunity_table(report.web_opportunities)
-        + "<h2>Work completed in the last 24 hours</h2>"
+        "<h2>Work completed in the last 24 hours</h2>"
         + _metric_table(work_labels)
         + "<h2>Current YouTube pending pipeline</h2>"
         + _metric_table(pending_labels)
@@ -397,11 +379,10 @@ def render_daily_digest(report: DailyDigest) -> str:
         )
         + "<h2>Errors and warnings</h2>"
         + issues_html
-        + "<p style='font-size:12px;color:#596579;margin-top:24px'>YouTube Watchlist starts at "
-        "10,000 current long-form views/month. Qualified starts at 50,000 with ordinary "
+        + "<p style='font-size:12px;color:#596579;margin-top:24px'>The main YouTube Watchlist starts at "
+        "20,000 current long-form views/month; completed 10,000–20,000 results are retained "
+        "as value plays. Qualified starts at 50,000 with ordinary "
         "registration confirmed; Priority starts at 100,000. A stable Day 7 comparison is "
-        "required before a purchase ceiling is shown. "
-        "Web Link Hunter qualification separately requires an ordinary registration, a directly "
-        "verified live backlink, and the configured web evidence score.</p>"
+        "required before a purchase ceiling is shown.</p>"
         "</div>"
     )

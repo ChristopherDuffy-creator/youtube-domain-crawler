@@ -33,22 +33,10 @@ async def _dashboard_exception_fallback(request: Request, call_next):
         if not main_module._dashboard_session_valid(token):
             return RedirectResponse(url="/login", status_code=303)
 
-        view = request.query_params.get("view", "web")
-        if view not in {"web", "youtube"}:
-            view = "web"
-        tier = request.query_params.get("tier", "all")
-        if tier not in {
-            "all",
-            "new",
-            "measured",
-            "day3",
-            "day7",
-            "priority",
-            "qualified",
-            "watchlist",
-            "pending",
-        }:
-            tier = "all"
+        view = request.query_params.get("view", "youtube")
+        tier = request.query_params.get("tier", "watchlist")
+        if tier not in {"watchlist", "day3", "day7", "low"}:
+            tier = "watchlist"
 
         with SessionLocal() as db:
             return main_module.dashboard(
@@ -103,7 +91,7 @@ def dashboard_smoke(
             response = main_module.dashboard(
                 request=request,
                 view=view,
-                tier="all",
+                tier="watchlist",
                 _="admin",
                 db=db,
             )

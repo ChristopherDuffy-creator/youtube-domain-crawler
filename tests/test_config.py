@@ -18,7 +18,7 @@ def test_stale_environment_values_cannot_lower_approved_youtube_bands() -> None:
         priority_monthly_views=75_000,
     )
 
-    assert settings.watchlist_monthly_views == 10_000
+    assert settings.watchlist_monthly_views == 20_000
     assert settings.qualified_monthly_views == 50_000
     assert settings.priority_monthly_views == 100_000
 

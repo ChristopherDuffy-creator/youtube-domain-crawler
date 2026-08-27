@@ -6,7 +6,11 @@ from datetime import timedelta
 from sqlalchemy import case, delete, exists, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.config import Settings
+from app.config import (
+    YOUTUBE_PRIORITY_BUY_SCORE,
+    YOUTUBE_QUALIFIED_BUY_SCORE,
+    Settings,
+)
 from app.domain_tools import is_plausible_youtube_link
 from app.models import Candidate, VideoDomain, VideoRefreshState, YouTubeDomainSignal, utcnow
 
@@ -263,22 +267,38 @@ def enforce_candidate_signal_consistency(
         scope.append(Candidate.domain_id.in_(domain_ids))
 
     thresholds = (
-        ("watchlist", settings.watchlist_monthly_views),
-        ("qualified", settings.qualified_monthly_views),
-        ("priority", settings.priority_monthly_views),
+        ("watchlist", settings.watchlist_monthly_views, None),
+        ("qualified", settings.qualified_monthly_views, YOUTUBE_QUALIFIED_BUY_SCORE),
+        ("priority", settings.priority_monthly_views, YOUTUBE_PRIORITY_BUY_SCORE),
     )
-    for tier, threshold in thresholds:
-        sufficient_signal = exists(
-            select(YouTubeDomainSignal.domain_id).where(
-                YouTubeDomainSignal.domain_id == Candidate.domain_id,
-                YouTubeDomainSignal.click_eligible_exposure >= threshold,
+    for tier, threshold, buy_score_threshold in thresholds:
+        signal_conditions = [
+            YouTubeDomainSignal.domain_id == Candidate.domain_id,
+            YouTubeDomainSignal.click_eligible_exposure >= threshold,
+        ]
+        if buy_score_threshold is not None:
+            signal_conditions.extend(
+                [
+                    YouTubeDomainSignal.model_version >= 4,
+                    YouTubeDomainSignal.buy_score >= buy_score_threshold,
+                    YouTubeDomainSignal.spike_video_count == 0,
+                ]
             )
+        sufficient_signal = exists(
+            select(YouTubeDomainSignal.domain_id).where(*signal_conditions)
         )
+        invalid_tier = ~sufficient_signal
+        if buy_score_threshold is not None:
+            invalid_tier = or_(
+                invalid_tier,
+                Candidate.evaluation_stage != "day7",
+                Candidate.buy_ready.is_(False),
+            )
         result = db.execute(
             update(Candidate)
             .where(
                 Candidate.tier == tier,
-                ~sufficient_signal,
+                invalid_tier,
                 *scope,
             )
             .values(tier="pending", buy_ready=False, updated_at=utcnow())

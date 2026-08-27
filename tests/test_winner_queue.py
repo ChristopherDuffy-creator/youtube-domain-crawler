@@ -94,13 +94,15 @@ def test_preview_can_run_cached_winner_queue_without_new_summary_targets() -> No
     assert preview["ready_for_controlled_proof"] is True
 
 
-def test_controller_and_dashboard_expose_new_behavior() -> None:
+def test_retired_controller_and_youtube_dashboard_expose_new_behavior() -> None:
     scheduler = Path(".github/workflows/link-hunter-approved-scheduler.yml").read_text(encoding="utf-8")
     production = Path(".github/workflows/link-hunter-production-batch.yml").read_text(encoding="utf-8")
     dashboard = Path("app/templates/dashboard.html").read_text(encoding="utf-8")
-    assert 'cron: "0 */2 * * *"' in scheduler
+    assert "cron:" not in scheduler
+    assert "no crawler or paid-provider work was started" in scheduler
     assert "/api/link-hunter/proof" in production
     assert "run_in_progress" in production
-    assert "Small keeper · $5–$15/mo" in dashboard
-    assert "Good earner · $15–$50/mo" in dashboard
-    assert "Acquisition priority · $50+/mo" in dashboard
+    assert "Web Link Hunter" not in dashboard
+    assert "Buy Score" in dashboard
+    assert "Potential value / month" in dashboard
+    assert "10k–20k" in dashboard

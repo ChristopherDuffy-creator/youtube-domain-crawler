@@ -49,13 +49,15 @@ def test_free_screen_blocks_obvious_brands_and_keeps_commercial_names() -> None:
     assert registered.status == "blocked"
 
 
-def test_free_screening_is_scheduled_and_manually_addressable() -> None:
+def test_retired_web_screening_is_not_scheduled_or_manually_addressable() -> None:
     scheduler = build_scheduler(Settings())
     job_ids = {job.id for job in scheduler.get_jobs()}
-    assert "web_free_screening" in job_ids
-    assert "web_link_refresh" in job_ids
-    assert JOB_FUNCTIONS["web_free_screening"] is run_web_free_screening_job
-    assert JOB_FUNCTIONS["web_link_refresh"] is run_web_link_refresh_job
+    assert "web_free_screening" not in job_ids
+    assert "web_link_refresh" not in job_ids
+    assert "web_free_screening" not in JOB_FUNCTIONS
+    assert "web_link_refresh" not in JOB_FUNCTIONS
+    assert callable(run_web_free_screening_job)
+    assert callable(run_web_link_refresh_job)
 
 
 def test_free_screening_is_permanent_and_resumes_after_last_processed_drop() -> None:

@@ -96,9 +96,11 @@ DEFAULT_DROPPED_DOMAIN_FEED_URLS = [
 ]
 
 DEFAULT_STACKEXCHANGE_SITES = ["stackoverflow", "superuser", "webmasters"]
-YOUTUBE_WATCHLIST_MINIMUM = 10_000
+YOUTUBE_WATCHLIST_MINIMUM = 20_000
 YOUTUBE_QUALIFIED_MINIMUM = 50_000
 YOUTUBE_PRIORITY_MINIMUM = 100_000
+YOUTUBE_QUALIFIED_BUY_SCORE = 65.0
+YOUTUBE_PRIORITY_BUY_SCORE = 75.0
 
 
 class Settings(BaseSettings):
@@ -119,7 +121,7 @@ class Settings(BaseSettings):
     dashboard_password: str = "change-me"
     admin_token: str = "change-me-too"
 
-    watchlist_monthly_views: int = Field(default=10_000, ge=0)
+    watchlist_monthly_views: int = Field(default=20_000, ge=0)
     qualified_monthly_views: int = Field(default=50_000, ge=1)
     priority_monthly_views: int = Field(default=100_000, ge=1)
     target_qualified_domains: int = Field(default=100, ge=1)

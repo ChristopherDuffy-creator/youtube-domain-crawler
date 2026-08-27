@@ -4,10 +4,13 @@ An always-on crawler that finds exact external domains in older YouTube video de
 
 This project is configured for Christy's final rules:
 
-- **Watchlist:** 10,000+ current long-form views/month.
-- **Qualified:** 50,000+ current long-form views/month plus exact ordinary-registration confirmation.
-- **Priority:** 100,000+ current long-form views/month plus exact ordinary-registration confirmation.
-- **Buy-ready:** a stable Day 7 comparison, exact availability and a visible buy score/potential value.
+- **Watchlist:** 20,000+ current long-form views/month before the Day 3 review.
+- **3 Day Results:** 20,000+ candidates after the first comparison.
+- **7+ Day Results:** 20,000+ candidates after the full week; only this view assigns Qualified or Priority.
+- **10k–20k Value Plays:** the protected lower band, shown only after a completed Day 7 review.
+- **Qualified:** 50,000+ Day 7 views/month, Buy Score 65+, stable traffic and exact ordinary-registration confirmation.
+- **Priority:** 100,000+ Day 7 views/month, Buy Score 75+, stable traffic and exact ordinary-registration confirmation.
+- **Display safety:** counter spikes and figures over 1,000,000/month stay in the ledger but out of the opportunity views.
 - Ranked YouTube rows have two final actions: **Bought** moves the full score/value snapshot into a dedicated bought-domain ledger and removes the name from every acquisition queue; **Delete** permanently removes its linked records and stores only a one-way fingerprint so crawlers cannot add it back.
 - **Target before buying:** 100 qualified/priority domains.
 - Personal, creator and brand names are not automatically removed.
@@ -105,15 +108,7 @@ The dashboard works even before Resend is connected.
 
 ## Capacity and quota
 
-### Web Link Hunter paid capacity
-
-The approved controller has twelve evenly spaced UTC slots per day. Every production slot can cheaply screen up to 100 fresh unchecked domains and rerank them before at most five domains receive detailed backlink, source-traffic, link-verification and availability proof. The conservative envelope is hard-limited to $0.18/run, with a database-backed reservation ledger hard-limited to $2.16/UTC day. A full twelve-run day can summary-screen up to 1,200 domains and deep-proof up to 60; empty queues, an active proof lease, and exhausted budgets skip without provider calls. The free/cached ranking pool covers the 10,000-name daily dropped-domain feed so later slots do not starve after the first batch.
-
-Only the approved scheduler owns recurring dispatch. The production batch workflow has no second cron route, preventing duplicate paid runs. Paid calls require the explicit `LINK_HUNTER_ENABLED=true` feature flag as well as valid credentials, the durable single-flight lease and both hard budget guards; the workflow never changes Railway variables or causes a redeploy.
-
-Before that paid funnel, a permanent free-screening ledger processes up to 50,000 new dropped names every two hours. It rejects already-live DNS names, obvious protected brands and high-risk names before DataForSEO is constructed, then feeds the strongest eligible names into the existing 100-domain paid batches. In parallel, the zero-cost evidence sources now make a bounded 25 Common Crawl checks, up to 60 high-view Stack Exchange URL checks and 25 Hacker News checks per scheduled cycle—over three times the former free-source coverage while preserving source backoff and quota guards. This screening layer has zero provider cost and resumes from the database after restarts.
-
-Every paid bulk-summary result is retained in a permanent backlink index, including results that do not reach the five deep-proof slots. Existing evidence is backfilled locally after deployment. Deep proof records direct-link presence, semantic placement and clickability; up to 100 due links are rechecked free every six hours with a bounded eight-worker fetch pool, so observed survival time grows far faster without another provider call. Only the newest direct observation affects future proof priority: a recently confirmed, clickable link with survival history outranks an old provider record that has since disappeared. The resulting acquisition cockpit ranks opportunities by a conservative BUY score and displays predicted clicks, a monthly revenue range, evidence confidence, risk, suggested maximum purchase price and payback estimate. These are decision-support estimates only: the application never purchases or registers a domain.
+The Web Link Hunter has been retired. Its scheduled jobs, recurring GitHub dispatch and paid proof endpoint are disabled. Historical Web records remain untouched in PostgreSQL so removing the crawler does not destroy previously collected data.
 
 ### YouTube free-quota capacity
 
@@ -144,28 +139,15 @@ Scale controls:
 - `YOUTUBE_FANOUT_DAILY_DATA_LIMIT` (default 8,000)
 - `YOUTUBE_STATS_DAILY_LIMIT` (default 9,000)
 
-The dashboard shows:
+The mobile-first dashboard shows:
 
-- separate Web Link Hunter and YouTube views, with Web Link Hunter as the default;
-- clickable All, Priority, Qualified, Watchlist and Pending totals that filter the result table;
-- clickable Day 3 and Day 7 checkpoint views;
-- a visit-aware New filter, persistent Shortlist/Bought/Ignore decisions and an action queue;
-- free-screening, permanent-backlink-index and acquisition-money-case totals;
-- conservative predicted clicks, revenue range, risk, confidence, maximum purchase price and payback estimates;
-- direct-link clickability, semantic placement and observed survival time;
-- a live status strip for daily spend, remaining budget, next paid run and latest successful jobs, with all dashboard timestamps shown in Prague time;
-- unobtrusive, collapsed Web crawler technical details below the result table;
-- a signed seven-day dashboard session with an explicit logout button;
-- progress toward 100 very good domains;
-- qualified, priority, watchlist and pending candidates;
-- current, starting, Day 3 and Day 7 monthly run-rates;
-- linked-video exposure, modelled outbound clicks, revenue range, suggested purchase ceiling and monetization route;
-- hot/warm channel counts, permanent YouTube evidence records, instant local dropped matches and remaining quota in every bucket;
-- exact registration status and price;
-- candidate score, best linked video, lifetime views and repeat-link counts;
-- cumulative new and manual-test counts;
-- the latest job history;
-- CSV download of the useful results.
+- four tabs only: Watchlist, 3 Day Results, 7+ Day Results and completed 10k–20k Value Plays;
+- Start, Day 3 and Day 7 monthly run-rates together on every opportunity card;
+- Buy Score, potential monthly value, suggested purchase ceiling and final ranking status;
+- exact registration status, best linked video and compact evidence details;
+- permanent Delete and Bought actions;
+- one small crawler-health line, with job history kept inside collapsed Crawler details;
+- CSV export and a logical PostgreSQL backup.
 
 ## Daily email report
 
