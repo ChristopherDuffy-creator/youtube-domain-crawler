@@ -164,7 +164,10 @@ class Settings(BaseSettings):
     youtube_local_match_batch_size: int = Field(default=100_000, ge=100, le=1_000_000)
     youtube_intelligence_backfill_batch_size: int = Field(default=5_000, ge=100, le=50_000)
     youtube_measured_window_days: int = Field(default=15, ge=7, le=26)
-    availability_batch_size: int = Field(default=500, ge=1, le=500)
+    # One authoritative sweep must be able to drain the full traffic-qualified
+    # review backlog. Porkbun calls remain rate-limited independently, so a
+    # larger queue does not increase request concurrency.
+    availability_batch_size: int = Field(default=1000, ge=1, le=2000)
     scheduler_enabled: bool = True
 
     porkbun_api_key: str = ""

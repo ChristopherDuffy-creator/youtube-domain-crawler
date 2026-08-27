@@ -1313,6 +1313,7 @@ def run_availability_checks() -> None:
         }
         try:
             domains = _domains_due_for_check(db, settings.availability_batch_size)
+            pending_refresh_ids: set[int] = set()
             with ThreadPoolExecutor(max_workers=8) as pool:
                 futures = {
                     pool.submit(
@@ -1350,6 +1351,7 @@ def run_availability_checks() -> None:
                             error=str(exc),
                         )
                     _apply_availability(domain, result)
+                    pending_refresh_ids.add(domain.id)
                     counters["checked"] += 1
                     if result.status in counters:
                         counters[result.status] += 1
@@ -1363,8 +1365,24 @@ def run_availability_checks() -> None:
                         counters["errors"] += 1
                         if len(counters["error_details"]) < 20:
                             counters["error_details"].append(f"{domain.name}: {result.error}"[:500])
-            db.commit()
-            refresh_candidates(db, {domain.id for domain in domains})
+
+                    # Registrar checks are intentionally spaced about ten
+                    # seconds apart. Persist each small checkpoint so the UI
+                    # becomes truthful progressively and a deploy cannot roll
+                    # back an hour-long completed portion of the sweep.
+                    if len(pending_refresh_ids) >= 10:
+                        db.commit()
+                        refresh_candidates(db, pending_refresh_ids)
+                        pending_refresh_ids.clear()
+                        current_run = db.get(RunLog, run.id)
+                        if current_run is not None:
+                            current_run.counters = dict(counters)
+                            db.commit()
+
+            if pending_refresh_ids:
+                db.commit()
+                refresh_candidates(db, pending_refresh_ids)
+                pending_refresh_ids.clear()
             send_new_candidate_alerts(db)
             status = "partial" if counters["errors"] else "complete"
             _finish_run(db, run, status, counters)
