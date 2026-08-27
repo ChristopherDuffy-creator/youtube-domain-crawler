@@ -1,7 +1,7 @@
 from inspect import signature
 from pathlib import Path
 
-from app.main import _youtube_result_status, dashboard
+from app.main import _youtube_result_status, app, dashboard
 from app.models import Candidate, Domain, YouTubeDomainSignal
 
 
@@ -56,6 +56,21 @@ def test_dashboard_has_only_the_four_review_tabs() -> None:
         "Priority — click",
     ):
         assert removed not in template
+
+
+def test_dashboard_removes_yellow_notes_and_links_to_bought_database() -> None:
+    template = Path("app/templates/dashboard.html").read_text(encoding="utf-8")
+    bought_template = Path("app/templates/bought.html").read_text(encoding="utf-8")
+
+    assert 'class="ranking-note"' not in template
+    assert 'class="compact-notice"' not in template
+    assert "Availability-first pipeline:" not in template
+    assert "Final rankings:" not in template
+    assert 'href="/bought"' in template
+    assert "Bought ({{ bought_domain_count }})" in template
+    assert any(route.path == "/bought" for route in app.routes)
+    assert "Bought database" in bought_template
+    assert "Potential value / month" in bought_template
 
 
 def test_dashboard_uses_checkpoint_filters_and_quarantines_noisy_rows() -> None:

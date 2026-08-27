@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bought Domains</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="container">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">EXPANDOSAURUS</p>
+        <h1>Bought Domains</h1>
+        <p class="subtitle">Domains removed from the review queue after purchase.</p>
+      </div>
+      <div class="topbar-actions">
+        <a class="button secondary" href="/">Back to Watchlist</a>
+      </div>
+    </header>
+
+    <section class="table-panel">
+      <div class="results-heading">
+        <div>
+          <h2>Bought database</h2>
+          <p>{{ bought_domains|length }} domain{% if bought_domains|length != 1 %}s{% endif %}</p>
+        </div>
+      </div>
+      {% if bought_domains %}
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Domain</th>
+              <th>Bought</th>
+              <th>Original stage</th>
+              <th>Views / month</th>
+              <th>Buy Score</th>
+              <th>Potential value / month</th>
+              <th>Registrar price</th>
+              <th>Purchase price</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for domain in bought_domains %}
+            <tr>
+              <td>{{ domain.domain_name }}</td>
+              <td>{{ (domain.purchased_at|dashboard_time).strftime('%d %b %Y, %H:%M') }}</td>
+              <td>{{ domain.original_tier.replace('_', ' ') }}</td>
+              <td>{{ "{:,}".format(domain.monthly_views) }}</td>
+              <td>{{ "%.1f"|format(domain.buy_score) }}</td>
+              <td>${{ "%.0f"|format(domain.monthly_revenue_low_usd) }}–${{ "%.0f"|format(domain.monthly_revenue_high_usd) }}</td>
+              <td>{% if domain.registrar_price_usd is not none %}${{ "%.2f"|format(domain.registrar_price_usd) }}{% else %}—{% endif %}</td>
+              <td>{% if domain.purchase_price_usd is not none %}${{ "%.2f"|format(domain.purchase_price_usd) }}{% else %}—{% endif %}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <h3>No bought domains yet</h3>
+      </div>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

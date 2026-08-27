@@ -1642,6 +1642,24 @@ def dashboard(
     return response
 
 
+@app.get("/bought", response_class=HTMLResponse)
+def bought_domains_dashboard(
+    request: Request,
+    _: str = Depends(require_dashboard_auth),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    rows = db.scalars(
+        select(BoughtDomain)
+        .where(BoughtDomain.source_system == "youtube")
+        .order_by(BoughtDomain.purchased_at.desc(), BoughtDomain.id.desc())
+    ).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="bought.html",
+        context={"bought_domains": rows},
+    )
+
+
 def _retired_dashboard(
     request: Request,
     view: DashboardSystem = "web",

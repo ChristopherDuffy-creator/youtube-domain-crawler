@@ -108,29 +108,6 @@ h2, h3 { margin: 0; }
 }
 
 .health-meta { color: var(--muted); }
-.bought-total {
-  margin-left: auto;
-  padding: 5px 9px;
-  border-radius: 99px;
-  background: rgba(67, 213, 179, .11);
-  color: #79ead0;
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-}
-
-.compact-notice, .ranking-note {
-  margin-bottom: 14px;
-  padding: 12px 14px;
-  border: 1px solid rgba(244, 198, 103, .38);
-  border-radius: 11px;
-  background: rgba(244, 198, 103, .08);
-  color: #ebd8a9;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
 .stage-nav {
   position: sticky;
   top: 8px;
@@ -188,8 +165,32 @@ h2, h3 { margin: 0; }
 
 .results-heading h2 { font-size: 23px; letter-spacing: -.02em; }
 .result-total { color: var(--muted); font-size: 12px; white-space: nowrap; }
-.ranking-note { margin: 14px 16px 0; }
 .result-list { display: grid; gap: 12px; padding: 14px; }
+
+.table-panel {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(13, 20, 35, .88);
+}
+
+.table-scroll { overflow-x: auto; }
+.data-table { width: 100%; min-width: 860px; border-collapse: collapse; }
+.data-table th, .data-table td {
+  padding: 13px 15px;
+  border-bottom: 1px solid rgba(42, 56, 82, .72);
+  text-align: left;
+  white-space: nowrap;
+}
+.data-table th {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.data-table td { font-size: 12px; }
+.data-table td:first-child { color: var(--text); font-weight: 800; }
+.data-table tbody tr:last-child td { border-bottom: 0; }
 
 .result-card {
   overflow: hidden;
@@ -381,7 +382,6 @@ textarea, input[type=file], input[type=text], input[type=password] {
   .topbar-actions { justify-content: flex-start; }
   .crawler-health { flex-wrap: wrap; }
   .health-meta { flex-basis: calc(100% - 22px); order: 3; padding-left: 18px; }
-  .bought-total { margin-left: auto; }
   .stage-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stage-tab { padding: 11px 12px; }
   .stage-count { font-size: 22px; }

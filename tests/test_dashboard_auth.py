@@ -31,6 +31,10 @@ def test_login_and_logout_use_a_secure_http_only_cookie() -> None:
     assert protected.status_code == 303
     assert protected.headers["location"].startswith("/login?next=")
 
+    bought = client.get("/bought", follow_redirects=False)
+    assert bought.status_code == 303
+    assert bought.headers["location"].startswith("/login?next=")
+
     login = client.post(
         "/login",
         data={"username": "admin", "password": settings.dashboard_password, "next": "/"},
