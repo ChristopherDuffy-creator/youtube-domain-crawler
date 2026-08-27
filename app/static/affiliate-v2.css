@@ -73,6 +73,9 @@
 .card p { flex: 1; }
 .partner-band { padding: 76px 0; }
 .partner-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+.partner-grid--three { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.partner-grid--three .partner-card { grid-template-columns: 1fr; align-content: start; }
+.partner-grid--three .partner-card a { width: 100%; margin-top: auto; }
 .partner-card {
   display: grid;
   grid-template-columns: 1fr auto;

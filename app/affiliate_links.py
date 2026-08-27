@@ -56,6 +56,10 @@ PUBLIC_SITES = {
 # product imagery and keeps each recommendation useful when individual stock changes.
 AFFILIATE_LINKS: dict[str, dict[str, str]] = {
     "crafts": {
+        "machine-mart": (
+            "https://www.awin1.com/cread.php?awinmid=3131&awinaffid=3059057"
+            "&clickref=craftsheaven-machine-mart"
+        ),
         "tooled-up": (
             "https://www.awin1.com/cread.php?awinmid=496&awinaffid=3059057"
             "&clickref=craftsheaven-home-retailer"

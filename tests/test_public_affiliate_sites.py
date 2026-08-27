@@ -135,6 +135,10 @@ def test_public_sites_use_image_led_cards_and_approved_partner_links() -> None:
         assert "How we choose" in response.text
 
     crafts = TestClient(app, base_url="https://craftsheaven.club")
+    machine_mart = crafts.get("/go/machine-mart", follow_redirects=False)
+    assert machine_mart.headers["location"].startswith("https://www.awin1.com/")
+    assert "awinmid=3131" in machine_mart.headers["location"]
+    assert "awinaffid=3059057" in machine_mart.headers["location"]
     assert crafts.get("/go/tooled-up", follow_redirects=False).headers[
         "location"
     ].startswith("https://www.awin1.com/")
