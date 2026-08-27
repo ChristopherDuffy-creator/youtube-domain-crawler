@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 
 import app.main as main_module
-from app.affiliate_links import AFFILIATE_LINKS
+from app.affiliate_links import AFFILIATE_LINKS, GOOGLE_ANALYTICS_MEASUREMENT_ID
 from app.database import Base, SessionLocal, engine
 from app.main import app
 from app.models import ContactMessage, EmailSubscriber, PilotSiteEvent
@@ -113,6 +113,28 @@ def test_each_site_has_email_capture_and_working_contact_navigation() -> None:
         assert 'href="/contact"' in response.text
         assert 'href="mailto:info@expandosaurus.com">Contact' not in response.text
         assert '<script src="/static/pilot.js" defer></script>' in response.text
+
+
+def test_each_site_uses_consent_based_google_analytics_on_every_page() -> None:
+    for host in SITE_EXPECTATIONS:
+        client = TestClient(app, base_url=f"https://{host}")
+
+        for path in ("/", "/about", "/contact", "/privacy"):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert f'data-measurement-id="{GOOGLE_ANALYTICS_MEASUREMENT_ID}"' in response.text
+            assert 'src="/static/analytics-consent.js"' in response.text
+            assert 'href="/static/analytics-consent.css"' in response.text
+            assert "data-analytics-settings" in response.text
+
+        privacy = client.get("/privacy").text
+        assert "Google Analytics is optional" in privacy
+        assert "Advertising storage and personalisation remain disabled" in privacy
+
+    script = TestClient(app).get("/static/analytics-consent.js").text
+    assert 'readChoice() === "granted"' in script
+    assert 'ad_storage: "denied"' in script
+    assert "googletagmanager.com/gtag/js" in script
 
 
 def test_satvic_primary_cta_uses_plain_language() -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+GOOGLE_ANALYTICS_MEASUREMENT_ID = "G-GQ5HHLPZZF"
+
 
 @dataclass(frozen=True)
 class PublicSite:
@@ -9,6 +11,7 @@ class PublicSite:
     name: str
     canonical_url: str
     tagline: str
+    analytics_measurement_id: str = GOOGLE_ANALYTICS_MEASUREMENT_ID
 
 
 PUBLIC_SITES = {

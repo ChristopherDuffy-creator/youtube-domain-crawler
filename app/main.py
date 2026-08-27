@@ -503,19 +503,28 @@ async def serve_satvic_site(request: Request, call_next):
         return templates.TemplateResponse(
             request=request,
             name="satvic.html",
-            context={"form_token": _issue_public_form_token("satvic", "subscribe")},
+            context={
+                "site": public_site_for_host(host),
+                "form_token": _issue_public_form_token("satvic", "subscribe"),
+            },
         )
     if host in _CRAFTS_HOSTS and request.url.path == "/":
         return templates.TemplateResponse(
             request=request,
             name="crafts.html",
-            context={"form_token": _issue_public_form_token("crafts", "subscribe")},
+            context={
+                "site": public_site_for_host(host),
+                "form_token": _issue_public_form_token("crafts", "subscribe"),
+            },
         )
     if host in _GERARDI_HOSTS and request.url.path == "/":
         return templates.TemplateResponse(
             request=request,
             name="gerardi.html",
-            context={"form_token": _issue_public_form_token("gerardi", "subscribe")},
+            context={
+                "site": public_site_for_host(host),
+                "form_token": _issue_public_form_token("gerardi", "subscribe"),
+            },
         )
     return await call_next(request)
 
@@ -538,7 +547,8 @@ def _public_page_sections(
                 "What this site records",
                 [
                     f"{site.name} does not require a reader account and does not use "
-                    "behavioural advertising cookies.",
+                    "behavioural advertising cookies. Google Analytics is optional "
+                    "and loads only after you choose Allow analytics.",
                     "If you join the email list, we store your email address, the site "
                     "you joined from, your consent status and the date of consent. We "
                     "use that information only for the updates you requested and do "
@@ -552,6 +562,12 @@ def _public_page_sections(
                     "page uses a fresh random identifier that is not stored in your "
                     "browser; these events do not contain your name, email address or "
                     "full referring URL.",
+                    "If you allow analytics, Google Analytics records pages viewed, "
+                    "approximate location, referral source and technical details such "
+                    "as browser and device type. Google may set analytics cookies for "
+                    "this purpose. Advertising storage and personalisation remain "
+                    "disabled. You can change or withdraw this choice at any time "
+                    "using Privacy choices in the footer.",
                 ],
             ),
             (
