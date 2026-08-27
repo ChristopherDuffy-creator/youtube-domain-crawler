@@ -136,6 +136,11 @@ def test_each_site_uses_consent_based_google_analytics_on_every_page() -> None:
     assert 'ad_storage: "denied"' in script
     assert "googletagmanager.com/gtag/js" in script
 
+    pilot_script = TestClient(app).get("/static/pilot.js").text
+    assert 'recordGoogleEvent("affiliate_click"' in pilot_script
+    assert 'recordGoogleEvent("newsletter_signup")' in pilot_script
+    assert 'recordGoogleEvent("contact_submit")' in pilot_script
+
 
 def test_satvic_primary_cta_uses_plain_language() -> None:
     client = TestClient(app, base_url="https://satvic.yoga")
