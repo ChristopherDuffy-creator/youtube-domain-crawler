@@ -434,8 +434,9 @@ def _public_page_sections(
                 [
                     f"{site.name} participates in the Amazon Associates Programme. "
                     "As an Amazon Associate we earn from qualifying purchases.",
-                    "We may also use clearly identified links from advertisers joined "
-                    "through the Awin affiliate network.",
+                    "We may also use clearly identified links from approved partners "
+                    "including advertisers joined through Awin and Udemy through "
+                    "its affiliate platform.",
                     "If you follow a marked Amazon link and make a qualifying purchase, "
                     "we may receive a commission. This does not add a separate charge "
                     "to your order.",

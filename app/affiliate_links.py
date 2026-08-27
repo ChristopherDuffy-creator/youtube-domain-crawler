@@ -56,6 +56,11 @@ PUBLIC_SITES = {
 # product imagery and keeps each recommendation useful when individual stock changes.
 AFFILIATE_LINKS: dict[str, dict[str, str]] = {
     "crafts": {
+        "tooled-up": (
+            "https://www.awin1.com/cread.php?awinmid=496&awinaffid=3059057"
+            "&clickref=craftsheaven-home-retailer"
+        ),
+        "udemy-woodworking": "https://trk.udemy.com/c/7685541/3193860/39854",
         "starter-hand-tools": (
             "https://www.amazon.co.uk/s?k=beginner+woodworking+hand+tool+set"
             "&tag=expandosaurus-21"
@@ -73,6 +78,7 @@ AFFILIATE_LINKS: dict[str, dict[str, str]] = {
         ),
     },
     "satvic": {
+        "udemy-yoga": "https://trk.udemy.com/c/7685541/3193860/39854",
         "natural-yoga-mat": "https://amzn.to/4zJBvfG",
         "restorative-support": "https://amzn.to/4y3jg39",
         "iyengar-blanket": "https://amzn.to/4ccmDMI",
@@ -87,6 +93,7 @@ AFFILIATE_LINKS: dict[str, dict[str, str]] = {
         "meditation-ornament": "https://amzn.to/3Ulw2LN",
     },
     "gerardi": {
+        "udemy-fitness": "https://trk.udemy.com/c/7685541/3193860/39854",
         "adjustable-dumbbells": "https://www.amazon.co.uk/s?k=adjustable+dumbbells+set&tag=expandosaurus-21",
         "hex-dumbbells": "https://www.amazon.co.uk/s?k=hex+dumbbell+set+home+gym&tag=expandosaurus-21",
         "adjustable-bench": (

@@ -46,7 +46,12 @@ def test_every_template_recommendation_has_a_host_scoped_redirect() -> None:
             response = client.get(f"/go/{slug}", follow_redirects=False)
             assert response.status_code == 302
             assert response.headers["location"].startswith(
-                ("https://www.amazon.co.uk/", "https://amzn.to/")
+                (
+                    "https://www.amazon.co.uk/",
+                    "https://amzn.to/",
+                    "https://www.awin1.com/",
+                    "https://trk.udemy.com/",
+                )
             )
             assert response.headers["cache-control"] == "no-store"
 
@@ -99,6 +104,25 @@ def test_satvic_primary_cta_uses_plain_language() -> None:
 
     assert "Explore the essentials" in response.text
     assert "Explore the edit" not in response.text
+
+
+def test_public_sites_use_image_led_cards_and_approved_partner_links() -> None:
+    for host in SITE_EXPECTATIONS:
+        client = TestClient(app, base_url=f"https://{host}")
+        response = client.get("/")
+
+        assert response.status_code == 200
+        assert 'class="product-visual"' in response.text
+        assert 'href="/static/affiliate-v2.css"' in response.text
+        assert "How we choose" in response.text
+
+    crafts = TestClient(app, base_url="https://craftsheaven.club")
+    assert crafts.get("/go/tooled-up", follow_redirects=False).headers[
+        "location"
+    ].startswith("https://www.awin1.com/")
+    assert crafts.get("/go/udemy-woodworking", follow_redirects=False).headers[
+        "location"
+    ].startswith("https://trk.udemy.com/")
 
 
 def test_subscription_is_stored_once_per_site() -> None:

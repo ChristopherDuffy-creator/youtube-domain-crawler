@@ -28,7 +28,8 @@
   document.addEventListener("click", (event) => {
     const link = event.target.closest("a[href^='/go/']");
     if (!link) return;
-    const offerId = link.getAttribute("href").slice(4).split(/[?#]/, 1)[0];
+    const offerId = link.dataset.track
+      || link.getAttribute("href").slice(4).split(/[?#]/, 1)[0];
     if (offerId) record("interest_click", offerId);
   }, {capture: true});
 })();
