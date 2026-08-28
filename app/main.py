@@ -85,6 +85,12 @@ from app.youtube_intelligence import (
     quarantine_stale_youtube_signals,
     youtube_quota_snapshot,
 )
+from app.youtube_review import (
+    YOUTUBE_VISIBLE_MAXIMUM,
+    youtube_stage_conditions,
+    youtube_stage_counts,
+    youtube_visible_conditions,
+)
 
 settings = get_settings()
 logging.basicConfig(
@@ -136,7 +142,7 @@ WebEvidenceRow = tuple[
 
 _HIDDEN_WEB_AVAILABILITY = {"registered", "aftermarket", "premium", "reserved"}
 _HIDDEN_YOUTUBE_AVAILABILITY = _HIDDEN_WEB_AVAILABILITY
-_YOUTUBE_VISIBLE_MAXIMUM = 1_000_000
+_YOUTUBE_VISIBLE_MAXIMUM = YOUTUBE_VISIBLE_MAXIMUM
 
 
 def _sanitized_job_error(value: str | None) -> str | None:
@@ -1409,10 +1415,13 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 "error_summary": _sanitized_job_error(latest.error),
             }
 
-        tier_counts = {
+        raw_tier_counts = {
             tier: int(count)
             for tier, count in db.execute(select(Candidate.tier, func.count()).group_by(Candidate.tier)).all()
         }
+        review_stage_counts = youtube_stage_counts(db, settings)
+        tier_counts = dict(raw_tier_counts)
+        tier_counts["watchlist"] = review_stage_counts["watchlist"]
         now = datetime.now(UTC)
         youtube_summary = {
             "totals": {
@@ -1493,6 +1502,8 @@ def health(db: Session = Depends(get_db)) -> dict[str, object]:
                 ),
             },
             "tiers": tier_counts,
+            "stages": review_stage_counts,
+            "raw_tiers": raw_tier_counts,
             "quota": youtube_quota_snapshot(db, settings),
             "latest_runs": latest_youtube_runs,
         }
@@ -1621,29 +1632,7 @@ def link_hunter_proof_preview(
 
 def _youtube_stage_conditions(tier: str) -> tuple[object, ...]:
     """Return the exact, checkpoint-specific rules used by cards and counts."""
-    if tier == "day3":
-        return (
-            Candidate.evaluation_stage == "day3",
-            Candidate.day3_monthly_views >= settings.watchlist_monthly_views,
-            Candidate.day3_monthly_views <= _YOUTUBE_VISIBLE_MAXIMUM,
-        )
-    if tier == "day7":
-        return (
-            Candidate.evaluation_stage == "day7",
-            Candidate.day7_monthly_views >= settings.watchlist_monthly_views,
-            Candidate.day7_monthly_views <= _YOUTUBE_VISIBLE_MAXIMUM,
-        )
-    if tier == "low":
-        return (
-            Candidate.evaluation_stage == "day7",
-            Candidate.day7_monthly_views >= _YOUTUBE_RESERVE_MINIMUM,
-            Candidate.day7_monthly_views < settings.watchlist_monthly_views,
-        )
-    return (
-        Candidate.evaluation_stage == "day0",
-        Candidate.start_monthly_views >= settings.watchlist_monthly_views,
-        Candidate.start_monthly_views <= _YOUTUBE_VISIBLE_MAXIMUM,
-    )
+    return youtube_stage_conditions(tier, settings)
 
 
 def _youtube_result_status(
@@ -1693,19 +1682,7 @@ def dashboard(
     selected_tier = tier if tier in {"watchlist", "day3", "day7", "low"} else "watchlist"
     _, visit_baseline, current_timestamp = _dashboard_visit_window(request)
 
-    common_conditions = (
-        Candidate.tier != "rejected",
-        ~Candidate.domain_id.in_(select(BoughtDomain.domain_id)),
-        Domain.availability_status == "available",
-        Domain.availability_source == "porkbun",
-        Domain.premium.is_(False),
-        Candidate.evaluation_started_at.is_not(None),
-        YouTubeDomainSignal.model_version >= 4,
-        YouTubeDomainSignal.click_eligible_exposure > 0,
-        YouTubeDomainSignal.buy_score > 0,
-        YouTubeDomainSignal.monthly_revenue_high_usd > 0,
-        YouTubeDomainSignal.spike_video_count == 0,
-    )
+    common_conditions = youtube_visible_conditions()
     candidate_statement = (
         select(Candidate, Domain, Video, YouTubeDomainSignal)
         .join(Domain, Domain.id == Candidate.domain_id)
@@ -1726,18 +1703,7 @@ def dashboard(
     )
     candidate_rows = db.execute(candidate_statement).all()
 
-    stage_counts: dict[str, int] = {}
-    for stage in ("watchlist", "day3", "day7", "low"):
-        stage_counts[stage] = int(
-            db.scalar(
-                select(func.count())
-                .select_from(Candidate)
-                .join(Domain, Domain.id == Candidate.domain_id)
-                .join(YouTubeDomainSignal, YouTubeDomainSignal.domain_id == Candidate.domain_id)
-                .where(*common_conditions, *_youtube_stage_conditions(stage))
-            )
-            or 0
-        )
+    stage_counts = youtube_stage_counts(db, settings)
 
     youtube_jobs = (
         "youtube_discovery",
