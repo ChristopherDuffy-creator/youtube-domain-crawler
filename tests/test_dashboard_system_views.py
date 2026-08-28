@@ -74,16 +74,16 @@ def test_dashboard_removes_yellow_notes_and_links_to_bought_database() -> None:
 
 
 def test_dashboard_uses_checkpoint_filters_and_quarantines_noisy_rows() -> None:
-    source = Path("app/main.py").read_text(encoding="utf-8")
+    source = Path("app/youtube_review.py").read_text(encoding="utf-8")
 
     assert 'Candidate.evaluation_stage == "day0"' in source
     assert 'Candidate.evaluation_stage == "day3"' in source
     assert 'Candidate.evaluation_stage == "day7"' in source
     assert "Candidate.start_monthly_views >= settings.watchlist_monthly_views" in source
-    assert "Candidate.day7_monthly_views >= _YOUTUBE_RESERVE_MINIMUM" in source
+    assert "Candidate.day7_monthly_views >= YOUTUBE_RESERVE_MINIMUM" in source
     assert "Candidate.day7_monthly_views < settings.watchlist_monthly_views" in source
     assert "YouTubeDomainSignal.spike_video_count == 0" in source
-    assert "_YOUTUBE_VISIBLE_MAXIMUM = 1_000_000" in source
+    assert "YOUTUBE_VISIBLE_MAXIMUM = 1_000_000" in source
     assert 'Domain.availability_status == "available"' in source
     assert 'Domain.availability_source == "porkbun"' in source
     assert "Candidate.evaluation_started_at.is_not(None)" in source
