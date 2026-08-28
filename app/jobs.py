@@ -87,6 +87,7 @@ from app.youtube_intelligence import (
     update_channel_intelligence,
     youtube_quota_snapshot,
 )
+from app.youtube_review import youtube_stage_count
 
 logger = logging.getLogger(__name__)
 
@@ -2091,9 +2092,7 @@ def _build_daily_digest_report(
     qualified_rows = _email_candidates(db)
     priority_count = sum(1 for candidate, _, _ in qualified_rows if candidate.tier == "priority")
     qualified_count = sum(1 for candidate, _, _ in qualified_rows if candidate.tier == "qualified")
-    watchlist_count = (
-        db.scalar(select(func.count()).select_from(Candidate).where(Candidate.tier == "watchlist")) or 0
-    )
+    watchlist_count = youtube_stage_count(db, "watchlist", settings)
     pending_count = (
         db.scalar(select(func.count()).select_from(Candidate).where(Candidate.tier == "pending")) or 0
     )
