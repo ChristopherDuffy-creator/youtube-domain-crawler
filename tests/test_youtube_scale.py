@@ -15,6 +15,7 @@ from app.jobs import (
     _domains_due_for_check,
     _dropped_domains_due_for_youtube_search,
     _initial_refresh_interval_hours,
+    _next_channel_to_crawl,
     build_scheduler,
     ingest_dropped_text,
     process_video,
@@ -291,6 +292,56 @@ def test_channel_fanout_is_resumable_and_builds_the_permanent_local_index() -> N
         db.commit()
         due_searches = _dropped_domains_due_for_youtube_search(db, 10)
         assert [item.name for item in due_searches] == ["unmatched-new.com"]
+
+
+def test_channel_allocator_prioritises_proven_yield_over_unfinished_cold_inventory() -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    settings = Settings(youtube_channel_recrawl_hours=24)
+    now = datetime.now(UTC)
+
+    with Session(engine) as db:
+        db.add_all(
+            [
+                YouTubeChannel(
+                    channel_id="cold-unfinished",
+                    uploads_playlist_id="cold-uploads",
+                    next_page_token="cold-page-2",
+                    inventory_complete=False,
+                    yield_score=1.0,
+                    last_crawled_at=now - timedelta(hours=1),
+                ),
+                YouTubeChannel(
+                    channel_id="hot-proven",
+                    uploads_playlist_id="hot-uploads",
+                    inventory_complete=False,
+                    yield_score=25.0,
+                    last_crawled_at=now - timedelta(hours=1),
+                ),
+            ]
+        )
+        db.add_all(
+            [
+                YouTubeChannelIntelligence(
+                    channel_id="cold-unfinished",
+                    tier="cold",
+                    ema_yield=0.0,
+                    next_crawl_at=now - timedelta(minutes=1),
+                ),
+                YouTubeChannelIntelligence(
+                    channel_id="hot-proven",
+                    tier="hot",
+                    ema_yield=0.2,
+                    next_crawl_at=now - timedelta(minutes=1),
+                ),
+            ]
+        )
+        db.commit()
+
+        selected = _next_channel_to_crawl(db, settings, set())
+
+        assert selected is not None
+        assert selected.channel_id == "hot-proven"
 
 
 class FakeStatisticsClient:
