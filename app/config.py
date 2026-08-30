@@ -19,6 +19,17 @@ CsvList = Annotated[list[str], BeforeValidator(_split_csv)]
 
 
 EVERGREEN_QUERIES = [
+    # High-intent searches are deliberately first. These phrases are much more
+    # likely to surface older videos whose descriptions contain a creator-owned
+    # resource or website, rather than videos that merely mention the topic.
+    "free template link in description",
+    "download guide link in description",
+    "course resources link in description",
+    "worksheet link in description",
+    "official website link in description",
+    "training plan link in description",
+    "recipe website link in description",
+    "pattern link in description tutorial",
     "wordpress tutorial for beginners",
     "shopify tutorial for beginners",
     "website design tutorial",
