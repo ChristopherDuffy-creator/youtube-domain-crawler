@@ -751,8 +751,10 @@ def _next_channel_to_crawl(
         statement = statement.where(YouTubeChannel.channel_id.not_in(excluded_channel_ids))
     return db.scalar(
         statement.order_by(
-            case((YouTubeChannel.next_page_token.is_not(None), 0), else_=1),
-            case((YouTubeChannel.inventory_complete.is_(False), 0), else_=1),
+            # Spend the bounded fan-out quota on channels that have already
+            # produced external-link evidence. Previously, any unfinished
+            # inventory ranked ahead of channel quality, so a large cold
+            # channel could repeatedly jump ahead of proven hot/warm sources.
             case(
                 (YouTubeChannelIntelligence.tier == "hot", 0),
                 (YouTubeChannelIntelligence.tier == "warm", 1),
@@ -762,6 +764,10 @@ def _next_channel_to_crawl(
             ),
             YouTubeChannelIntelligence.ema_yield.desc().nullslast(),
             YouTubeChannel.yield_score.desc(),
+            # Within the same quality band, continue resumable inventories
+            # before opening another channel so useful pagination is retained.
+            case((YouTubeChannel.next_page_token.is_not(None), 0), else_=1),
+            case((YouTubeChannel.inventory_complete.is_(False), 0), else_=1),
             YouTubeChannel.seed_count.desc(),
             YouTubeChannel.last_crawled_at.asc(),
             YouTubeChannel.channel_id.asc(),

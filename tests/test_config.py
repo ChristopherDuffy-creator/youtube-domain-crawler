@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from app.config import DEFAULT_DROPPED_DOMAIN_FEED_URLS, Settings
+from app.config import DEFAULT_DROPPED_DOMAIN_FEED_URLS, EVERGREEN_QUERIES, Settings
 from app.jobs import build_scheduler
 
 
@@ -9,6 +9,12 @@ def test_public_daily_dropped_feed_is_connected_by_default() -> None:
 
     assert settings.dropped_domain_feed_urls == DEFAULT_DROPPED_DOMAIN_FEED_URLS
     assert settings.dropped_domain_feed_urls[0].endswith("/0-latest-free-dropped-domains.csv")
+
+
+def test_discovery_queries_include_exact_link_intent_without_duplicates() -> None:
+    assert "free template link in description" in EVERGREEN_QUERIES
+    assert "official website link in description" in EVERGREEN_QUERIES
+    assert len(EVERGREEN_QUERIES) == len(set(EVERGREEN_QUERIES))
 
 
 def test_stale_environment_values_cannot_lower_approved_youtube_bands() -> None:
